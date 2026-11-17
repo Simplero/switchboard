@@ -140,9 +140,22 @@ fn commonDir(
         return error.AppleAPIFailed;
     const base_dir = std.mem.sliceTo(c_str, 0);
 
+    // Sessions fork: use the running app's bundle id, so "Ghostty Sessions"
+    // (com.simplero.ghostty-sessions) gets its own Application Support folder
+    // and config file instead of sharing the normal Ghostty's.
+    const bundle_id: []const u8 = bid: {
+        const NSBundle = objc.getClass("NSBundle") orelse break :bid build_config.bundle_id;
+        const main = NSBundle.msgSend(objc.Object, objc.sel("mainBundle"), .{});
+        if (main.value == null) break :bid build_config.bundle_id;
+        const ident = main.getProperty(objc.Object, "bundleIdentifier");
+        if (ident.value == null) break :bid build_config.bundle_id;
+        const id_c = ident.getProperty(?[*:0]const u8, "UTF8String") orelse break :bid build_config.bundle_id;
+        break :bid std.mem.sliceTo(id_c, 0);
+    };
+
     return try std.fs.path.join(
         alloc,
-        &.{ base_dir, build_config.bundle_id, sub_path },
+        &.{ base_dir, bundle_id, sub_path },
     );
 }
 

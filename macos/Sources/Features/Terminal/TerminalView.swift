@@ -72,6 +72,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
             ErrorView()
         case .ready:
             ZStack {
+                SessionsSidebarContainer {
                 VStack(spacing: 0) {
                     // If we're running in debug mode we show a warning so that users
                     // know that performance will be degraded.
@@ -106,6 +107,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                 }
                 // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                 .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+                }
 
                 if let surfaceView = lastFocusedSurface?.value {
                     TerminalCommandPaletteView(

@@ -229,6 +229,10 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Sessions fork: local API for the session helper, and the sidebar's data feed.
+        SessionsAPI.shared.start()
+        SessionsStore.shared.start()
+
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [
             // Disable this so that repeated key events make it through to our terminal views.

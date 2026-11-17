@@ -80,6 +80,7 @@ final class SessionsStore: ObservableObject {
 
     private var timer: Timer?
     private var startedHelper = false
+    private var failures = 0
     private let base = URL(string: "http://127.0.0.1:4477")!
 
     func start() {
@@ -111,9 +112,13 @@ final class SessionsStore: ObservableObject {
                 if let decoded {
                     if decoded != self.payload { self.payload = decoded }
                     self.helperUp = true
+                    self.failures = 0
                 } else {
                     self.helperUp = false
-                    if error != nil { self.startHelperIfNeeded() }
+                    // Only start our own helper after 20 s with nobody on the port:
+                    // the one inside cmux is preferred, because only it can see cmux.
+                    if error != nil { self.failures += 1 }
+                    if self.failures >= 20 { self.startHelperIfNeeded() }
                 }
             }
         }.resume()
@@ -151,13 +156,47 @@ final class SessionsStore: ObservableObject {
     }
 
     func open(_ s: SessionItem) {
-        picked = s.k
         if s.isOpen, s.be == "ghostty", let sf = s.sf,
            let view = SessionsAPI.allSurfaces().first(where: { $0.id.uuidString == sf }) {
+            picked = s.k
             SessionsAPI.focus(view)
             return
         }
+        if s.isOpen {
+            // Running in another terminal (cmux): never move it without asking.
+            askMove(s)
+            return
+        }
+        // Closed or parked: resume it here.
+        picked = s.k
         send(["op": "open", "k": s.k])
+    }
+
+    /// Ask what to do with a session that runs in cmux: move it here, or go to it there.
+    func askMove(_ s: SessionItem) {
+        let alert = NSAlert()
+        alert.messageText = "“\(s.n)” is open in cmux"
+        alert.informativeText = "Move it here closes it in cmux, with the shell split in that workspace, and resumes the same conversation here with the same login (\(s.login)).\n\nGo to it in cmux leaves it where it is."
+        alert.addButton(withTitle: "Move it here")
+        alert.addButton(withTitle: "Go to it in cmux")
+        alert.addButton(withTitle: "Cancel")
+        let handle: (NSApplication.ModalResponse) -> Void = { [weak self] r in
+            guard let self else { return }
+            switch r {
+            case .alertFirstButtonReturn:
+                self.picked = s.k
+                self.send(["op": "move", "k": s.k])
+            case .alertSecondButtonReturn:
+                self.send(["op": "open", "k": s.k])
+            default:
+                break
+            }
+        }
+        if let window = NSApp.keyWindow {
+            alert.beginSheetModal(for: window, completionHandler: handle)
+        } else {
+            handle(alert.runModal())
+        }
     }
 
     func isSelected(_ s: SessionItem) -> Bool {
@@ -533,7 +572,10 @@ struct SessionRowView: View {
     }
 
     @ViewBuilder private var menu: some View {
-        Button(s.isOpen ? "Go to session" : "Reopen") { store.open(s) }
+        Button(s.isOpen ? "Go to session" : "Reopen here") { store.open(s) }
+        if s.isOpen && s.be != "ghostty" {
+            Button("Move it here from cmux") { store.picked = s.k; store.send(["op": "move", "k": s.k]) }
+        }
         if s.isOpen {
             Button("Park (close it, keep it here)") { store.send(["op": "park", "k": s.k]) }
             Button("Close") { store.send(["op": "close", "k": s.k]) }

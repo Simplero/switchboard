@@ -252,7 +252,7 @@ private func needsYou(_ s: SessionItem) -> Bool {
 
 private func loginIcon(_ lg: String) -> String {
     switch lg {
-    case "work": return "briefcase.fill"
+    case "simplero.com": return "briefcase.fill"
     case "corre.li": return "person.fill"
     case "correli.me": return "star.fill"
     default: return "person"

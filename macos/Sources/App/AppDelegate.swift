@@ -232,6 +232,7 @@ class AppDelegate: NSObject,
         // Sessions fork: local API for the session helper, and the sidebar's data feed.
         SessionsAPI.shared.start()
         SessionsStore.shared.start()
+        SessionsVersion.shared.start()
 
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [

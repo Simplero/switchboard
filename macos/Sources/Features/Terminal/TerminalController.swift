@@ -1096,6 +1096,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.windowDidLoad()
         guard let window else { return }
 
+        // Sessions fork: app name, build and an Update button in the title bar.
+        window.addSessionsBadge()
+
         // I copy this because we may change the source in the future but also because
         // I regularly audit our codebase for "ghostty.config" access because generally
         // you shouldn't use it. Its safe in this case because for a new window we should

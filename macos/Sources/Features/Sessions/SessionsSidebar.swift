@@ -113,6 +113,10 @@ final class SessionsStore: ObservableObject {
                     if decoded != self.payload { self.payload = decoded }
                     self.helperUp = true
                     self.failures = 0
+                    if UserDefaults.standard.bool(forKey: "sessions.restoreAfterRestart") {
+                        UserDefaults.standard.set(false, forKey: "sessions.restoreAfterRestart")
+                        self.send(["op": "restore_after_restart"])
+                    }
                 } else {
                     self.helperUp = false
                     // Only start our own helper after 20 s with nobody on the port:
@@ -145,6 +149,33 @@ final class SessionsStore: ObservableObject {
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
         p.environment = env
         try? p.run()
+    }
+
+    // MARK: Search (open sessions first, then older ones)
+    @Published var query = "" { didSet { scheduleSearch() } }
+    @Published var results: [SessionItem] = []
+    private var searchWork: DispatchWorkItem?
+
+    private func scheduleSearch() {
+        searchWork?.cancel()
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty { results = []; return }
+        let work = DispatchWorkItem { [weak self] in self?.runSearch(q) }
+        searchWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    private func runSearch(_ q: String) {
+        var comps = URLComponents(url: base.appendingPathComponent("api/search"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "q", value: q)]
+        guard let url = comps.url else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            struct R: Decodable { let s: [SessionItem] }
+            let r = data.flatMap { try? JSONDecoder().decode(R.self, from: $0) }
+            Task { @MainActor in
+                if self.query.trimmingCharacters(in: .whitespaces) == q { self.results = r?.s ?? [] }
+            }
+        }.resume()
     }
 
     func send(_ op: [String: Any]) {
@@ -660,14 +691,31 @@ struct SessionsSidebar: View {
                 .buttonStyle(.plain)
                 .help("Hide the sessions sidebar")
             }
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.secondary)
+                TextField("Search sessions: name, next step, label, login, folder…", text: $store.query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                if !store.query.isEmpty {
+                    Button { store.query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }.buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.gray.opacity(0.14)))
             if !store.helperUp {
                 Label("The session helper is not answering.", systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11)).foregroundStyle(orange)
             }
-            HStack(alignment: .top, spacing: 10) {
-                SessionsColumn(store: store, key: "col1", filter: "needs", groupBy: "none", sortBy: "needs")
-                Divider()
-                SessionsColumn(store: store, key: "col2", filter: "all", groupBy: "cmux", sortBy: "manual")
+            if store.query.trimmingCharacters(in: .whitespaces).isEmpty {
+                HStack(alignment: .top, spacing: 10) {
+                    SessionsColumn(store: store, key: "col1", filter: "needs", groupBy: "none", sortBy: "needs")
+                    Divider()
+                    SessionsColumn(store: store, key: "col2", filter: "all", groupBy: "cmux", sortBy: "manual")
+                }
+            } else {
+                SearchResults(store: store)
             }
         }
         .padding(.horizontal, 8).padding(.top, 8)
@@ -718,5 +766,33 @@ struct SessionsSidebarContainer<Content: View>: View {
             }
             content
         }
+    }
+}
+
+
+/// Search results across both columns: sessions that are open now first, then older ones.
+struct SearchResults: View {
+    @ObservedObject var store: SessionsStore
+
+    var body: some View {
+        let open = store.results.filter { $0.isOpen }
+        let older = store.results.filter { !$0.isOpen }
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                if store.results.isEmpty {
+                    Text("No session matches “\(store.query)”.").font(.system(size: 12)).foregroundStyle(.secondary).padding(8)
+                }
+                if !open.isEmpty {
+                    Text("OPEN NOW · \(open.count)").font(.system(size: 10.5, weight: .bold)).foregroundStyle(.secondary).padding(.top, 4)
+                    ForEach(open) { SessionRowView(store: store, s: $0) }
+                }
+                if !older.isEmpty {
+                    Text("OLDER · \(older.count)").font(.system(size: 10.5, weight: .bold)).foregroundStyle(.secondary).padding(.top, 10)
+                    ForEach(older) { SessionRowView(store: store, s: $0) }
+                }
+            }
+            .padding(.bottom, 20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

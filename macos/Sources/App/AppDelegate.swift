@@ -229,9 +229,10 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Sessions fork: local API for the session helper, and the sidebar's data feed.
-        SessionsAPI.shared.start()
+        // Switchboard: the session tracker and the sidebar (it stops the old Python helper
+        // first), then the local API for checks and scripts.
         SessionsStore.shared.start()
+        SessionsAPI.shared.start()
         SessionsVersion.shared.start()
 
         // System settings overrides
@@ -1048,12 +1049,8 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func newWindow(_ sender: Any?) {
-        // Switchboard: "New Session" (⌘N) is a session window with a plain shell.
-        if SessionsStore.shared.helperUp {
-            SessionsStore.shared.newShellSession()
-            return
-        }
-        _ = TerminalController.newWindow(ghostty)
+        // Switchboard: "New Session" (⌘N) is a new session with a plain shell.
+        SessionsStore.shared.newShellSession()
     }
 
     @IBAction func newTab(_ sender: Any?) {

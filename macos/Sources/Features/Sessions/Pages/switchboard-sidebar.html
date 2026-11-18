@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions</title>
+<style>
+:root{
+  --bg:#F6F6F4; --surface:#FFFFFF; --sunk:#EFEEEA; --line:#E2E1DC; --line2:#D2D1CB;
+  --ink:#17171A; --ink2:#3A3A42; --muted:#5A5A62; --muted2:#7A7A82; --faint:#A0A0A7;
+  --accent:#2D5BE3; --accent-soft:#E7EDFD; --sel:#3B5BDB; --sel-ink:#FFFFFF;
+  --needs:#C25A12; --needs-soft:#FCEFE4; --work:#2D5BE3; --done:#1E7A4C; --label:#2D5BE3;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16161A; --surface:#1E1E23; --sunk:#26262C; --line:#2C2C33; --line2:#3A3A42;
+    --ink:#EDEDF0; --ink2:#C9C9CF; --muted:#A3A3AA; --muted2:#85858D; --faint:#606068;
+    --accent:#7FA2FF; --accent-soft:#232B45; --sel:#3B5BDB; --sel-ink:#FFFFFF;
+    --needs:#F2A15C; --needs-soft:#3A2618; --work:#7FA2FF; --done:#5BC98E; --label:#7FA2FF;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden;user-select:none;-webkit-user-select:none}
+button{font:inherit;color:inherit;cursor:default}
+#app{display:flex;flex-direction:column;height:100%}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+
+/* top */
+#top{padding:10px 12px 8px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--line)}
+.row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.cap{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.newbtn{border:0;background:var(--sunk);border-radius:7px;padding:4px 8px;font-weight:600;font-size:12px;display:inline-flex;gap:4px;align-items:center}
+.newbtn:hover{background:var(--line2)}
+.newbtn .plus{color:var(--done);font-weight:800}
+.dirbtn{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:transparent;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600;color:var(--ink2);max-width:240px}
+.dirbtn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dirbtn:hover{border-color:var(--accent)}
+.idhit{margin:6px 10px 10px;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.idhit .t{font-weight:700;font-size:13.5px}
+.idhit .m{font-size:12px;color:var(--muted)}
+.idhit .btns{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.idhit .btns .lbl{font-size:12px;color:var(--muted)}
+#search{display:flex;align-items:center;gap:6px;background:var(--sunk);border-radius:8px;padding:6px 9px}
+#search input{flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:inherit;font-size:13px;user-select:text;-webkit-user-select:text}
+#search .key{font-size:10.5px;color:var(--faint);border:1px solid var(--line2);border-radius:4px;padding:0 4px}
+.seg{display:inline-flex;gap:1px}
+.seg button{border:0;background:transparent;border-radius:5px;padding:2px 4px;font-size:10.5px;color:var(--muted2);white-space:nowrap}
+.ctrl .row{flex-wrap:nowrap}
+.ctrl .seg{flex-wrap:wrap}
+.seg button[aria-pressed=true]{background:var(--sunk);color:var(--ink);font-weight:600}
+.seg button:hover{color:var(--ink)}
+
+/* now card */
+#now{margin:10px 12px 0;border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:12px 14px;display:none;flex-direction:column;gap:8px}
+#now.on{display:flex}
+#now .head{display:flex;align-items:center;gap:8px}
+#now .name{font-size:16px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;white-space:nowrap}
+.b-needs{background:var(--needs-soft);color:var(--needs)}
+.b-work{background:var(--accent-soft);color:var(--work)}
+.b-done{background:var(--sunk);color:var(--done)}
+.b-quiet{background:var(--sunk);color:var(--muted)}
+#now .title{color:var(--muted);font-size:12.5px}
+#now .next{border:2px solid var(--needs);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+#now .next.calm{border-color:var(--line2)}
+#now .next .lbl{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--needs)}
+#now .next.calm .lbl{color:var(--muted)}
+#now .next p{margin:0;font-size:14.5px;font-weight:700;line-height:1.35}
+.replies{display:flex;gap:6px;flex-wrap:wrap}
+.reply{border:1px solid var(--line2);background:var(--surface);border-radius:8px;padding:5px 10px;font-weight:600;font-size:12px}
+.reply:first-child{border:2px solid var(--accent);background:var(--accent-soft)}
+.reply:hover{background:var(--sunk)}
+#now .said{font-size:12.5px;color:var(--ink2)}
+#now .said b{color:var(--muted);font-weight:600}
+#now .meta{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:5px;background:var(--sunk);color:var(--muted);font-size:11px;font-weight:600}
+#now .hide{border:0;background:transparent;color:var(--faint);font-size:11px}
+
+/* lists */
+#cols{flex:1;min-height:0;display:flex;gap:0}
+.col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0}
+.col + .col{border-left:1px solid var(--line)}
+.ctrl{padding:8px 12px 6px;display:flex;flex-direction:column;gap:4px}
+.chips{display:flex;gap:4px;flex-wrap:wrap}
+.fchip{border:0;border-radius:6px;padding:3px 8px;font-size:11.5px;background:var(--sunk);color:var(--muted)}
+.fchip[aria-pressed=true]{background:var(--sel);color:var(--sel-ink);font-weight:600}
+[data-w].fchip{background:transparent;border:1px solid var(--line2)}
+[data-w].fchip[aria-pressed=true]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.list{flex:1;min-height:0;overflow-y:auto;padding:2px 6px 24px}
+.group{display:flex;align-items:center;gap:6px;padding:12px 8px 4px;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.group .n{color:var(--faint);font-weight:600}
+.group .chev{transition:transform .15s;display:inline-block;color:var(--faint)}
+.group.folded .chev{transform:rotate(-90deg)}
+
+.item{display:flex;gap:9px;padding:9px 10px;border-radius:10px;align-items:flex-start}
+.item:hover{background:var(--sunk)}
+.item.sel{background:var(--sel);color:var(--sel-ink)}
+/* Keyboard cursor (⌘P, then arrows). Solid ring: running here, the terminal follows it.
+   Dashed ring: not running here, Enter opens it. */
+.cur{outline:2px solid var(--accent);outline-offset:1px}
+.cur.cur-off{outline-style:dashed}
+.item.sel .line,.item.sel .meta,.item.sel .age{color:#E3E8FF}
+.item .ico{width:16px;flex-shrink:0;display:flex;justify-content:center;padding-top:2px}
+.item .body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.item .top{display:flex;gap:8px;align-items:baseline}
+.item .name{font-weight:650;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .age{margin-left:auto;font-size:11px;color:var(--muted2);white-space:nowrap}
+/* Every running row has the same height: the status line always takes two lines and the
+   meta line one, so a live "Working… (2m 6s · 8.4k tokens)" never pushes rows below it. */
+.item .line{font-size:12.5px;line-height:1.45;height:2.9em;color:var(--ink2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.item .word{font-weight:700}
+.item .meta{font-size:11px;line-height:1.45;height:1.45em;color:var(--muted2);display:flex;gap:6px;align-items:center;flex-wrap:nowrap;white-space:nowrap;overflow:hidden}
+.item .meta .lab{color:var(--label)}
+.item .ack{display:none;border:0;background:transparent;color:var(--done);font-size:14px;padding:0 2px}
+.item:hover .ack{display:inline}
+.item:hover .age.has-ack{display:none}
+
+.else{display:flex;gap:7px;align-items:center;padding:5px 10px;border-radius:7px;color:var(--ink2);font-size:12.5px;font-weight:600}
+.else:hover{background:var(--sunk)}
+.else .dot{width:14px;display:flex;justify-content:center;color:var(--work)}
+.else .dot i{width:6px;height:6px;border-radius:3px;border:1.5px solid var(--muted2);display:block}
+.else .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.else .tag{font-size:10px;font-weight:600;color:var(--muted2);border:1px dashed var(--line2);border-radius:4px;padding:0 4px}
+.else .age{font-size:10.5px;color:var(--muted2);font-weight:400}
+.old{display:flex;gap:7px;align-items:center;padding:4px 10px;border-radius:7px;color:var(--muted2);font-size:11.5px}
+.old:hover{background:var(--sunk)}
+.old .nm{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55%}
+.old .tt{color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.old .age{font-size:10.5px;color:var(--faint)}
+.empty{padding:14px 12px;color:var(--muted2);font-size:12.5px}
+svg{flex-shrink:0}
+.spin{animation:spin 1.2s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.spin{animation:none}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div class="row">
+      <span class="cap">New Claude in</span>
+      <button id="dirbtn" class="dirbtn" data-act="folder" title="Folder new sessions start in. Click to pick another one."></button>
+    </div>
+    <div id="newbtns" class="row"></div>
+    <label id="search">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" placeholder="Search, or move with the arrow keys…" autocomplete="off" spellcheck="false">
+      <span class="key" id="qkey">⌘P</span>
+    </label>
+    <div class="row"><span class="cap">Columns</span><span class="seg" id="colseg"></span></div>
+  </div>
+  <div id="cols"></div>
+</div>
+
+<script>
+const $ = (s, el=document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const bridge = (type, data={}) => { try { window.webkit.messageHandlers.sessions.postMessage({type, ...data}); } catch (e) {} };
+const store = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+const ICON = {
+  folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  bell:'<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  q:'<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2-3 4"/><path d="M12 17h.01"/>',
+  eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  warn:'<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  hand:'<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+  spin:'<path d="M21 12a9 9 0 1 1-6.2-8.56"/>',
+  check:'<polyline points="20 6 9 17 4 12"/>',
+  dots:'<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+  pause:'<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
+  moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>',
+  archive:'<rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/>',
+  term:'<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
+  brief:'<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  person:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  star:'<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"/>',
+  chev:'<polyline points="6 9 12 15 18 9"/>',
+};
+const ic = (n, s=14, w=2.1, cls='') => `<svg class="${cls}" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
+
+// state → [icon, word, css class, color var]. Never color alone: icon + word.
+const LOOK = {
+  urgent:['warn','Urgent','b-needs','--needs'], permission:['hand','Approve','b-needs','--needs'],
+  question:['q','Answer','b-needs','--needs'], review:['eye','Look at it','b-needs','--needs'],
+  heads_up:['warn','Read this','b-needs','--needs'], wrong_login:['warn','Wrong login','b-needs','--needs'],
+  working:['spin','Working','b-work','--work'], reading:['dots','Reading','b-quiet','--muted'],
+  done:['check','Done','b-done','--done'], handled:['check','Handled','b-done','--done'],
+  info:['check','Answered','b-quiet','--muted'], parked:['pause','Parked','b-quiet','--muted'],
+  closed:['moon','Closed','b-quiet','--muted'], archived:['archive','Archived','b-quiet','--muted'],
+  shell:['term','Terminal','b-quiet','--muted'],
+};
+const NEEDS = new Set(['permission','question','review','heads_up','wrong_login']);
+const LOGIN_ICON = {'simplero.com':'brief','corre.li':'person','correli.me':'star'};
+const stateOf = s => (s.u && NEEDS.has(s.st)) ? 'urgent' : (s.st || 'info');
+const needsYou = s => { const st = stateOf(s); return st === 'urgent' || NEEDS.has(st); };
+
+let data = null, focusSf = null, query = '', results = [], idHit = null;
+let newCwd = store.get('newCwd', '~/Simplero');
+let visits = store.get('visits', {});
+// Orders that never shift under the mouse:
+//  manual: the order sessions first showed up in; new ones go at the end, a new name does not move a row.
+//  recent: the "Recently visited" list; a session joins at the top on its first visit and then stays put.
+let manual = store.get('manual', null);
+let recent = store.get('recent', null);
+let cols = store.get('cols', 2), showNow = store.get('showNow', true);
+const colState = [
+  Object.assign({filter:'needs', group:'none', sort:'needs', where:'any'}, store.get('col0', {})),
+  Object.assign({filter:'all', group:'cmux', sort:'manual', where:'any'}, store.get('col1', {})),
+];
+// "Elsewhere" (cmux) is gone: a column that showed it shows everything.
+for (const c of colState) if (c.where === 'cmux') c.where = 'any';
+const folded = store.get('folded', {'Parked':true,'Closed recently':true});
+if (!('Archive' in folded)) folded['Archive'] = true;   // the Archive starts folded
+
+function ago(t){
+  if (!t) return '';
+  const d = Math.max(0, Date.now()/1000 - t);
+  if (d < 60) return 'now';
+  if (d < 3600) return Math.round(d/60) + 'm';
+  if (d < 86400) return Math.round(d/3600) + 'h';
+  return Math.round(d/86400) + 'd';
+}
+
+// Actions go through the app, which shows why when one does not work.
+function op(o){ bridge('op', {o}); }
+// A question for the app that has an answer (search).
+async function ask(type, d={}){
+  try { return await window.webkit.messageHandlers.sessionsReply.postMessage({type, ...d}); } catch { return null; }
+}
+
+// ---------- called by the app ----------
+window.Sessions = {
+  // The app sends the sessions whenever something changes.
+  setData(d){ data = d; render(); },
+  setFocus(sf){
+    focusSf = sf || null;
+    const s = data?.s.find(x => x.sf === focusSf && x.o);
+    if (s) {
+      visits[s.k] = Date.now()/1000; store.set('visits', visits);
+      if (recent && !recent.includes(s.k)){ recent.unshift(s.k); recent = recent.slice(0, 30); store.set('recent', recent); }
+    }
+    render();
+  },
+  // The folder menu (native) picked a folder for new sessions.
+  setFolder(p){ if (p){ newCwd = p; store.set('newCwd', p); render(); } },
+  // ⌘P: start at the session in front.
+  focusSearch(){ cur = null; q.focus(); q.select(); if (!cur) cur = initialCursor(); applyCursor(true); },
+  // The app moved the page to the window the cursor just brought to the front.
+  refocus(){ clearTimeout(blurTimer); q.focus(); setKbd(true); },
+};
+
+
+// ---------- keyboard: one cursor across both columns ----------
+// ⌘P (or a click in the search box) puts the keyboard here. ↑ ↓ move in a column,
+// ← → jump to the other column, typing searches, Enter opens, Esc goes back to the
+// terminal. Moving only moves the highlight: the terminal changes on Enter.
+let cur = null;          // {col, k}
+let kbd = false;         // the search box has the keyboard
+let blurTimer;
+const q = $('#q');
+const colRows = ci => [...document.querySelectorAll(`#cols .col[data-col="${ci}"] [data-k]`)];
+const sessionOf = k => (data && data.s.find(x => x.k === k)) || results.find(x => x.k === k);
+const runsHere = s => s && s.o && s.be === 'ghostty';
+
+function initialCursor(){
+  const cis = query ? [0] : [...Array(cols).keys()];
+  for (const ci of cis){
+    const here = colRows(ci).find(el => { const s = sessionOf(el.dataset.k); return s && s.sf && s.sf === focusSf; });
+    if (here) return {col: ci, k: here.dataset.k};
+  }
+  for (const ci of cis){ const first = colRows(ci)[0]; if (first) return {col: ci, k: first.dataset.k}; }
+  return null;
+}
+// Mark the cursor row; if its session left the column, take the row now at the same place.
+function applyCursor(scroll){
+  document.querySelectorAll('.cur').forEach(el => el.classList.remove('cur', 'cur-off'));
+  if (!kbd || !cur) return;
+  const rows = colRows(cur.col);
+  if (!rows.length) return;
+  let el = rows.find(r => r.dataset.k === cur.k);
+  if (!el){ el = rows[Math.min(cur.i || 0, rows.length - 1)]; cur.k = el.dataset.k; }
+  cur.i = rows.indexOf(el);
+  el.classList.add('cur');
+  if (!runsHere(sessionOf(cur.k))) el.classList.add('cur-off');
+  if (scroll) el.scrollIntoView({block: 'nearest'});
+}
+function moveTo(col, el){
+  if (!el) return;
+  cur = {col, k: el.dataset.k};
+  applyCursor(true);
+}
+function step(d){
+  if (!cur){ cur = initialCursor(); applyCursor(true); return; }
+  const rows = colRows(cur.col), i = rows.findIndex(r => r.dataset.k === cur.k);
+  moveTo(cur.col, rows[Math.max(0, Math.min(rows.length - 1, (i < 0 ? 0 : i + d)))]);
+}
+function otherColumn(){
+  if (query || cols < 2) return;
+  if (!cur){ cur = initialCursor(); applyCursor(true); return; }
+  const to = 1 - cur.col, rows = colRows(to);
+  if (!rows.length) return;
+  const same = rows.find(r => r.dataset.k === cur.k);
+  if (same) return moveTo(to, same);
+  const from = colRows(cur.col).find(r => r.dataset.k === cur.k);
+  const y = from ? from.getBoundingClientRect().top : 0;
+  moveTo(to, rows.reduce((a, b) => Math.abs(b.getBoundingClientRect().top - y) < Math.abs(a.getBoundingClientRect().top - y) ? b : a));
+}
+function setKbd(on){
+  kbd = on;
+  q.placeholder = on ? 'Type to search · arrows move · Enter opens' : 'Search, or move with the arrow keys…';
+  $('#qkey').textContent = on ? 'esc' : '⌘P';
+  applyCursor(on);
+}
+q.addEventListener('focus', () => { clearTimeout(blurTimer); if (!cur) cur = initialCursor(); setKbd(true); });
+// The page loses focus for a moment when the app moves it to another window: wait before hiding the cursor.
+q.addEventListener('blur', () => { blurTimer = setTimeout(() => { if (document.activeElement !== q) setKbd(false); }, 250); });
+
+let searchTimer, searchGen = 0;
+function clearSearch(){ clearTimeout(searchTimer); searchGen++; q.value = ''; query = ''; results = []; idHit = null; }
+q.addEventListener('input', e => {
+  query = e.target.value.trim();
+  clearTimeout(searchTimer);
+  const gen = ++searchGen;
+  if (!query){ results = []; idHit = null; render(); cur = initialCursor(); applyCursor(true); return; }
+  searchTimer = setTimeout(async () => {
+    let j = null;
+    j = await ask('search', {q: query});
+    if (gen !== searchGen) return;   // a newer search, or Esc, came after this one
+    results = (j && j.s) || []; idHit = (j && j.id) || null;
+    cur = null;
+    render();
+    const first = colRows(0)[0];
+    if (first){ cur = {col: 0, k: first.dataset.k}; applyCursor(true); }
+  }, 120);
+});
+q.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){ e.preventDefault(); step(e.key === 'ArrowDown' ? 1 : -1); return; }
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !query){ e.preventDefault(); otherColumn(); return; }
+  if (e.key === 'Escape'){
+    e.preventDefault();
+    if (query){ clearSearch(); render(); cur = initialCursor(); applyCursor(true); return; }
+    cur = null; bridge('blur'); return;
+  }
+  if (e.key === 'Enter'){
+    e.preventDefault();
+    const s = sessionOf(cur && cur.k) || results[0];
+    if (s){ cur = null; openSession(s); }
+  }
+});
+
+function openSession(s){
+  if (query){ setTimeout(() => { clearSearch(); render(); }, 1500); }
+  bridge('open', {k: s.k});
+}
+
+// ---------- building lists ----------
+function groupKey(c, s){
+  if (c.group === 'login') return s.lg || '';
+  if (c.group === 'folder') return (s.rm ? s.rm + ':' : '') + (s.cwd || '~');
+  if (c.group === 'cmux'){
+    for (const g of data.grp || []) if ((g.members||[]).includes(s.ws)) return g.name;
+    return s.be === 'ghostty' ? 'Switchboard' : 'No group';
+  }
+  return s.c || 'Work';
+}
+// Seed the stable orders once from what the list showed before (A–Z and visit time),
+// so switching to them does not move anything.
+function ensureOrders(){
+  if (!data) return;
+  // A row whose key changed (a new session gets its conversation id): keep its place,
+  // its visit time and the keyboard cursor on it.
+  for (const s of data.s){
+    if (!s.was || s.was === s.k) continue;
+    if (manual){ const i = manual.indexOf(s.was); if (i >= 0){ if (manual.includes(s.k)) manual.splice(i, 1); else manual[i] = s.k; store.set('manual', manual); } }
+    if (recent){ const i = recent.indexOf(s.was); if (i >= 0){ if (recent.includes(s.k)) recent.splice(i, 1); else recent[i] = s.k; store.set('recent', recent); } }
+    if (visits[s.was] != null){ visits[s.k] = Math.max(visits[s.k] || 0, visits[s.was]); delete visits[s.was]; store.set('visits', visits); }
+    if (cur && cur.k === s.was) cur.k = s.k;
+  }
+  if (!manual){ manual = data.s.filter(s => s.o).sort((a,b) => a.n.localeCompare(b.n)).map(s => s.k); store.set('manual', manual); }
+  const missing = data.s.filter(s => s.o && !manual.includes(s.k)).map(s => s.k);
+  if (missing.length){ manual = manual.concat(missing); store.set('manual', manual); }
+  if (!recent){ recent = Object.keys(visits).sort((a,b) => visits[b] - visits[a]).slice(0, 30); store.set('recent', recent); }
+}
+function manualIndex(s){ const i = manual ? manual.indexOf(s.k) : -1; return i < 0 ? 1e9 : i; }
+
+function cmp(c){
+  const rank = s => { const st = stateOf(s); return st === 'urgent' ? 0 : NEEDS.has(st) ? 1 : st === 'working' ? 2 : 3; };
+  if (c.sort === 'visited') return (a,b) => (visits[b.k]||0) - (visits[a.k]||0) || (b.la||0) - (a.la||0);
+  if (c.sort === 'active') return (a,b) => (b.la||0) - (a.la||0);
+  if (c.sort === 'name') return (a,b) => a.n.localeCompare(b.n);
+  if (c.sort === 'manual') return (a,b) => manualIndex(a) - manualIndex(b);
+  return (a,b) => rank(a) - rank(b) || (b.la||0) - (a.la||0);
+}
+
+function rowsFor(ci){
+  ensureOrders();
+  const c = colState[ci];
+  const all = data.s;
+  const whereOk = s => c.where === 'any' || (c.where === 'here' ? (s.o && s.be === 'ghostty') : c.where === 'cmux' ? (s.o && s.be !== 'ghostty') : !s.o);
+  if (c.where === 'off'){
+    // Not running anywhere: parked and closed sessions only.
+    const off = all.filter(s => !s.o).sort((a,b) => (b.ca||b.la||0) - (a.ca||a.la||0)).slice(0, 80);
+    return off.length ? off.map(s => ({s})) : [{empty:'Nothing here.'}];
+  }
+  const open = all.filter(s => s.o && whereOk(s));
+  const shown = open.filter(s => c.filter === 'all' || (c.filter === 'needs' ? needsYou(s) : stateOf(s) === 'working'));
+  const out = [];
+  if (c.group === 'none'){
+    shown.sort(cmp(c)).forEach(s => out.push({s}));
+  } else {
+    const groups = new Map();
+    for (const s of shown){ const g = groupKey(c, s); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(s); }
+    const order = data.classes || [];
+    [...groups.keys()].sort((a,b) => ((order.indexOf(a)+1)||99) - ((order.indexOf(b)+1)||99) || a.localeCompare(b)).forEach(g => {
+      const list = groups.get(g).sort(cmp(c));
+      out.push({h:g, n:list.length});
+      if (!folded[g]) list.forEach(s => out.push({s}));
+    });
+  }
+  if (!shown.length) out.push({empty: c.filter === 'needs' ? 'Nothing needs you right now.' : 'Nothing here.'});
+  if (c.filter !== 'all'){
+    const inList = new Set(shown.map(s => s.k));
+    const byKey = new Map(open.map(s => [s.k, s]));
+    const rec = (recent || []).map(k => byKey.get(k)).filter(s => s && !inList.has(s.k)).slice(0, 6);
+    if (rec.length){ out.push({h:'Recently visited', n:rec.length}); if (!folded['Recently visited']) rec.forEach(s => out.push({s})); }
+  }
+  if (c.where !== 'any') return out;
+  const parked = all.filter(s => s.pk && !s.o).sort((a,b) => (b.la||0) - (a.la||0));
+  if (parked.length){ out.push({h:'Parked', n:parked.length}); if (!folded['Parked']) parked.forEach(s => out.push({s})); }
+  const closed = all.filter(s => !s.o && !s.pk && !s.ar).sort((a,b) => (b.ca||0) - (a.ca||0)).slice(0, 40);
+  if (closed.length){ out.push({h:'Closed recently', n:closed.length}); if (!folded['Closed recently']) closed.forEach(s => out.push({s})); }
+  // Done (✓ in the panel): closed for good, kept here. Clicking one resumes it and takes it out.
+  const archive = all.filter(s => s.ar && !s.o).sort((a,b) => (b.aa||0) - (a.aa||0));
+  if (archive.length){ out.push({h:'Archive', n:archive.length}); if (!folded['Archive']) archive.forEach(s => out.push({s})); }
+  return out;
+}
+
+function itemHTML(s){
+  if (s.o && s.be !== 'ghostty'){
+    // Running somewhere else (cmux): one line. Click opens it here.
+    const working = stateOf(s) === 'working';
+    return `<div class="else" data-k="${esc(s.k)}" title="Running in another terminal. Click to open it here.">
+      <span class="dot">${working ? ic('spin',11,2.4,'spin') : '<i></i>'}</span>
+      <span class="nm">${esc(s.n)}</span><span class="tag">elsewhere</span>
+      <span class="age">${ago(s.la)}</span></div>`;
+  }
+  if (!s.o){
+    const L = LOOK[stateOf(s)] || LOOK.closed;
+    return `<div class="old" data-k="${esc(s.k)}" title="${s.ar ? 'In the Archive. Click to resume it here (it leaves the Archive).' : 'Not running. Click to reopen it here.'}">
+      <span style="color:var(--faint)">${ic(L[0],11,2)}</span>
+      <span class="nm">${esc(s.n)}</span><span class="tt">${esc(s.t || s.ns || '')}</span>
+      <span class="age">${ago(s.ca || s.la)}</span></div>`;
+  }
+  const st = stateOf(s), L = LOOK[st] || LOOK.info;
+  const sel = s.sf && s.sf === focusSf;
+  const line = st === 'working' ? (s.wl || s.ns) : (s.ns || s.sd || s.t || '');
+  const labs = (s.lb || []).map(l => `<span class="lab">#${esc(l)}</span>`).join(' ');
+  return `<div class="item${sel ? ' sel' : ''}" data-k="${esc(s.k)}">
+    <span class="ico" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
+    <span class="body">
+      <span class="top"><span class="name">${esc(s.n)}</span>
+        <span class="age${needsYou(s) ? ' has-ack' : ''}">${ago(s.la)}</span>
+        ${needsYou(s) ? `<button class="ack" data-ack="${esc(s.k)}" title="Mark as handled. It comes back when the agent writes something new.">${ic('check',14,2.6)}</button>` : ''}
+      </span>
+      <span class="line"><span class="word" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
+      <span class="meta">${s.a === 'shell' ? `<span>${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span>· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
+    </span></div>`;
+}
+
+function seg(id, options, value, onPick){
+  const el = $(id);
+  el.innerHTML = options.map(([v, label]) => `<button aria-pressed="${v===value}" data-v="${v}">${label}</button>`).join('');
+  el.onclick = e => { const b = e.target.closest('button'); if (b) onPick(isNaN(+b.dataset.v) ? b.dataset.v : +b.dataset.v); };
+}
+
+function colControls(ci){
+  const c = colState[ci], count = f => data.s.filter(s => s.o && f(s)).length;
+  const fchip = (v, label, n) => `<button class="fchip" data-f="${v}" aria-pressed="${c.filter===v}">${label} ${n}</button>`;
+  const pills = (key, opts) => `<span class="seg">${opts.map(([v,l]) => `<button data-${key}="${v}" aria-pressed="${c[key]===v}">${l}</button>`).join('')}</span>`;
+  const wcount = w => data.s.filter(s => w === 'here' ? (s.o && s.be === 'ghostty') : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? !s.o : true).length;
+  const wchip = (v, label) => `<button class="fchip" data-w="${v}" aria-pressed="${c.where===v}">${label} ${v === 'any' ? '' : wcount(v)}</button>`;
+  return `<div class="ctrl">
+    <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
+    <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('all','All',count(()=>true))}</div>
+    <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir'],['cmux','Group']])}</div>
+    <div class="row" title="Sort">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>
+  </div>`;
+}
+
+function nowCard(){
+  const el = $('#now');
+  const s = data?.s.find(x => x.sf === focusSf && x.o);
+  if (!showNow || !s){ el.classList.remove('on'); return; }
+  const st = stateOf(s), L = LOOK[st] || LOOK.info, needs = needsYou(s);
+  const step = st === 'working' ? (s.wl || 'Working…') : (s.ns || (st === 'done' ? 'Nothing left. You can close this session.' : 'Nothing needs you here.'));
+  const reps = (s.rp || []).filter(r => r && r[1]).slice(0, 3);
+  el.innerHTML = `
+    <div class="head"><span class="name">${esc(s.n)}</span><span class="badge ${L[2]}">${ic(L[0],11,2.4)} ${L[1]}</span></div>
+    ${s.t ? `<div class="title">${esc(s.t)}</div>` : ''}
+    <div class="next${needs ? '' : ' calm'}"><span class="lbl">Next step for you</span><p>${esc(step)}</p>
+      ${reps.length ? `<div class="replies">${reps.map(r => `<button class="reply" data-send="${esc(r[1])}" data-k="${esc(s.k)}">${esc(r[0])}</button>`).join('')}</div>` : ''}</div>
+    ${s.sd ? `<div class="said"><b>What it said:</b> ${esc(s.sd)}</div>` : ''}
+    ${s.lm ? `<div class="said"><b>Your last message${s.lma ? ' · ' + ago(s.lma) + ' ago' : ''}:</b> ${esc(s.lm)}</div>` : ''}
+    <div class="meta"><span class="chip">${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>${s.cwd ? `<span class="chip mono">${esc(s.cwd)}</span>` : ''}${s.br ? `<span class="chip mono">⎇ ${esc(s.br)}</span>` : ''}</div>`;
+  el.classList.add('on');
+}
+
+// ---------- render ----------
+// A pasted session id (or "claude --resume <id>"): resume that conversation in its own folder.
+function idHitHTML(){
+  if (!idHit) return '';
+  const short = idHit.id.slice(0, 8);
+  if (idHit.missing) return `<div class="idhit"><div class="t">No conversation ${esc(short)}… on this Mac</div>
+    <div class="m">Claude keeps conversations in ~/.claude/projects. This id is not there.</div></div>`;
+  const logins = [['~/.claude','simplero.com'],['~/.claude-ccl','corre.li'],['~/.claude-ccm','correli.me']];
+  const btns = idHit.open
+    ? `<button class="newbtn" data-resume="${esc(idHit.id)}" data-login="">Go to it</button>`
+    : `<span class="lbl">Resume with</span>` + logins.map(([d, n]) =>
+        `<button class="newbtn" data-resume="${esc(idHit.id)}" data-login="${d}">${n}${d === idHit.login ? ' · last used' : ''}</button>`).join('');
+  return `<div class="idhit">
+    <div class="t">${esc(idHit.title || 'Conversation ' + short + '…')}</div>
+    <div class="m">${ic('folder',11,2.2)} ${esc((idHit.cwd || '').replace(/^\/Users\/[^/]+/, '~'))} · id ${esc(short)}…${idHit.open ? ' · open now' : ''}</div>
+    <div class="btns">${btns}</div></div>`;
+}
+
+// Folders to offer for new sessions: where your sessions run most, plus the current one.
+function folderChoices(){
+  const n = new Map();
+  for (const s of (data && data.s) || []) if (s.cwd && !s.rm) n.set(s.cwd, (n.get(s.cwd) || 0) + 1);
+  const list = [...n.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0]).slice(0, 8);
+  for (const f of ['~/Simplero', newCwd]) if (!list.includes(f)) list.push(f);
+  return list;
+}
+
+function render(){
+  if (!data) return;
+  $('#dirbtn').innerHTML = `${ic('folder',12,2.2)}<span>${esc(newCwd)}</span>${ic('chev',9,2.6)}`;
+  $('#newbtns').innerHTML = ['~/.claude','~/.claude-ccl','~/.claude-ccm'].map(d =>
+    `<button class="newbtn" data-new="${d}"><span class="plus">+</span>${esc(data.spares?.[d]?.lg || d)}</button>`).join('');
+  seg('#colseg', [[1,'1'],[2,'2']], cols, v => { cols = v; store.set('cols', v); render(); });
+
+  const host = $('#cols');
+  const scroll = [...host.querySelectorAll('.list')].map(l => l.scrollTop);
+  if (query){
+    const open = results.filter(s => s.o), older = results.filter(s => !s.o);
+    host.innerHTML = `<div class="col" data-col="0"><div class="list">
+      ${idHitHTML()}
+      ${!results.length && !idHit ? `<div class="empty">No session matches “${esc(query)}”.</div>` : ''}
+      ${open.length ? `<div class="group">Open now <span class="n">${open.length}</span></div>` + open.map(itemHTML).join('') : ''}
+      ${older.length ? `<div class="group">Older <span class="n">${older.length}</span></div>` + older.map(itemHTML).join('') : ''}
+    </div></div>`;
+    applyCursor(false);
+    return;
+  }
+  let html = '';
+  const nav = [];
+  for (let ci = 0; ci < cols; ci++){
+    const rows = rowsFor(ci);
+    if (ci === 0) rows.forEach(r => r.s && r.s.o && nav.push(r.s.k));
+    html += `<div class="col" data-col="${ci}">${colControls(ci)}<div class="list">` + rows.map(r =>
+      r.h ? `<div class="group${folded[r.h] ? ' folded' : ''}" data-fold="${esc(r.h)}"><span class="chev">${ic('chev',10,2.6)}</span>${esc(r.h)} <span class="n">${r.n}</span></div>`
+      : r.empty ? `<div class="empty">${esc(r.empty)}</div>` : itemHTML(r.s)).join('') + `</div></div>`;
+  }
+  host.innerHTML = html;
+  [...host.querySelectorAll('.list')].forEach((l, i) => { if (scroll[i]) l.scrollTop = scroll[i]; });
+  applyCursor(false);
+  const navKey = nav.join(',');
+  if (navKey !== render.lastNav){ render.lastNav = navKey; bridge('nav', {keys: nav}); }
+}
+
+// ---------- events ----------
+document.addEventListener('click', e => {
+  const t = e.target;
+  const ack = t.closest('[data-ack]'); if (ack){ e.stopPropagation(); op({op:'ack', k: ack.dataset.ack}); return; }
+  const send = t.closest('[data-send]'); if (send){ op({op:'send', k: send.dataset.k, text: send.dataset.send}); return; }
+  const nb = t.closest('[data-new]'); if (nb){ op({op:'new', login: nb.dataset.new, cwd: newCwd}); return; }
+  if (t.closest('#dirbtn')){
+    const r = $('#dirbtn').getBoundingClientRect();
+    bridge('folderMenu', {folders: folderChoices(), current: newCwd, x: r.left, y: r.bottom + 4});
+    return;
+  }
+  const rs = t.closest('[data-resume]');
+  if (rs){
+    op({op:'resume_id', id: rs.dataset.resume, login: rs.dataset.login || null});
+    setTimeout(() => { clearSearch(); render(); }, 800);
+    return;
+  }
+  const fold = t.closest('[data-fold]'); if (fold){ const g = fold.dataset.fold; folded[g] = !folded[g]; store.set('folded', folded); render(); return; }
+  const col = t.closest('[data-col]');
+  if (col){
+    const c = colState[+col.dataset.col];
+    const f = t.closest('[data-f]'), g = t.closest('[data-group]'), so = t.closest('[data-sort]'), w = t.closest('[data-w]');
+    if (f || g || so || w){
+      if (f) c.filter = f.dataset.f; if (g) c.group = g.dataset.group; if (so) c.sort = so.dataset.sort; if (w) c.where = w.dataset.w;
+      store.set('col' + col.dataset.col, c); render(); return;
+    }
+  }
+  const row = t.closest('[data-k]');
+  if (row && data){ const s = data.s.find(x => x.k === row.dataset.k) || results.find(x => x.k === row.dataset.k); if (s) openSession(s); }
+});
+document.addEventListener('contextmenu', e => {
+  const row = e.target.closest('[data-k]');
+  if (row){ e.preventDefault(); bridge('menu', {k: row.dataset.k}); }
+});
+setInterval(() => render(), 30000);   // keep "5m ago" fresh
+bridge('ready');
+</script>
+</body>
+</html>

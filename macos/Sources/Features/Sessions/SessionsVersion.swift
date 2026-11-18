@@ -47,10 +47,10 @@ final class SessionsVersion: ObservableObject {
         if c != installedCommit { installedCommit = c }
     }
 
-    /// Quit and start the newly installed build. The session helper remembers
-    /// which sessions were open here and reopens them after the restart.
+    /// Quit and start the newly installed build. The sessions open now reopen after the
+    /// restart, with the same conversation and login.
     func restart() {
-        let open = SessionsStore.shared.payload?.s.filter { $0.isOpen && $0.be == "ghostty" }.count ?? 0
+        let open = SessionsStore.shared.payload?.s.filter { $0.isOpen }.count ?? 0
         let alert = NSAlert()
         alert.messageText = "Restart Switchboard to update to b\(installedBuild)?"
         alert.informativeText = open == 0
@@ -60,22 +60,20 @@ final class SessionsVersion: ObservableObject {
         alert.addButton(withTitle: "Later")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        // Quit only once the helper has saved which sessions to reopen. If it cannot,
-        // stay open (send shows why).
-        SessionsStore.shared.send(["op": "remember_open"]) { ok in
-            guard ok else { return }
-            let path = Bundle.main.bundleURL.path
-            let pid = getpid()
-            // Wait until this copy has fully quit, then open the new one. Never two at once.
-            let relaunch = Process()
-            relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
-            relaunch.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; sleep 0.3; /usr/bin/open \"\(path)\""]
-            try? relaunch.run()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                UserDefaults.standard.set(true, forKey: "sessions.restoreAfterRestart")
-                SessionsVersion.quittingForUpdate = true
-                NSApp.terminate(nil)
-            }
+        // Quit only once the list of sessions to reopen is saved.
+        let (ok, message) = Switchboard.shared.rememberOpen()
+        guard ok else { SessionsStore.shared.showFailure(message); return }
+        let path = Bundle.main.bundleURL.path
+        let pid = getpid()
+        // Wait until this copy has fully quit, then open the new one. Never two at once.
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; sleep 0.3; /usr/bin/open \"\(path)\""]
+        try? relaunch.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            UserDefaults.standard.set(true, forKey: "sessions.restoreAfterRestart")
+            SessionsVersion.quittingForUpdate = true
+            NSApp.terminate(nil)
         }
     }
 }
@@ -86,7 +84,6 @@ private let selectedBlueTitle = Color(red: 0.36, green: 0.52, blue: 1.0)
 /// Update button when a newer build is installed.
 struct SessionsTitlebarBadge: View {
     @ObservedObject var version = SessionsVersion.shared
-    @AppStorage("sessions.sidebar.web") private var web = true
 
     var body: some View {
         HStack(spacing: 6) {

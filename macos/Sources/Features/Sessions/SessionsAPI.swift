@@ -2,9 +2,10 @@ import AppKit
 import Foundation
 import Network
 
-/// A small local HTTP API so the session helper (~/code/session-inbox/server.py)
-/// can see and drive this app's terminals: list them (with tty and pid), read
-/// their text, type into them, focus, close, and open new tabs.
+/// A small local HTTP API for checks and scripts: list the terminals (with tty and
+/// pid), read their text, type into them, focus, close, open tabs, see what the
+/// sidebar gets, run a sidebar op, and render a window to PNG without taking the screen.
+/// The terminal helpers below are also what the session tracker (Switchboard) uses.
 ///
 /// Listens on 127.0.0.1 only. Every request must carry the token written to
 /// ~/.config/session-inbox/ghostty-api.json at launch.
@@ -83,6 +84,41 @@ final class SessionsAPI {
                 var buf = buffer
                 if let data { buf.append(data) }
                 if let req = Request(buf) {
+                    if req.method == "POST", req.path == "/sb/op", req.headers["x-token"] == self.token {
+                        // For checks: run an op the way the sidebar does, and answer when it is done.
+                        Task { @MainActor in
+                            let (ok, message) = await Switchboard.shared.dispatch(req.json)
+                            self.respond(conn, status: 200, body: ["ok": ok, "message": message])
+                        }
+                        return
+                    }
+                    if req.method == "POST", req.path == "/sb/eval", req.headers["x-token"] == self.token {
+                        // For checks: run JavaScript in the sidebar or the panel page and return its result.
+                        let page = req.json["page"] as? String == "banner" ? SessionsWeb.banner : SessionsWeb.shared
+                        page.webView.callAsyncJavaScript(req.json["js"] as? String ?? "", arguments: [:], in: nil, in: .page) { result in
+                            Task { @MainActor in
+                                switch result {
+                                case .success(let v): self.respond(conn, status: 200, body: ["result": v ?? NSNull()])
+                                case .failure(let e): self.respond(conn, status: 500, body: ["error": "\(e)"])
+                                }
+                            }
+                        }
+                        return
+                    }
+                    if req.method == "GET", req.path == "/sb/snap", req.headers["x-token"] == self.token {
+                        // For checks: a picture of the sidebar or the panel page (window pictures leave web views blank).
+                        let page = req.query["page"] == "banner" ? SessionsWeb.banner : SessionsWeb.shared
+                        page.webView.takeSnapshot(with: nil) { image, _ in
+                            Task { @MainActor in
+                                guard let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                                      let png = rep.representation(using: .png, properties: [:]) else {
+                                    self.respond(conn, status: 500, body: ["error": "no image"]); return
+                                }
+                                self.respond(conn, status: 200, body: ["png": png.base64EncodedString()])
+                            }
+                        }
+                        return
+                    }
                     let (status, body) = self.handle(req)
                     self.respond(conn, status: status, body: body)
                 } else if done || error != nil || buf.count > (4 << 20) {
@@ -150,46 +186,31 @@ final class SessionsAPI {
             let text = n > 0 ? all.components(separatedBy: "\n").suffix(n).joined(separator: "\n") : all
             return (200, ["text": text])
         case ("POST", "/input"):
-            guard let view = surface(req.json["id"] as? String), let model = view.surfaceModel else {
-                return (404, ["error": "no such terminal"])
-            }
-            if let text = req.json["text"] as? String, !text.isEmpty { model.sendText(text) }
-            if (req.json["enter"] as? Bool) == true {
-                let delay = (req.json["text"] as? String)?.isEmpty == false ? 0.25 : 0
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    model.sendKeyEvent(Ghostty.Input.KeyEvent(synthesizing: .enter, action: .press, mods: [], translationMods: []))
-                    model.sendKeyEvent(Ghostty.Input.KeyEvent(synthesizing: .enter, action: .release, mods: [], translationMods: []))
-                }
-            }
+            guard let id = req.json["id"] as? String,
+                  SessionsAPI.sendInput(id, text: req.json["text"] as? String ?? "", enter: (req.json["enter"] as? Bool) == true)
+            else { return (404, ["error": "no such terminal"]) }
             return (200, ["ok": true])
         case ("POST", "/focus"):
             guard let view = surface(req.json["id"] as? String) else { return (404, ["error": "no such terminal"]) }
             SessionsAPI.focus(view)
             return (200, ["ok": true])
         case ("POST", "/close"):
-            guard let view = surface(req.json["id"] as? String),
-                  let controller = BaseTerminalController.controller(owning: view) else {
-                return (404, ["error": "no such terminal"])
-            }
-            // The helper closes on purpose (switch login, park, close): no Undo, so the old
-            // process ends now instead of living on for the Undo timeout.
-            SessionsAPI.withoutUndo(controller) { controller.closeSurface(view, withConfirmation: false) }
+            guard let id = req.json["id"] as? String, SessionsAPI.closeTerminal(id) else { return (404, ["error": "no such terminal"]) }
             return (200, ["ok": true])
         case ("POST", "/closewindow"):
-            // Done with a session: close every tab of that session, without asking.
-            // The other sessions in the window stay.
-            guard let view = surface(req.json["id"] as? String),
-                  let controller = BaseTerminalController.controller(owning: view) as? TerminalController else {
-                return (404, ["error": "no such terminal"])
-            }
-            SessionsAPI.withoutUndo(controller) {
-                for window in SessionsAPI.windows(ofWorkspace: controller.sessionsWorkspace) {
-                    (window.windowController as? TerminalController)?.closeTabImmediately(registerRedo: false)
-                }
-            }
+            guard let id = req.json["id"] as? String, SessionsAPI.closeSession(id) else { return (404, ["error": "no such terminal"]) }
             return (200, ["ok": true])
         case ("POST", "/new"):
-            return newTab(req.json)
+            guard let made = SessionsAPI.openTab(
+                cwd: req.json["cwd"] as? String, input: req.json["input"] as? String,
+                env: req.json["env"] as? [String: String] ?? [:], focus: (req.json["focus"] as? Bool) ?? true,
+                split: (req.json["split"] as? Bool) == true, tabOf: req.json["tab_of"] as? String,
+                title: req.json["title"] as? String)
+            else { return (500, ["error": "no terminal"]) }
+            return (200, ["id": made.id, "tab": made.tab, "ws": made.ws])
+        case ("GET", "/sb/payload"):
+            // For checks: what the sidebar gets now.
+            return (200, Switchboard.shared.payloadObject())
         case ("POST", "/newtab"):
             // A real tab in the front session window (what ⌘T does). Used to check the banner tabs.
             guard let appDelegate = NSApp.delegate as? AppDelegate,
@@ -239,10 +260,7 @@ final class SessionsAPI {
         allControllers().flatMap { $0.surfaceTree.root?.leaves() ?? [] }
     }
 
-    private func surface(_ id: String?) -> Ghostty.SurfaceView? {
-        guard let id else { return nil }
-        return SessionsAPI.allSurfaces().first(where: { $0.id.uuidString == id })
-    }
+    private func surface(_ id: String?) -> Ghostty.SurfaceView? { SessionsAPI.surface(id: id) }
 
     // MARK: One window, every session a set of tabs in it
 
@@ -334,64 +352,132 @@ final class SessionsAPI {
     }
 
     private func terminals() -> [[String: Any]] {
+        SessionsAPI.terminalList().map { t in
+            ["id": t.id, "tab": t.tab, "ws": t.ws, "tab_title": t.tabTitle, "title": t.title,
+             "program_title": t.programTitle, "tty": t.tty, "pid": t.pid, "cwd": t.cwd,
+             "focused": t.focused, "selected": t.selected, "surfaces_in_tab": t.surfacesInTab]
+        }
+    }
+
+    /// One terminal of the app, as the session tracker sees it.
+    struct Terminal {
+        let id: String
+        /// The tab (window) it is in. Stable while the tab lives.
+        let tab: String
+        /// The session it belongs to (its tabs share this id).
+        let ws: String
+        let tabTitle: String
+        let title: String
+        /// What the program in the terminal set (Claude's own title), even under a fixed title.
+        let programTitle: String
+        let tty: String
+        let pid: Int
+        let cwd: String
+        let focused: Bool
+        let selected: Bool
+        let surfacesInTab: Int
+    }
+
+    static func terminalList() -> [Terminal] {
         let key = NSApp.keyWindow
-        var out: [[String: Any]] = []
-        for controller in SessionsAPI.allControllers() {
+        var out: [Terminal] = []
+        for controller in allControllers() {
             let tab = ScriptTab.stableID(controller: controller)
             let ws = (controller as? TerminalController)?.sessionsWorkspace ?? ""
             let tabTitle = controller.window?.title ?? ""
-            for view in controller.surfaceTree.root?.leaves() ?? [] {
-                out.append([
-                    "id": view.id.uuidString,
-                    "tab": tab,
-                    "ws": ws,
-                    "tab_title": tabTitle,
-                    "title": view.titleOverride ?? view.title,
-                    // What the program in the terminal set (Claude's own title), even under a fixed title.
-                    "program_title": view.title,
-                    "tty": view.surfaceModel?.ttyName ?? "",
-                    "pid": view.surfaceModel?.foregroundPID ?? 0,
-                    "cwd": view.pwd ?? "",
-                    "focused": controller.window === key && controller.focusedSurface === view,
-                    "selected": controller.window.map { $0.tabGroup?.selectedWindow ?? $0 } === controller.window,
-                    "surfaces_in_tab": controller.surfaceTree.root?.leaves().count ?? 1,
-                ])
+            let leaves = controller.surfaceTree.root?.leaves() ?? []
+            for view in leaves {
+                out.append(Terminal(
+                    id: view.id.uuidString, tab: tab, ws: ws, tabTitle: tabTitle,
+                    title: view.titleOverride ?? view.title, programTitle: view.title,
+                    tty: view.surfaceModel?.ttyName ?? "", pid: view.surfaceModel?.foregroundPID ?? 0,
+                    cwd: view.pwd ?? "",
+                    focused: controller.window === key && controller.focusedSurface === view,
+                    selected: controller.window.map { $0.tabGroup?.selectedWindow ?? $0 } === controller.window,
+                    surfacesInTab: leaves.count))
             }
         }
         return out
     }
 
-    private func newTab(_ json: [String: Any]) -> (Int, Any) {
-        guard let appDelegate = NSApp.delegate as? AppDelegate else { return (500, ["error": "no app"]) }
+    static func surface(id: String?) -> Ghostty.SurfaceView? {
+        guard let id else { return nil }
+        return allSurfaces().first(where: { $0.id.uuidString == id })
+    }
+
+    /// The screen text of a terminal (with scrollback), the last `lines` lines.
+    static func screenText(_ id: String, lines: Int = 120) -> String? {
+        guard let view = surface(id: id) else { return nil }
+        let all = view.cachedScreenContents.get()
+        return lines > 0 ? all.components(separatedBy: "\n").suffix(lines).joined(separator: "\n") : all
+    }
+
+    /// Type text into a terminal, then Enter if asked.
+    static func sendInput(_ id: String, text: String, enter: Bool) -> Bool {
+        guard let view = surface(id: id), let model = view.surfaceModel else { return false }
+        if !text.isEmpty { model.sendText(text) }
+        if enter {
+            let delay = text.isEmpty ? 0 : 0.25
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                model.sendKeyEvent(Ghostty.Input.KeyEvent(synthesizing: .enter, action: .press, mods: [], translationMods: []))
+                model.sendKeyEvent(Ghostty.Input.KeyEvent(synthesizing: .enter, action: .release, mods: [], translationMods: []))
+            }
+        }
+        return true
+    }
+
+    /// Close one terminal, without asking and without Undo (the process ends now
+    /// instead of living on for the Undo timeout).
+    static func closeTerminal(_ id: String) -> Bool {
+        guard let view = surface(id: id), let controller = BaseTerminalController.controller(owning: view) else { return false }
+        withoutUndo(controller) { controller.closeSurface(view, withConfirmation: false) }
+        return true
+    }
+
+    /// Close every tab of the session this terminal belongs to, without asking.
+    /// The other sessions in the window stay.
+    static func closeSession(_ id: String) -> Bool {
+        guard let view = surface(id: id),
+              let controller = BaseTerminalController.controller(owning: view) as? TerminalController else { return false }
+        withoutUndo(controller) {
+            for window in windows(ofWorkspace: controller.sessionsWorkspace) {
+                (window.windowController as? TerminalController)?.closeTabImmediately(registerRedo: false)
+            }
+        }
+        return true
+    }
+
+    /// Open a terminal: a new session (a new tab at the end of the one window), or with
+    /// `tabOf` (a terminal id) a new tab of that terminal's session.
+    static func openTab(cwd: String?, input: String?, env: [String: String], focus: Bool,
+                        split: Bool = false, tabOf: String? = nil, title: String? = nil) -> (id: String, tab: String, ws: String)? {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return nil }
         var config = Ghostty.SurfaceConfiguration()
-        if let cwd = json["cwd"] as? String, !cwd.isEmpty { config.workingDirectory = cwd }
-        if let input = json["input"] as? String, !input.isEmpty { config.initialInput = input }
-        if let env = json["env"] as? [String: String] { config.environmentVariables = env }
-        let focus = (json["focus"] as? Bool) ?? true
+        if let cwd, !cwd.isEmpty { config.workingDirectory = cwd }
+        if let input, !input.isEmpty { config.initialInput = input }
+        config.environmentVariables = env
         // One window holds every session, like cmux: a new session is a new tab at the
         // end of it (the macOS tab bar is hidden; the sidebar and the panel show them).
-        // With "tab_of" (a terminal id) it is a new tab of that terminal's session instead.
-        let tabOf = (json["tab_of"] as? String).flatMap { id in SessionsAPI.allSurfaces().first { $0.id.uuidString == id } }
-            .flatMap { BaseTerminalController.controller(owning: $0)?.window }
-        let host = tabOf ?? SessionsAPI.mainWindow()
+        let parent = surface(id: tabOf).flatMap { BaseTerminalController.controller(owning: $0)?.window }
+        let host = parent ?? mainWindow()
         let controller: TerminalController
-        if let host, let tab = TerminalController.newTab(appDelegate.ghostty, from: tabOf ?? host.tabGroup?.windows.last ?? host,
+        if let host, let tab = TerminalController.newTab(appDelegate.ghostty, from: parent ?? host.tabGroup?.windows.last ?? host,
                                                           withBaseConfig: config, select: focus) {
             controller = tab
         } else {
             controller = TerminalController.newWindow(appDelegate.ghostty, withBaseConfig: config)
         }
         // newTab gave it the session of its parent; a new session gets its own id.
-        if tabOf == nil { controller.sessionsWorkspace = UUID().uuidString }
-        guard let view = controller.surfaceTree.root?.leaves().first else { return (500, ["error": "no surface"]) }
-        if let title = json["title"] as? String, !title.isEmpty { view.titleOverride = title }
-        if (json["split"] as? Bool) == true {
+        if parent == nil { controller.sessionsWorkspace = UUID().uuidString }
+        guard let view = controller.surfaceTree.root?.leaves().first else { return nil }
+        if let title, !title.isEmpty { view.titleOverride = title }
+        if split {
             var shell = Ghostty.SurfaceConfiguration()
             shell.workingDirectory = config.workingDirectory
             _ = controller.newSplit(at: view, direction: .right, baseConfig: shell)
             controller.focusSurface(view)
         }
-        return (200, ["id": view.id.uuidString, "tab": ScriptTab.stableID(controller: controller), "ws": controller.sessionsWorkspace])
+        return (view.id.uuidString, ScriptTab.stableID(controller: controller), controller.sessionsWorkspace)
     }
 }
 

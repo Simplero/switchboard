@@ -1,0 +1,987 @@
+import AppKit
+import Foundation
+
+/// The session tracker, inside the app (it replaces the Python session helper).
+///
+/// - Finds every coding agent (Claude, Codex, OpenCode, Grok) in the app's terminals
+///   every 1.5 s, and keeps a registry of sessions on disk, open or closed.
+/// - Says what each session needs from you (screen state, and Haiku's reading of
+///   the end of the terminal), its login, folder, branch and plan usage.
+/// - Runs the sidebar's actions: open, new, new shell, done, close, park, switch
+///   login, resume by id, rename, labels, classes, reply, restart for an update.
+/// - Feeds the sidebar and the panel (two web pages shipped in the app).
+///
+/// Everything here runs on the main thread, so the registry has one writer and the
+/// scan and the actions cannot race. Slow reads run in the background (SBBackground).
+@MainActor
+final class Switchboard {
+    static let shared = Switchboard()
+
+    private(set) var reg = SBRegistry()
+    private var summaries: [String: SBSummary] = [:]
+    private var summaryOrder: [String] = []
+    private var pendingSummaries = Set<String>()
+    private var usage: [String: Any] = [:]
+    private var usageAt: Double = 0
+    private var artifacts: [String: [String]] = [:]
+    /// Terminals opened for an agent, and when: an agent starts in a plain shell, so
+    /// these are not taken for shell sessions during their first 20 s.
+    private var recentNew: [String: Double] = [:]
+    private var scanning = false
+    private var started = false
+    private var timer: Timer?
+    private var slowTimer: Timer?
+    private var lastPushed: Data?
+    private var saveScheduled = false
+    private(set) var loaded = false
+
+    static let scanEvery = 1.5
+    static let defaultFolder = "~/Simplero"
+    private let summariesOn = ProcessInfo.processInfo.environment["SWITCHBOARD_NO_SUMMARIES"] == nil
+
+    private var now: Double { Date().timeIntervalSince1970 }
+
+    // MARK: Start
+
+    func start() {
+        guard !started else { return }
+        started = true
+        // The old Python helper must not write the registry any more (the test copy
+        // has its own data folder and leaves the real one alone).
+        if !SBPaths.overridden { SBBackground.stopOldHelper() }
+        reg = SBRegistry.load()
+        loadSummaries()
+        // Sessions that ran in cmux are not shown as running here: they show as
+        // closed and reopen here (cmux is no longer read).
+        for (k, e) in reg.sessions where e.isOpen && e.backend != "ghostty" {
+            var x = e
+            x.open = false
+            x.closed_at = e.last_seen ?? now
+            x.closed_reason = "cmux"
+            x.screen = nil
+            x.state = stateOf(x)
+            reg.sessions[k] = x
+        }
+        let restoring = UserDefaults.standard.bool(forKey: "sessions.restoreAfterRestart")
+        if restoring {
+            UserDefaults.standard.set(false, forKey: "sessions.restoreAfterRestart")
+            markStaleClosed(reason: "restart")
+        }
+        loaded = true
+        save()
+        timer = Timer.scheduledTimer(withTimeInterval: Self.scanEvery, repeats: true) { _ in
+            Task { @MainActor in await Switchboard.shared.scan() }
+        }
+        slowTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+            Task { @MainActor in Switchboard.shared.slowWork() }
+        }
+        slowWork()
+        // Changes from the last second must not be lost when the app quits.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { Switchboard.shared.saveNow(wait: true) }
+        }
+        Task { @MainActor in
+            await scan()
+            if restoring {
+                // The app opens one plain shell at launch. After a restart the sessions
+                // come back as tabs of the one window, so that untouched one closes.
+                let initial = NSApp.windows.filter { $0.windowController is BaseTerminalController }
+                let (ok, msg) = await restoreAfterRestart()
+                if !ok { SessionsStore.shared.showFailure(msg) }
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                SessionsStore.closeUntouched(initial)
+            }
+        }
+    }
+
+    // MARK: Persistence
+
+    private func save() {
+        guard loaded, !saveScheduled else { return }
+        saveScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.saveScheduled = false
+                self.saveNow()
+            }
+        }
+    }
+
+    func saveNow(wait: Bool = false) {
+        guard loaded, let data = reg.encoded() else { return }
+        if wait {
+            SBFiles.queue.sync { SBFiles.writeAtomic(data, SBPaths.registry) }
+        } else {
+            SBFiles.queue.async { SBFiles.writeAtomic(data, SBPaths.registry) }
+        }
+    }
+
+    private func loadSummaries() {
+        guard let d = FileManager.default.contents(atPath: SBPaths.summaries),
+              let top = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+        let decoder = JSONDecoder()
+        for (k, v) in top {
+            if let vd = try? JSONSerialization.data(withJSONObject: v), let s = try? decoder.decode(SBSummary.self, from: vd) {
+                summaries[k] = s
+                summaryOrder.append(k)
+            }
+        }
+    }
+
+    private func saveSummaries() {
+        let encoder = JSONEncoder()
+        var top: [String: Any] = [:]
+        for (k, s) in summaries {
+            if let d = try? encoder.encode(s), let o = try? JSONSerialization.jsonObject(with: d) { top[k] = o }
+        }
+        SBFiles.queue.async { SBFiles.writeJSON(top, SBPaths.summaries) }
+    }
+
+    // MARK: Scan
+
+    func stateOf(_ e: SBEntry) -> String {
+        if e.parked == true { return "parked" }
+        if !e.isOpen { return e.archived == true ? "archived" : "closed" }
+        if e.agent == "shell" { return "shell" }
+        if e.screen == "working" { return "working" }
+        if e.screen == "permission" { return "permission" }
+        guard let s = e.summary else { return "reading" }
+        let kind = s.kind ?? "info"
+        if ["question", "review", "heads_up"].contains(kind), let ack = e.ack_key, ack == e.summary_key {
+            return "handled"     // you marked this message as handled; a new agent message brings it back
+        }
+        return kind
+    }
+
+    private func defaultClass(_ cwd: String?) -> String {
+        (cwd ?? "").hasPrefix(SBPaths.home + "/Brain") ? "Brain" : "Work"
+    }
+
+    private func basename(_ p: String?) -> String {
+        var s = p ?? ""
+        while s.count > 1 && s.hasSuffix("/") { s.removeLast() }
+        return (s as NSString).lastPathComponent
+    }
+
+    /// Like Claude Code: the name you gave it (/rename), else Claude's own terminal
+    /// title, else the summary's title, else the folder name.
+    private func sessionName(_ e: SBEntry, transcriptTitle: String?, terminalTitle: String) -> String {
+        if e.agent == "claude", let t = transcriptTitle, !t.isEmpty { return t }
+        if let t = SBScreen.cleanTerminalTitle(terminalTitle) { return t }
+        if let t = e.summary?.title.map(SBScreen.strip), !t.isEmpty { return t }
+        let b = basename(e.cwd)
+        return b.isEmpty ? "untitled" : b
+    }
+
+    func scan() async {
+        guard loaded, !scanning else { return }
+        scanning = true
+        defer { scanning = false }
+        let t0 = now   // entries created or reopened after this are not in this scan's snapshot
+        let ttys = SessionsAPI.terminalList().map(\.tty).filter { !$0.isEmpty }
+        let agents = await Task.detached(priority: .utility) { SBBackground.agents(onTTYs: ttys) }.value
+        merge(t0: t0, agents: agents)
+        publish()
+    }
+
+    private func merge(t0: Double, agents: [SBBackground.Agent]) {
+        let now = self.now
+        let terms = SessionsAPI.terminalList()   // fresh: tabs may have opened or closed meanwhile
+        let byTTY = Dictionary(terms.map { ($0.tty, $0) }, uniquingKeysWith: { a, _ in a })
+        var seen = Set<String>()
+        var perTab: [String: Int] = [:]
+        let found = agents.compactMap { a in byTTY[a.tty].map { (a, $0) } }
+        for (_, t) in found { perTab["g:" + t.tab, default: 0] += 1 }
+
+        for (a, t) in found {
+            let wid = "g:" + t.tab, sf = t.id
+            let title = !t.programTitle.isEmpty ? t.programTitle : (!t.title.isEmpty ? t.title : t.tabTitle)
+            let screen = SessionsAPI.screenText(sf) ?? ""
+            var key = a.sid.map { "\(a.kind):\($0)" } ?? "surface:\(sf)"
+            if a.sid == nil, let known = reg.sessions.first(where: { $0.value.surface_id == sf && $0.value.isOpen
+                && !$0.key.hasPrefix("surface:") && !$0.key.hasPrefix("shell:") })?.key {
+                // The session file can be missing for a moment; keep the real key this tab already has.
+                key = known
+            }
+            let cwd = a.cwd ?? (t.cwd.isEmpty ? nil : t.cwd)
+            // The same terminal now runs another conversation (after /clear, a fork, a resume):
+            // carry the name, class and labels over.
+            if reg.sessions[key] == nil,
+               let old = reg.sessions.first(where: { $0.value.surface_id == sf && $0.value.isOpen && $0.key != key })?.key,
+               var moved = reg.sessions.removeValue(forKey: old) {
+                moved.key = key
+                moved.session_id = a.sid
+                moved.agent = a.kind
+                moved.was = old
+                reg.sessions[key] = moved
+            }
+            var e = reg.sessions[key] ?? {
+                var n = SBEntry(key: key, agent: a.kind)
+                n.session_id = a.sid
+                n.name = title
+                n.cls = defaultClass(cwd)
+                n.labels = []
+                n.login_dir = a.loginDir
+                n.first_seen = now
+                n.custom_name = false
+                return n
+            }()
+            if e.custom_name != true {
+                e.cwd = e.cwd ?? cwd
+                e.name = sessionName(e, transcriptTitle: a.transcriptTitle, terminalTitle: title)
+            }
+            e.shared_ws = (perTab[wid] ?? 0) > 1
+            e.tab_title = nil
+            e.open = true
+            e.closed_at = nil
+            e.closed_reason = nil
+            e.opening_at = nil
+            e.workspace_id = wid
+            e.surface_id = sf
+            e.pid = a.pid
+            e.cwd = cwd
+            e.branch = a.branch
+            e.last_seen = now
+            e.backend = "ghostty"
+            // You switch logins on purpose (quota), so the running login is the truth.
+            // Reopen always uses the login a session last ran with.
+            e.login_dir = a.loginDir
+            let st = SBScreen.state(screen)
+            e.screen = st
+            e.working_line = st == "working" ? SBScreen.workingLine(screen) : ""
+            e.tail = SBScreen.cleanTail(screen)
+            e.last_message = nil
+            e.last_message_at = nil
+            if let mt = a.transcriptMtime { e.last_activity = mt }
+            if let sid = a.sid { e.artifacts = Array((artifacts[sid] ?? []).suffix(10)) }
+            let skey = SBScreen.summaryKey(screen)
+            if st != "working", let tail = e.tail, !tail.isEmpty {
+                if let s = summaries[skey] {
+                    e.summary = s
+                } else {
+                    // A new agent message: show "Reading" until Haiku answers, never the old text.
+                    if e.summary_key != skey { e.summary = nil }
+                    requestSummary(skey, tail)
+                }
+            }
+            if st == "working" { e.summary = nil }
+            e.summary_key = skey
+            e.split = t.surfacesInTab > 1
+            e.state = stateOf(e)
+            reg.sessions[key] = e
+            seen.insert(key)
+        }
+
+        // One window holds every session; the tabs of a session share a "ws" id. A session
+        // with no agent in any of its tabs is a shell session, so every session shows in the sidebar.
+        let agentSurfaces = Set(found.map { $0.1.id })
+        var byWS: [String: [SessionsAPI.Terminal]] = [:]
+        for t in terms where !t.ws.isEmpty { byWS[t.ws, default: []].append(t) }
+        let agentWSs = Set(byWS.filter { $0.value.contains { agentSurfaces.contains($0.id) } }.keys)
+        recentNew = recentNew.filter { now - $0.value < 120 }
+        for (ws, ts) in byWS where !agentWSs.contains(ws) {
+            let k = "shell:" + ws
+            var e: SBEntry
+            if let x = reg.sessions[k] {
+                e = x
+            } else {
+                // A Claude session starts in a shell: give it a moment before calling it a shell.
+                if ts.contains(where: { now - (recentNew[$0.id] ?? 0) < 20 }) { continue }
+                let cwd0 = ts[0].cwd.isEmpty ? SBPaths.home : ts[0].cwd
+                e = SBEntry(key: k, agent: "shell")
+                e.labels = []
+                e.cls = defaultClass(cwd0)
+                e.first_seen = now
+                e.custom_name = false
+                e.backend = "ghostty"
+                e.last_activity = now
+            }
+            let t = ts.first(where: { $0.id == e.surface_id }) ?? ts[0]
+            e.open = true
+            e.closed_at = nil
+            e.closed_reason = nil
+            e.surface_id = t.id
+            e.workspace_id = "g:" + t.tab
+            reg.sessions[k] = e
+            seen.insert(k)
+        }
+
+        // Shell sessions: open while their terminal exists. Name = folder; line = what runs in it.
+        let bySurface = Dictionary(terms.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for (k, var e) in reg.sessions where e.agent == "shell" && e.isOpen {
+            if k.hasPrefix("shell:") && agentWSs.contains(String(k.dropFirst(6))) { continue }   // an agent took over: this row closes
+            guard let t = bySurface[e.surface_id ?? ""] else { continue }
+            let oldCwd = e.cwd
+            if !t.cwd.isEmpty { e.cwd = t.cwd }
+            e.workspace_id = "g:" + t.tab
+            if e.custom_name != true {
+                let b = basename(e.cwd)
+                e.name = b.isEmpty ? "~" : b
+            }
+            let running = SBScreen.cleanTerminalTitle(!t.programTitle.isEmpty ? t.programTitle : t.title)
+            let line = running.map { $0.hasPrefix("/") || $0.hasPrefix("~") ? "" : $0 } ?? ""
+            if line != (e.working_line ?? "") || e.cwd != oldCwd { e.last_activity = now }
+            e.working_line = line
+            e.last_seen = now
+            e.state = stateOf(e)
+            reg.sessions[k] = e
+            seen.insert(k)
+        }
+
+        // Sessions not running any more.
+        var closedNow: [String] = []
+        for (k, var e) in reg.sessions where e.isOpen && !seen.contains(k) {
+            if (e.first_seen ?? 0) > t0 || (e.opening_at ?? 0) > t0 { continue }   // created or reopened while this scan ran
+            e.open = false
+            e.closed_at = now
+            e.closed_reason = e.closing ?? "vanished"
+            e.closing = nil
+            e.screen = nil
+            e.state = stateOf(e)
+            reg.sessions[k] = e
+            closedNow.append(k)
+        }
+        for k in closedNow where reg.sessions[k]?.agent == "shell" { reg.sessions.removeValue(forKey: k) }
+        save()
+    }
+
+    private func requestSummary(_ key: String, _ tail: String) {
+        guard summariesOn, !pendingSummaries.contains(key) else { return }
+        pendingSummaries.insert(key)
+        SBBackground.summaryQueue.addOperation {
+            let s = SBBackground.summarize(tail)
+            Task { @MainActor in Switchboard.shared.summaryDone(key, s) }
+        }
+    }
+
+    private func summaryDone(_ key: String, _ s: SBSummary?) {
+        pendingSummaries.remove(key)
+        guard let s else { return }
+        summaries[key] = s
+        summaryOrder.removeAll { $0 == key }
+        summaryOrder.append(key)
+        if summaries.count > 2000 {
+            let inUse = Set(reg.sessions.values.compactMap(\.summary_key))
+            var dropped = 0
+            summaryOrder.removeAll { k in
+                guard dropped < 500, !inUse.contains(k) else { return false }
+                summaries.removeValue(forKey: k)
+                dropped += 1
+                return true
+            }
+        }
+        saveSummaries()
+        // Show it now, not at the next scan.
+        for (k, var e) in reg.sessions where e.isOpen && e.summary_key == key && e.screen != "working" {
+            e.summary = s
+            if e.custom_name != true && e.agent != "shell" && (e.name ?? "").isEmpty { e.name = s.title }
+            e.state = stateOf(e)
+            reg.sessions[k] = e
+        }
+        publish()
+    }
+
+    /// Every 60 s: plan usage (every 3 minutes), artifact links.
+    private func slowWork() {
+        let sessions = reg.sessions.values.compactMap { e in e.session_id.map { ($0, e.login_dir) } }
+        let fetchUsage = now - usageAt >= 180
+        if fetchUsage { usageAt = now }
+        Task.detached(priority: .utility) {
+            var fresh: [String: [String: Any]] = [:]
+            if fetchUsage {
+                for d in SBLogins.dirs { if let u = SBBackground.fetchUsage(d) { fresh[d] = u } }
+            }
+            SBBackground.indexArtifacts(sessions.map { (sid: $0.0, loginDir: $0.1) })
+            let arts = SBBackground.artifactsBySession()
+            await MainActor.run {
+                let sb = Switchboard.shared
+                sb.artifacts = arts
+                if fetchUsage { sb.updateUsage(fresh) }
+            }
+        }
+    }
+
+    /// Usage per login, with a history of the weekly % (one point per 20 minutes, 7 days)
+    /// for the graph in the panel.
+    private func updateUsage(_ fresh: [String: [String: Any]]) {
+        var hist = (SBFiles.readJSON(SBPaths.usageHistory) as? [String: [[Any]]]) ?? [:]
+        let now = self.now
+        var out: [String: Any] = [:]
+        for d in SBLogins.dirs {
+            var u = fresh[d] ?? ((usage[d] as? [String: Any]) ?? [:])
+            u.removeValue(forKey: "hist")
+            var h = (hist[d] ?? []).filter { now - (($0.first as? NSNumber)?.doubleValue ?? 0) < 7 * 86400 }
+            if let wk = u["wk"] as? [String: Any], let p = wk["p"] {
+                let last = (h.last?.first as? NSNumber)?.doubleValue ?? 0
+                if h.isEmpty || now - last > 1200 {
+                    h.append([Int(now), p, (u["h5"] as? [String: Any])?["p"] ?? NSNull()])
+                }
+            }
+            hist[d] = h
+            u["hist"] = h
+            out[d] = u
+        }
+        SBFiles.queue.async { SBFiles.writeJSON(hist, SBPaths.usageHistory) }
+        usage = out
+        publish()
+    }
+
+    // MARK: Feeding the pages
+
+    private func compact(_ e: SBEntry) -> [String: Any] {
+        let s = e.summary
+        let st = e.state ?? stateOf(e)
+        // Reply buttons only for a real choice the agent offered (a question or a prompt).
+        let offered = (st == "question" || st == "permission") ? (s?.replies ?? []) : []
+        let reps: [[String]] = offered.prefix(3).compactMap { r in
+            guard let send = r.send, !send.isEmpty else { return nil }
+            return [r.label ?? send, send]
+        }
+        var ns: String
+        switch st {
+        case "working", "shell": ns = e.working_line ?? ""
+        case "permission": ns = "Answer the permission dialog in the terminal."
+        default: ns = (s?.next_step).flatMap { $0.isEmpty ? nil : $0 } ?? s?.said ?? ""
+        }
+        var name = e.name ?? "untitled"
+        if name.isEmpty { name = "untitled" }
+        if e.shared_ws == true && e.isOpen {
+            let extra = (s?.title).flatMap { $0.isEmpty ? nil : $0 } ?? SBLogins.short(e.login_dir)
+            name = "\(name) · \(extra)"
+        }
+        func n(_ x: Any?) -> Any { x ?? NSNull() }
+        return [
+            "k": e.key, "n": name, "c": e.cls ?? "Work", "lb": e.labels ?? [],
+            "lg": e.agent == "shell" ? NSNull() as Any : SBLogins.short(e.login_dir) as Any, "ld": n(e.login_dir), "a": n(e.agent),
+            "st": st, "u": s?.urgent == true, "ns": String(ns.prefix(160)), "t": String((s?.title ?? "").prefix(60)),
+            "sd": String((s?.said ?? "").prefix(300)), "lm": String((e.last_message ?? "").prefix(300)),
+            "lma": Int(e.last_message_at ?? 0), "wl": String((e.working_line ?? "").prefix(160)),
+            "ws": e.isOpen ? n(e.workspace_id) : NSNull() as Any, "sf": e.isOpen ? n(e.surface_id) : NSNull() as Any,
+            "o": e.isOpen, "pk": e.parked == true,
+            "la": Int(e.last_activity ?? e.last_seen ?? 0), "ca": Int(e.closed_at ?? 0),
+            "cr": n(e.closed_reason), "cwd": SBPaths.tilde(e.cwd ?? ""), "br": n(e.branch),
+            "rm": NSNull(), "rp": reps, "art": Array((e.artifacts ?? []).suffix(3)),
+            "be": e.backend ?? "cmux",
+            "ar": e.archived == true && !e.isOpen, "aa": Int(e.archived_at ?? 0),
+            "was": n(e.was),
+        ]
+    }
+
+    func payloadObject() -> [String: Any] {
+        let sess = reg.sessions.values.sorted { ($0.last_activity ?? 0) > ($1.last_activity ?? 0) }
+        let live = sess.filter(\.isOpen)
+        let recent = sess.filter { !$0.isOpen && ($0.parked == true || ($0.archived != true && now - ($0.closed_at ?? 0) < 14 * 86400)) }
+        let archived = sess.filter { $0.archived == true && !$0.isOpen }
+            .sorted { ($0.archived_at ?? 0) > ($1.archived_at ?? 0) }.prefix(80)
+        let rows = live + recent.prefix(max(0, 150 - live.count)) + archived
+        var payload: [String: Any] = [
+            "v": 1, "at": Int(now), "hub": NSNull(),
+            "classes": reg.classes, "labels": reg.labels,
+            "spares": Dictionary(uniqueKeysWithValues: SBLogins.dirs.map { ($0, ["lg": SBLogins.short($0), "ready": false, "warming": false] as [String: Any]) }),
+            "s": rows.map(compact), "ot": [], "grp": [], "use": usage,
+        ]
+        let vanished = sess.filter { !$0.isOpen && $0.parked != true && $0.closed_reason == "vanished" }
+        if let newest = vanished.compactMap(\.closed_at).max() {
+            let batch = vanished.filter { ($0.closed_at ?? 0) > newest - 120 }
+            if batch.count >= 3 { payload["restore"] = ["n": batch.count, "at": Int(newest)] }
+        }
+        return payload
+    }
+
+    /// Send the sidebar and the panel the current data, if it changed.
+    func publish() {
+        guard loaded else { return }
+        var p = payloadObject()
+        p["at"] = 0
+        guard let same = try? JSONSerialization.data(withJSONObject: p, options: [.sortedKeys]) else { return }
+        if same == lastPushed { return }
+        lastPushed = same
+        p["at"] = Int(now)
+        guard let data = try? JSONSerialization.data(withJSONObject: p) else { return }
+        if let decoded = try? JSONDecoder().decode(SidebarPayload.self, from: data) {
+            SessionsStore.shared.payload = decoded
+        }
+        let json = String(decoding: data, as: UTF8.self)
+        SessionsWeb.shared.setData(json)
+        SessionsWeb.banner.setData(json)
+    }
+
+    /// The current data as JSON, for a page that just loaded.
+    func currentJSON() -> String? {
+        guard loaded, let d = try? JSONSerialization.data(withJSONObject: payloadObject()) else { return nil }
+        return String(decoding: d, as: UTF8.self)
+    }
+
+    // MARK: Search
+
+    func search(_ q: String, limit: Int = 80) -> [[String: Any]] {
+        let words = q.lowercased().split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return [] }
+        var hits: [(Int, Int, Double, SBEntry)] = []
+        for e in reg.sessions.values {
+            let sm = e.summary
+            let hay = [e.name, e.tab_title, sm?.title, sm?.said, sm?.next_step, (e.labels ?? []).joined(separator: " "), e.cls,
+                       SBLogins.short(e.login_dir), e.cwd, e.branch, e.session_id, e.last_message]
+                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ").lowercased()
+            guard words.allSatisfy({ hay.contains($0) }) else { continue }
+            let nameHit = words.allSatisfy { (e.name ?? "").lowercased().contains($0) }
+            hits.append((e.isOpen ? 0 : 1, nameHit ? 0 : 1, -(e.last_activity ?? e.closed_at ?? 0), e))
+        }
+        hits.sort { ($0.0, $0.1, $0.2) < ($1.0, $1.1, $1.2) }
+        return hits.prefix(limit).map { compact($0.3) }
+    }
+
+    /// A pasted conversation id: where it is on this Mac, to offer resuming it.
+    func lookupSessionID(_ sid: String) async -> [String: Any]? {
+        guard let info = await Task.detached(priority: .userInitiated, operation: { SBBackground.lookupConversation(sid) }).value else { return nil }
+        let e = reg.sessions["claude:" + sid]
+        let owner = info.account.flatMap { SBLogins.byAccount()[$0] }
+        let login = e?.login_dir ?? owner
+        func n(_ x: Any?) -> Any { x ?? NSNull() }
+        return ["id": sid, "cwd": n(e?.cwd ?? info.cwd), "title": n(e?.name ?? info.title ?? info.firstAsk), "login": n(login),
+                "lg": login.map { SBLogins.short($0) as Any } ?? NSNull(), "known": e != nil, "open": e?.isOpen == true,
+                "k": "claude:" + sid]
+    }
+
+    // MARK: Opening terminals
+
+    /// How sessions start Claude: like the cc / ccl / ccm aliases (sync MCP sign-ins,
+    /// drop API-key and token variables, then claude). SWITCHBOARD_CLAUDE replaces
+    /// the claude command (a test copy runs a stand-in).
+    /// The default login (~/.claude) runs without CLAUDE_CONFIG_DIR, even when the app
+    /// itself was started with one.
+    static func claudeLaunch(_ loginDir: String?) -> String {
+        let unsetLogin = (loginDir ?? "~/.claude") == "~/.claude" ? "-u CLAUDE_CONFIG_DIR " : ""
+        if let fake = ProcessInfo.processInfo.environment["SWITCHBOARD_CLAUDE"], !fake.isEmpty { return "env \(unsetLogin)\(fake)" }
+        let sync = SBPaths.home + "/.local/bin/sync-claude-mcp"
+        let pre = FileManager.default.fileExists(atPath: sync) ? shellQuote(sync) + " >/dev/null 2>&1; " : ""
+        return pre + "env \(unsetLogin)-u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude"
+    }
+
+    static func shellQuote(_ s: String) -> String {
+        if s.range(of: #"^[A-Za-z0-9@%+=:,./_-]+$"#, options: .regularExpression) != nil { return s }
+        return "'" + s.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    private func resumeCommand(_ e: SBEntry) -> String? {
+        if let sid = e.session_id, !sid.isEmpty {
+            switch e.agent {
+            case "claude": return "\(Self.claudeLaunch(e.login_dir)) --resume \(sid) --dangerously-skip-permissions"
+            case "codex": return "codex resume \(sid)"
+            case "opencode": return "opencode --session \(sid)"
+            default: break
+            }
+        }
+        return e.resume_cmd
+    }
+
+    /// A terminal for an agent: a new session, or a tab of the session `tabOf` is in.
+    private func openAgentTerminal(cwd: String?, command: String, loginDir: String?, focus: Bool,
+                                   split: Bool = false, tabOf: String? = nil) -> String? {
+        var env: [String: String] = [:]
+        if let d = loginDir, d != "~/.claude" { env["CLAUDE_CONFIG_DIR"] = SBPaths.expand(d) }
+        let folder = SBPaths.expand(cwd ?? Self.defaultFolder)
+        // No fixed title: it would hide the one Claude sets (its own name, or the /rename name).
+        guard let made = SessionsAPI.openTab(cwd: folder, input: command + "\n", env: env, focus: focus, split: split, tabOf: tabOf) else { return nil }
+        recentNew[made.id] = now
+        return made.id
+    }
+
+    // MARK: Actions
+
+    /// Run an action from the sidebar, the panel or a menu. Returns whether it worked and
+    /// a message for the person.
+    func dispatch(_ msg: [String: Any]) async -> (Bool, String) {
+        guard loaded else { return (false, "Switchboard is still starting.") }
+        let op = msg["op"] as? String ?? ""
+        let k = msg["k"] as? String ?? ""
+        let focus = msg["focus"] as? Bool ?? true
+        defer { publish() }
+        switch op {
+        case "open", "unpark":
+            if msg["end_elsewhere"] as? Bool == true { await endElsewhere(k) }
+            let r = openEntry(k, focus: focus)
+            return (r.ok, r.message)
+        case "park": return close(k, park: true)
+        case "close": return close(k, park: false)
+        case "done": return done(k)
+        case "switch": return await switchLogin(k, msg["login"] as? String ?? "", focus: focus)
+        case "new_shell":
+            let r = newShell(msg["cwd"] as? String, focus: focus)
+            return (r.ok, r.message)
+        case "new":
+            let r = newClaude(msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true, cwd: msg["cwd"] as? String)
+            return (r.ok, r.message)
+        case "resume_id": return await resumeID(msg["id"] as? String ?? "", login: msg["login"] as? String)
+        case "restore": return await restore(msg["keys"] as? [String])
+        case "cls": return edit(k, cls: msg["cls"] as? String)
+        case "label": return edit(k, label: msg["label"] as? String ?? "")
+        case "rename": return edit(k, name: msg["name"] as? String ?? "")
+        case "ack": return ack(k)
+        case "forget": return forget(k)
+        case "send": return send(k, msg["text"] as? String ?? "")
+        case "remember_open": return rememberOpen()
+        default: return (false, "Unknown action “\(op)”.")
+        }
+    }
+
+    func entry(_ k: String) -> SBEntry? { reg.sessions[k] }
+
+    private func update(_ k: String, _ body: (inout SBEntry) -> Void) {
+        guard var e = reg.sessions[k] else { return }
+        body(&e)
+        reg.sessions[k] = e
+        save()
+    }
+
+    /// Show a session, or resume it in a new terminal. Returns the new terminal's id.
+    @discardableResult
+    func openEntry(_ k: String, focus: Bool = true, split: Bool = false, tabOf: String? = nil) -> (ok: Bool, message: String, surface: String?) {
+        guard let e = reg.sessions[k] else { return (false, "Unknown session.", nil) }
+        if e.isOpen, let sf = e.surface_id, let view = SessionsAPI.surface(id: sf) {
+            if focus { SessionsAPI.focus(view) }
+            return (true, "Opened.", nil)
+        }
+        // A second click before the scan sees the first one running: do not start it twice.
+        if !e.isOpen, now - (e.opening_at ?? 0) < 25 { return (true, "Opening…", nil) }
+        guard let cmd = resumeCommand(e) else { return (false, "No way to resume this session.", nil) }
+        guard let sf = openAgentTerminal(cwd: e.cwd, command: cmd, loginDir: e.login_dir, focus: focus, split: split, tabOf: tabOf) else {
+            return (false, "Switchboard could not open a terminal.", nil)
+        }
+        update(k) { x in
+            x.opening_at = now
+            x.open = false
+            x.parked = false
+            x.archived = false
+        }
+        return (true, "Reopened.", sf)
+    }
+
+    /// The process id of a session that still runs outside this app (in cmux), if any.
+    func runningElsewhere(_ k: String) -> Int? {
+        guard let e = reg.sessions[k], !e.isOpen, e.backend != "ghostty", let pid = e.pid, SBProcesses.isAlive(pid),
+              let (args, env) = SBProcesses.argsAndEnv(pid_t(pid)), SBProcesses.agentKind(args) == e.agent else { return nil }
+        if let sid = e.session_id {
+            let fileSid = e.agent == "claude" ? SBBackground.claudeSessionFile(SBLogins.norm(env["CLAUDE_CONFIG_DIR"]), pid) : nil
+            guard args.contains(sid) || fileSid == sid else { return nil }
+        }
+        return pid
+    }
+
+    /// End a session's process outside this app (its cmux tab stays, at a shell prompt).
+    private func endElsewhere(_ k: String) async {
+        guard let pid = runningElsewhere(k) else { return }
+        kill(pid_t(pid), SIGHUP)
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if !SBProcesses.isAlive(pid) { return }
+        }
+        kill(pid_t(pid), SIGTERM)
+    }
+
+    /// Close a session: every tab of it (whole), or only the agent's terminal (to replace it).
+    func close(_ k: String, park: Bool, whole: Bool = true) -> (Bool, String) {
+        guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
+        let park = e.agent == "shell" ? false : park     // a shell has nothing to resume later
+        update(k) { x in
+            x.parked = park
+            x.closing = park ? "parked" : "closed"
+        }
+        if e.isOpen, let sf = e.surface_id {
+            let closed = whole ? SessionsAPI.closeSession(sf) : SessionsAPI.closeTerminal(sf)
+            if !closed && !SessionsAPI.closeTerminal(sf) && SessionsAPI.surface(id: sf) != nil {
+                return (false, "Switchboard could not close it.")
+            }
+        }
+        if !e.isOpen { update(k) { $0.state = stateOf($0) } }
+        return (true, park ? "Parked." : "Closed.")
+    }
+
+    /// I'm done with it: close it with every tab and move it to the Archive. Reopening it
+    /// from the Archive resumes the conversation and takes it out of the Archive.
+    func done(_ k: String) -> (Bool, String) {
+        guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
+        update(k) { x in
+            if x.agent != "shell" {
+                x.archived = true
+                x.archived_at = now
+            }
+            x.parked = false
+            if !x.isOpen { x.state = stateOf(x) }
+        }
+        guard e.isOpen, let sf = e.surface_id else { return (true, "Moved to the Archive.") }
+        update(k) { $0.closing = "done" }
+        if !SessionsAPI.closeSession(sf) && !SessionsAPI.closeTerminal(sf) && SessionsAPI.surface(id: sf) != nil {
+            return (false, "Switchboard could not close it.")
+        }
+        return (true, e.agent == "shell" ? "Closed." : "Closed and moved to the Archive.")
+    }
+
+    /// Another terminal of the same session (a shell tab), so a replaced agent comes back
+    /// as a tab of that session instead of as a new session.
+    private func sessionTabMate(_ e: SBEntry) -> String? {
+        let terms = SessionsAPI.terminalList()
+        guard let me = terms.first(where: { $0.id == e.surface_id }), !me.ws.isEmpty else { return nil }
+        return terms.first(where: { $0.ws == me.ws && $0.tab != me.tab })?.id
+    }
+
+    /// Close Claude and resume the same conversation with another login.
+    func switchLogin(_ k: String, _ loginDir: String, focus: Bool = true) async -> (Bool, String) {
+        guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
+        guard e.agent == "claude", e.session_id != nil else { return (false, "Only Claude sessions with a session id can switch login.") }
+        guard SBLogins.dirs.contains(loginDir) else { return (false, "Unknown login \(loginDir).") }
+        if e.isOpen && e.screen == "working" { return (false, "It is working right now. Stop it (Ctrl+C) or wait, then switch.") }
+        let mate = e.isOpen ? sessionTabMate(e) : nil
+        if e.isOpen {
+            let (ok, msg) = close(k, park: false, whole: false)
+            if !ok { return (ok, msg) }
+            // Let the old Claude exit before the new one opens the same conversation.
+            if let pid = e.pid {
+                for _ in 0..<20 where SBProcesses.isAlive(pid) { try? await Task.sleep(nanoseconds: 150_000_000) }
+            }
+        }
+        update(k) { x in
+            x.login_dir = loginDir
+            x.open = false
+            x.closing = nil
+            x.opening_at = nil
+        }
+        let r = openEntry(k, focus: focus, tabOf: mate)
+        return (r.ok, r.ok ? "Now on \(SBLogins.short(loginDir))." : r.message)
+    }
+
+    /// ⌘N: a new session with a plain shell, no agent. You run what you want in it.
+    func newShell(_ cwd: String?, focus: Bool = true) -> (ok: Bool, message: String, surface: String?) {
+        var folder = SBPaths.expand(cwd ?? "~")
+        var isDir: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: folder, isDirectory: &isDir) || !isDir.boolValue { folder = SBPaths.home }
+        guard let made = SessionsAPI.openTab(cwd: folder, input: nil, env: [:], focus: focus) else {
+            return (false, "Switchboard could not open a terminal.", nil)
+        }
+        let k = "shell:" + made.ws
+        var e = SBEntry(key: k, agent: "shell")
+        let b = basename(folder)
+        e.name = b.isEmpty ? "~" : b
+        e.cls = defaultClass(folder)
+        e.labels = []
+        e.first_seen = now
+        e.custom_name = false
+        e.open = true
+        e.backend = "ghostty"
+        e.surface_id = made.id
+        e.workspace_id = "g:" + made.tab
+        e.cwd = folder
+        e.last_activity = now
+        e.last_seen = now
+        e.state = stateOf(e)
+        reg.sessions[k] = e
+        save()
+        return (true, "Started.", made.id)
+    }
+
+    /// A new Claude session with a login, in a folder.
+    func newClaude(_ loginDir: String, focus: Bool = true, cwd: String? = nil) -> (ok: Bool, message: String, surface: String?) {
+        let folder = SBPaths.expand(cwd ?? Self.defaultFolder)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDir), isDir.boolValue else {
+            return (false, "The folder \(cwd ?? folder) does not exist.", nil)
+        }
+        // One pane: just Claude. A shell is a tab away (+ in the panel, or ⌘T).
+        guard let sf = openAgentTerminal(cwd: folder, command: Self.claudeLaunch(loginDir) + " --dangerously-skip-permissions",
+                                         loginDir: loginDir, focus: focus) else {
+            return (false, "Switchboard could not open a terminal.", nil)
+        }
+        return (true, "Started.", sf)
+    }
+
+    /// Resume a Claude conversation by its id, in its own folder, with the login you pick.
+    func resumeID(_ raw: String, login: String?) async -> (Bool, String) {
+        guard let r = raw.lowercased().range(of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#, options: .regularExpression) else {
+            return (false, "That is not a session id.")
+        }
+        let sid = String(raw.lowercased()[r])
+        let k = "claude:" + sid
+        if reg.sessions[k]?.isOpen == true { let o = openEntry(k); return (o.ok, o.message) }
+        guard let info = await lookupSessionID(sid) else { return (false, "No conversation with id \(sid) on this Mac.") }
+        let cwd = info["cwd"] as? String
+        var isDir: ObjCBool = false
+        guard let cwd, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
+            return (false, "The folder of that conversation (\(cwd ?? "unknown")) does not exist any more.")
+        }
+        let loginDir = login.flatMap { SBLogins.dirs.contains($0) ? $0 : nil } ?? (info["login"] as? String) ?? "~/.claude"
+        if reg.sessions[k] == nil {
+            var e = SBEntry(key: k, agent: "claude")
+            e.session_id = sid
+            let title = info["title"] as? String
+            e.name = title ?? (basename(cwd).isEmpty ? "resumed session" : basename(cwd))
+            e.cls = "Work"
+            e.labels = []
+            e.first_seen = now
+            e.custom_name = title != nil
+            reg.sessions[k] = e
+        }
+        update(k) { x in
+            x.login_dir = loginDir
+            x.cwd = cwd
+        }
+        let o = openEntry(k)
+        return (o.ok, o.message)
+    }
+
+    /// Reopen the sessions that vanished together (or the ones named).
+    func restore(_ keys: [String]?) async -> (Bool, String) {
+        var cands = reg.sessions.values.filter { !$0.isOpen && $0.parked != true
+            && (keys == nil ? $0.closed_reason == "vanished" : keys!.contains($0.key)) }
+        if keys == nil {
+            // Only the last batch: sessions that vanished within 2 minutes of the newest one.
+            guard let newest = cands.compactMap(\.closed_at).max() else { return (true, "Nothing to restore.") }
+            cands = cands.filter { ($0.closed_at ?? 0) > newest - 120 }
+        }
+        var n = 0
+        for e in cands {
+            if openEntry(e.key, focus: false).ok { n += 1 }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
+        return (true, "Reopened \(n).")
+    }
+
+    func edit(_ k: String, cls: String? = nil, label: String? = nil, name: String? = nil) -> (Bool, String) {
+        guard reg.sessions[k] != nil else { return (false, "Unknown session.") }
+        update(k) { e in
+            if let cls, !cls.isEmpty {
+                e.cls = cls
+                if !reg.classes.contains(cls) { reg.classes.append(cls) }
+            }
+            if let label {
+                let lab = SBScreen.strip(label).lowercased()
+                var labs = e.labels ?? []
+                if let i = labs.firstIndex(of: lab) {
+                    labs.remove(at: i)
+                } else if !lab.isEmpty {
+                    labs.append(lab)
+                    if !reg.labels.contains(lab) { reg.labels.append(lab) }
+                }
+                e.labels = labs
+            }
+            if let name, !SBScreen.strip(name).isEmpty {
+                e.name = SBScreen.strip(name)
+                e.custom_name = true
+            }
+        }
+        return (true, "Saved.")
+    }
+
+    func ack(_ k: String) -> (Bool, String) {
+        guard reg.sessions[k] != nil else { return (false, "Unknown session.") }
+        var handled = false
+        update(k) { e in
+            e.ack_key = e.ack_key != nil && e.ack_key == e.summary_key ? nil : e.summary_key
+            handled = e.ack_key != nil
+            e.state = stateOf(e)
+        }
+        return (true, handled ? "Marked as handled." : "Back in Needs you.")
+    }
+
+    func forget(_ k: String) -> (Bool, String) {
+        if reg.sessions[k]?.isOpen == true { return (false, "Close it first.") }
+        reg.sessions.removeValue(forKey: k)
+        save()
+        return (true, "Removed from the list.")
+    }
+
+    func send(_ k: String, _ text: String) -> (Bool, String) {
+        guard let e = reg.sessions[k], e.isOpen, let sf = e.surface_id else { return (false, "That session is not running.") }
+        let ok = SessionsAPI.sendInput(sf, text: text, enter: true)
+        return (ok, ok ? "Sent." : "That terminal is gone.")
+    }
+
+    // MARK: Restart for an update
+
+    /// Switchboard is about to restart: remember its sessions, with their other tabs.
+    func rememberOpen() -> (Bool, String) {
+        let terms = SessionsAPI.terminalList()
+        let byID = Dictionary(terms.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var items: [[String: Any]] = []
+        for (k, e) in reg.sessions where e.isOpen && e.backend == "ghostty" {
+            let t = byID[e.surface_id ?? ""]
+            // The session's other tabs (a shell, a server): one new shell each, same folder.
+            var tabs: [String] = []
+            var seenTabs: Set<String> = [t?.tab ?? ""]
+            if let t, !t.ws.isEmpty {
+                for o in terms where o.ws == t.ws && !seenTabs.contains(o.tab) {
+                    seenTabs.insert(o.tab)
+                    tabs.append(o.cwd.isEmpty ? (e.cwd ?? SBPaths.home) : o.cwd)
+                }
+            }
+            items.append(["k": k, "shell": e.agent == "shell", "cwd": (t?.cwd).flatMap { $0.isEmpty ? nil : $0 } ?? e.cwd ?? SBPaths.home,
+                          "split": e.split == true, "tabs": tabs])
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["items": items, "at": now]) else { return (false, "Could not save the list.") }
+        SBFiles.writeAtomic(data, SBPaths.restart)   // now, not later: the app quits next
+        saveNow(wait: true)
+        return (true, "Remembered \(items.count).")
+    }
+
+    /// Sessions marked open whose terminal is gone (the app that quit took them along).
+    private func markStaleClosed(reason: String) {
+        let live = Set(SessionsAPI.terminalList().map(\.id))
+        for (k, var e) in reg.sessions where e.isOpen && !live.contains(e.surface_id ?? "") {
+            e.open = false
+            e.closed_at = now
+            e.closed_reason = reason
+            e.opening_at = nil
+            e.screen = nil
+            e.state = stateOf(e)
+            reg.sessions[k] = e
+        }
+    }
+
+    /// After a restart: reopen every session that was open, with its tabs. A list of what
+    /// could not be reopened is left next to the saved list.
+    func restoreAfterRestart() async -> (Bool, String) {
+        guard let j = SBFiles.readJSON(SBPaths.restart) as? [String: Any],
+              now - ((j["at"] as? NSNumber)?.doubleValue ?? 0) <= 600 else { return (true, "Nothing to restore.") }
+        let items = (j["items"] as? [[String: Any]]) ?? []
+        markStaleClosed(reason: "restart")
+        var n = 0
+        var failed: [String] = []
+        for it in items {
+            let k = it["k"] as? String ?? ""
+            let e = reg.sessions[k]
+            var ok = false, msg = "", sf: String?
+            if it["shell"] as? Bool == true || e?.agent == "shell" {
+                (ok, msg, sf) = newShell(it["cwd"] as? String, focus: false)
+                if ok, let e, reg.sessions[e.key]?.isOpen != true { reg.sessions.removeValue(forKey: e.key) }   // the new shell has its own row
+            } else if let e, e.isOpen {
+                (ok, msg) = (true, "Already open.")
+            } else if let e {
+                (ok, msg, sf) = openEntry(e.key, focus: false, split: it["split"] as? Bool ?? false)
+                if !ok && msg == "No way to resume this session." {
+                    // Nothing to resume yet (a new conversation, an agent without an id): start fresh there.
+                    (ok, msg, sf) = e.agent == "claude" ? newClaude(e.login_dir ?? "~/.claude", focus: false, cwd: e.cwd)
+                                                        : newShell(e.cwd, focus: false)
+                }
+            } else {
+                msg = "It is no longer in the list."
+            }
+            if ok {
+                n += 1
+                for cwd in it["tabs"] as? [String] ?? [] {
+                    if let sf { _ = SessionsAPI.openTab(cwd: SBPaths.expand(cwd), input: nil, env: [:], focus: false, tabOf: sf) }
+                }
+            } else {
+                failed.append("\(e?.name ?? (k.isEmpty ? (it["cwd"] as? String ?? "?") : k)): \(msg)")
+            }
+            publish()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        try? FileManager.default.removeItem(atPath: SBPaths.restart)
+        save()
+        if !failed.isEmpty {
+            SBFiles.writeJSON(["failed": failed, "items": items, "at": now], SBPaths.restart + ".failed")
+            return (false, "Reopened \(n). Could not reopen: " + failed.joined(separator: "; "))
+        }
+        return (true, "Reopened \(n).")
+    }
+}

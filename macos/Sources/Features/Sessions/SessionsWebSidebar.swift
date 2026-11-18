@@ -2,16 +2,16 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// The sessions sidebar as a web page served by the session helper
-/// (http://127.0.0.1:4477/sidebar). Editing that page reloads it in place, so
-/// most sidebar changes need no app restart.
+/// The sessions sidebar and the panel above the terminal, as two web pages shipped
+/// in the app (Pages/switchboard-sidebar.html, Pages/switchboard-panel.html). The
+/// session tracker (Switchboard) sends them the sessions; they ask it to search.
 ///
 /// One web view is shared by all windows and moves into whichever window is in
 /// front, so the app holds one page in memory, not one per session window.
 /// Clicks, menus, questions and keyboard shortcuts stay native: the page calls
 /// the app through `window.webkit.messageHandlers.sessions`.
 @MainActor
-final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate, ObservableObject {
+final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, WKNavigationDelegate, ObservableObject {
     /// The sidebar page.
     static let shared = SessionsWeb(path: "sidebar")
     /// The banner above the terminal: this session, its login, what it needs, and its tabs.
@@ -33,6 +33,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         controller.add(self, name: "sessions")
+        controller.addScriptMessageHandler(self, contentWorld: .page, name: "sessionsReply")
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
         webView.allowsMagnification = false
@@ -41,18 +42,39 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
     func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
-        webView.load(URLRequest(url: URL(string: "http://127.0.0.1:4477/\(path)")!))
+        load()
+    }
+
+    /// The page from the app bundle. The base URL keeps the address the helper used to
+    /// serve it from, so what the page remembers (row order, folded groups, column
+    /// settings: its localStorage) carries over.
+    private func load() {
+        let file = path == "sidebar" ? "switchboard-sidebar" : "switchboard-panel"
+        guard let url = Bundle.main.url(forResource: file, withExtension: "html"),
+              let html = try? String(contentsOf: url, encoding: .utf8) else { return }
+        webView.loadHTMLString(html, baseURL: URL(string: "http://127.0.0.1:4477/\(path)"))
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // A new page (first load, or a reload after the page changed) knows nothing yet.
+        // A new page (first load, or a reload) knows nothing yet.
+        pageReady()
+    }
+
+    private func pageReady() {
         lastContext = ""
+        if let json = Switchboard.shared.currentJSON() { setData(json) }
         if path == "sidebar" { setFocus(SessionsStore.shared.focusedSurfaceID) } else { pushBannerContext() }
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         lastContext = ""
-        webView.reload()
+        load()
+    }
+
+    /// The sessions (the tracker's JSON), whenever they change.
+    func setData(_ json: String) {
+        let fn = path == "sidebar" ? "Sessions" : "Banner"
+        webView.evaluateJavaScript("window.\(fn) && \(fn).setData && \(fn).setData(\(json))")
     }
 
     // MARK: Banner context (which window, its terminals, its tabs, update)
@@ -99,14 +121,6 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         }
     }
 
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { retry() }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { retry() }
-
-    private func retry() {
-        // The helper may not be up yet.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.webView.reload() }
-    }
-
     /// Links (artifacts and so on) open in the browser, not inside the sidebar.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
@@ -138,10 +152,30 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
 
     // MARK: Page → app
 
+    /// Questions with an answer: search.
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        guard let body = message.body as? [String: Any], body["type"] as? String == "search" else { replyHandler(nil, nil); return }
+        let q = (body["q"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        var reply: [String: Any] = ["s": Switchboard.shared.search(q)]
+        // A pasted session id (or "claude --resume <id>"): offer to resume it.
+        guard let r = q.lowercased().range(of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#, options: .regularExpression) else {
+            replyHandler(reply, nil)
+            return
+        }
+        let sid = String(q.lowercased()[r])
+        Task { @MainActor in
+            reply["id"] = await Switchboard.shared.lookupSessionID(sid) ?? ["id": sid, "missing": true]
+            replyHandler(reply, nil)
+        }
+    }
+
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         let store = SessionsStore.shared
         switch type {
+        case "ready":
+            pageReady()
         case "open":
             guard let k = body["k"] as? String else { return }
             if let s = store.payload?.s.first(where: { $0.k == k }) {
@@ -287,9 +321,6 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         menuActions = []
         let menu = NSMenu()
         menu.addItem(item(s.isOpen ? "Go to session" : "Reopen here") { store.open(s) })
-        if s.isOpen && s.be != "ghostty" {
-            menu.addItem(item("Open here with another login…") { store.askMove(s) })
-        }
         if s.isOpen || !s.isArchived {
             menu.addItem(item(s.a == "shell" ? "Done (close it and its tabs)" : "Done (close it, move it to the Archive)") {
                 guard store.confirmClose(s.k, action: "Done with") else { return }

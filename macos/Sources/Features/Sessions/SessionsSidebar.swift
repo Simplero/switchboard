@@ -103,7 +103,12 @@ final class SessionsStore: ObservableObject {
                 case 126: self.step(-1); return nil      // up arrow
                 case 125: self.step(1); return nil       // down arrow
                 case 35:                                  // P
-                    NotificationCenter.default.post(name: .sessionsFocusSearch, object: nil)
+                    if UserDefaults.standard.object(forKey: "sessions.sidebar.web") as? Bool ?? true {
+                        UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
+                        SessionsWeb.shared.focusSearch()
+                    } else {
+                        NotificationCenter.default.post(name: .sessionsFocusSearch, object: nil)
+                    }
                     return nil
                 default: break
                 }
@@ -128,7 +133,10 @@ final class SessionsStore: ObservableObject {
     func refreshFocus() {
         let controller = NSApp.keyWindow?.windowController as? BaseTerminalController
         let id = controller?.focusedSurface?.id.uuidString
-        if id != focusedSurfaceID { focusedSurfaceID = id }
+        if id != focusedSurfaceID {
+            focusedSurfaceID = id
+            SessionsWeb.shared.setFocus(id)
+        }
         recordVisit()
         if let p = picked, let s = payload?.s.first(where: { $0.k == p }), s.sf == id { picked = nil }
     }
@@ -840,6 +848,8 @@ struct SessionsSidebar: View {
 /// Wraps a terminal window's content with the sessions sidebar on the left.
 struct SessionsSidebarContainer<Content: View>: View {
     @AppStorage("sessions.sidebar.visible") private var visible = true
+    /// Web sidebar (served by the helper, reloads without an app restart) or the native one.
+    @AppStorage("sessions.sidebar.web") private var web = true
     @AppStorage("sessions.sidebar.width") private var width: Double = 460
     @State private var dragStart: Double?
     let content: Content
@@ -851,7 +861,21 @@ struct SessionsSidebarContainer<Content: View>: View {
     var body: some View {
         HStack(spacing: 0) {
             if visible {
-                SessionsSidebar(visible: $visible)
+                Group {
+                    if web {
+                        ZStack(alignment: .topTrailing) {
+                            SessionsWebSidebar()
+                            Button { visible = false } label: {
+                                Image(systemName: "sidebar.left").font(.system(size: 12)).foregroundStyle(.secondary)
+                                    .padding(8)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Hide the sessions sidebar")
+                        }
+                    } else {
+                        SessionsSidebar(visible: $visible)
+                    }
+                }
                     .frame(width: width)
                     .background(Color(nsColor: .windowBackgroundColor))
                 Rectangle()

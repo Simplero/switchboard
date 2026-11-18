@@ -75,10 +75,20 @@ final class SessionsVersion: ObservableObject {
 /// Update button when a newer build is installed.
 struct SessionsTitlebarBadge: View {
     @ObservedObject var version = SessionsVersion.shared
+    @AppStorage("sessions.sidebar.web") private var web = true
 
     var body: some View {
         HStack(spacing: 6) {
             Spacer(minLength: 0)
+            Button { web.toggle() } label: {
+                Text(web ? "Sidebar: web" : "Sidebar: native")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Capsule().stroke(Color.gray.opacity(0.4)))
+            }
+            .buttonStyle(.plain)
+            .help("Switch between the web sidebar and the native sidebar")
             Text(version.label)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -98,7 +108,7 @@ struct SessionsTitlebarBadge: View {
             }
         }
         .padding(.trailing, 10)
-        .frame(width: 300, height: 28, alignment: .trailing)
+        .frame(width: 420, height: 28, alignment: .trailing)
     }
 }
 
@@ -109,7 +119,7 @@ extension NSWindow {
         let id = NSUserInterfaceItemIdentifier("sessions.badge")
         guard !titlebarAccessoryViewControllers.contains(where: { $0.identifier == id }) else { return }
         let host = NSHostingView(rootView: SessionsTitlebarBadge())
-        host.frame = NSRect(x: 0, y: 0, width: 300, height: 28)
+        host.frame = NSRect(x: 0, y: 0, width: 420, height: 28)
         let vc = NSTitlebarAccessoryViewController()
         vc.identifier = id
         vc.view = host

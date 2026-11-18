@@ -6,6 +6,11 @@ import GhosttyKit
 
 /// A classic, tabbed terminal experience.
 class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Controller {
+    /// Switchboard: all sessions are tabs of one window (the macOS tab bar is hidden).
+    /// The tabs of one session share this id; the panel above the terminal shows
+    /// them, and tab keys (next, previous, ⌘1…9) stay inside the session.
+    var sessionsWorkspace = UUID().uuidString
+
     override var windowNibName: NSNib.Name? {
         let defaultValue = "Terminal"
 
@@ -444,6 +449,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Create a new window and add it to the parent
         let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
         controller.isBackgroundOpaque = parentController.isBackgroundOpaque
+        // A new tab belongs to the session you are in.
+        controller.sessionsWorkspace = parentController.sessionsWorkspace
         guard let window = controller.window else { return controller }
 
         // If the parent is miniaturized, then macOS exhibits really strange behaviors
@@ -1631,7 +1638,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         guard let windowController = window.windowController else { return }
         guard let tabGroup = windowController.window?.tabGroup else { return }
-        let tabbedWindows = tabGroup.windows
+        // Switchboard: only the tabs of this session (the window holds every session).
+        let tabbedWindows = tabGroup.windows.filter {
+            ($0.windowController as? TerminalController)?.sessionsWorkspace == sessionsWorkspace
+        }
 
         // This will be the index we want to actual go to
         let finalIndex: Int

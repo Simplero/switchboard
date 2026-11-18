@@ -62,14 +62,17 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         // The panel belongs to the whole window (the session), not to one tab: send
         // the terminals of every tab, first tab first, so a new shell tab keeps the
         // same session above it.
-        let windows: [NSWindow] = key.map { $0.tabGroup?.windows ?? [$0] } ?? []
+        // One window holds every session: the panel shows the tabs of the session you are in.
+        let shown = key.map { $0.tabGroup?.selectedWindow ?? $0 }
+        let windows: [NSWindow] = (shown?.windowController as? TerminalController)
+            .map { SessionsAPI.windows(ofWorkspace: $0.sessionsWorkspace) } ?? shown.map { [$0] } ?? []
         let surfaces = windows.flatMap {
             ($0.windowController as? BaseTerminalController)?.surfaceTree.root?.leaves().map { $0.id.uuidString } ?? []
         }
         var tabs: [[String: Any]] = []
         if let key {
             // Tabs live in the panel, always shown. TerminalWindow hides the macOS tab bar.
-            let selected = key.tabGroup?.selectedWindow ?? key
+            let selected = shown ?? key
             for w in windows {
                 let surfaceTitle = (w.windowController as? BaseTerminalController)?.focusedSurface?.title ?? ""
                 let title = !surfaceTitle.isEmpty ? surfaceTitle : (w.title == "Switchboard" || w.title.isEmpty ? "Terminal" : w.title)
@@ -220,7 +223,8 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.lastContext = ""; self.pushBannerContext() }
         case "closeTab":
             guard let id = body["id"] as? Int, let w = NSApp.window(withWindowNumber: id) else { return }
-            w.performClose(nil)
+            // Close this tab only (asks first if something still runs in it).
+            if let controller = w.windowController as? TerminalController { controller.closeTab(nil) } else { w.performClose(nil) }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.lastContext = ""; self.pushBannerContext() }
         case "blur":
             // Esc in the search box: give the keyboard back to the terminal.

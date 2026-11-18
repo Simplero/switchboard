@@ -96,7 +96,7 @@ final class SessionsStore: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
-        SessionsWindowStack.start()
+        SessionsAPI.trackActiveTabs()
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshFocus() }
         }
@@ -251,7 +251,8 @@ final class SessionsStore: ObservableObject {
         guard all.contains(where: { w in !windows.contains(where: { $0 === w }) }) else { return }
         for w in windows {
             guard let controller = w.windowController as? BaseTerminalController,
-                  (w.tabGroup?.windows.count ?? 1) <= 1,
+                  // Alone in its session (its own tab, nothing else of it).
+                  SessionsAPI.windows(ofWorkspace: (controller as? TerminalController)?.sessionsWorkspace ?? "").count <= 1,
                   let leaves = controller.surfaceTree.root?.leaves(), leaves.count == 1,
                   let view = leaves.first, !view.needsConfirmQuit else { continue }
             controller.closeSurface(view, withConfirmation: false)

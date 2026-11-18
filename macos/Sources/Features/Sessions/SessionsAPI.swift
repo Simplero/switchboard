@@ -174,40 +174,27 @@ final class SessionsAPI {
             controller.closeSurface(view, withConfirmation: false)
             return (200, ["ok": true])
         case ("POST", "/closewindow"):
-            // Done with a session: close its whole window, every tab in it, without asking.
+            // Done with a session: close every tab of that session, without asking.
+            // The other sessions in the window stay.
             guard let view = surface(req.json["id"] as? String),
                   let controller = BaseTerminalController.controller(owning: view) as? TerminalController else {
                 return (404, ["error": "no such terminal"])
             }
-            controller.closeWindowImmediately()
+            for window in SessionsAPI.windows(ofWorkspace: controller.sessionsWorkspace) {
+                (window.windowController as? TerminalController)?.closeTabImmediately(registerRedo: false)
+            }
             return (200, ["ok": true])
-        case ("POST", "/frame"):
-            // For checks only: move one session window the way a drag would, then report every window's frame.
-            guard let view = surface(req.json["id"] as? String),
-                  let window = BaseTerminalController.controller(owning: view)?.window,
-                  let x = req.json["x"] as? Double, let y = req.json["y"] as? Double,
-                  let w = req.json["w"] as? Double, let h = req.json["h"] as? Double else {
-                return (404, ["error": "no such terminal"])
-            }
-            window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: false)
-            SessionsWindowStack.align(to: window)
-            let frames = SessionsAPI.allControllers().compactMap { $0.window }.map { w -> String in
-                let tabs = w.tabGroup?.windows.count ?? 1
-                let sel = w.tabGroup?.selectedWindow === w
-                return "\(w.windowNumber) visible=\(w.isVisible) tabs=\(tabs) selected=\(sel) \(NSStringFromRect(w.frame))"
-            }
-            return (200, ["frames": frames])
         case ("POST", "/new"):
             return newTab(req.json)
         case ("POST", "/newtab"):
             // A real tab in the front session window (what ⌘T does). Used to check the banner tabs.
             guard let appDelegate = NSApp.delegate as? AppDelegate,
-                  let window = NSApp.keyWindow ?? SessionsAPI.allControllers().compactMap({ $0.window }).first(where: { $0.isVisible })
+                  let window = NSApp.keyWindow ?? SessionsAPI.mainWindow().map({ $0.tabGroup?.selectedWindow ?? $0 })
             else { return (404, ["error": "no window"]) }
             _ = TerminalController.newTab(appDelegate.ghostty, from: window)
             return (200, ["ok": true])
-        case ("POST", "/untab"):
-            return (200, ["moved": SessionsAPI.untabAll()])
+        case ("POST", "/merge"):
+            return (200, ["moved": SessionsAPI.mergeAll()])
         case ("GET", "/screenshot"):
             // For checking the sidebar without taking the user's screen: renders a window to PNG.
             let windows = SessionsAPI.allControllers().compactMap { $0.window }.filter { $0.isVisible }
@@ -237,50 +224,69 @@ final class SessionsAPI {
         return SessionsAPI.allSurfaces().first(where: { $0.id.uuidString == id })
     }
 
-    /// Bring a terminal's window and tab to the front and give it focus.
-    /// Bring a session's window to the front without giving its terminal the keyboard.
+    // MARK: One window, every session a set of tabs in it
+
+    /// The tab of each session you used last (session id → window number).
+    static var lastActive: [String: Int] = [:]
+
+    static func trackActiveTabs() {
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated {
+                guard let window = note.object as? NSWindow,
+                      let controller = window.windowController as? TerminalController else { return }
+                lastActive[controller.sessionsWorkspace] = window.windowNumber
+            }
+        }
+    }
+
+    /// The tabs of one session, in tab order.
+    static func windows(ofWorkspace id: String) -> [NSWindow] {
+        let all = allControllers().compactMap { $0 as? TerminalController }.filter { $0.sessionsWorkspace == id }.compactMap { $0.window }
+        guard let order = all.first?.tabGroup?.windows else { return all }
+        return order.filter { w in all.contains { $0 === w } } + all.filter { w in !order.contains { $0 === w } }
+    }
+
+    /// The Switchboard window: the tab group that holds the sessions (the biggest one,
+    /// if something opened a second window).
+    static func mainWindow() -> NSWindow? {
+        let windows = allControllers().filter { $0 is TerminalController }.compactMap { $0.window }
+            .filter { $0.isVisible && !$0.isMiniaturized }
+        return windows.max { ($0.tabGroup?.windows.count ?? 1) < ($1.tabGroup?.windows.count ?? 1) }
+    }
+
+    /// Show a session without giving its terminal the keyboard.
     static func bringFront(_ view: Ghostty.SurfaceView) {
         guard let window = BaseTerminalController.controller(owning: view)?.window else { return }
-        if let frame = workspaceFrame(), window.tabGroup?.windows.count ?? 1 <= 1,
-           !window.styleMask.contains(.fullScreen) {
-            window.setFrame(frame, display: false)
-        }
         window.tabGroup?.selectedWindow = window
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Show a session: the tab of it you used last (a shell tab, say), else its own terminal.
     static func focus(_ view: Ghostty.SurfaceView) {
         guard let controller = BaseTerminalController.controller(owning: view) else { return }
+        if let tc = controller as? TerminalController, let n = lastActive[tc.sessionsWorkspace],
+           let last = NSApp.window(withWindowNumber: n), last !== controller.window,
+           (last.windowController as? TerminalController)?.sessionsWorkspace == tc.sessionsWorkspace {
+            last.tabGroup?.selectedWindow = last
+            last.makeKeyAndOrderFront(nil)
+            return
+        }
         if let window = controller.window {
-            if let frame = workspaceFrame(), window.tabGroup?.windows.count ?? 1 <= 1,
-               !window.styleMask.contains(.fullScreen) {
-                window.setFrame(frame, display: false)
-            }
             window.tabGroup?.selectedWindow = window
             window.makeKeyAndOrderFront(nil)
         }
         controller.focusSurface(view)
     }
 
-    /// The frame of the session window you are looking at; new and switched-to
-    /// session windows take it, so they all sit in one place.
-    static func workspaceFrame() -> NSRect? {
-        let key = NSApp.keyWindow?.windowController is BaseTerminalController ? NSApp.keyWindow : nil
-        let any = allControllers().compactMap { $0.window }.first(where: { $0.isVisible })
-        guard let w = key ?? any, !w.styleMask.contains(.fullScreen) else { return nil }
-        return w.frame
-    }
-
-    /// Turn every native tab into its own window on the same frame (one-time cleanup
-    /// for sessions that were opened as tabs).
-    static func untabAll() -> Int {
+    /// Put every terminal window into the main window, each as its own session (a
+    /// window from before the one-window model, or one something else opened).
+    static func mergeAll() -> Int {
+        guard let main = mainWindow(), let mainGroup = main.tabGroup else { return 0 }
         var moved = 0
-        let frame = workspaceFrame()
-        for controller in allControllers() {
-            guard let window = controller.window, let group = window.tabGroup, group.windows.count > 1 else { continue }
-            for w in group.windows where w !== group.selectedWindow {
-                w.moveTabToNewWindow(nil)
-                if let frame { w.setFrame(frame, display: false) }
+        for controller in allControllers().compactMap({ $0 as? TerminalController }) {
+            guard let window = controller.window, window.isVisible, window.tabGroup !== mainGroup else { continue }
+            for w in window.tabGroup?.windows ?? [window] {
+                guard let last = mainGroup.windows.last, last.addTabbedWindowSafely(w, ordered: .above) else { continue }
                 moved += 1
             }
         }
@@ -292,11 +298,13 @@ final class SessionsAPI {
         var out: [[String: Any]] = []
         for controller in SessionsAPI.allControllers() {
             let tab = ScriptTab.stableID(controller: controller)
+            let ws = (controller as? TerminalController)?.sessionsWorkspace ?? ""
             let tabTitle = controller.window?.title ?? ""
             for view in controller.surfaceTree.root?.leaves() ?? [] {
                 out.append([
                     "id": view.id.uuidString,
                     "tab": tab,
+                    "ws": ws,
                     "tab_title": tabTitle,
                     "title": view.titleOverride ?? view.title,
                     // What the program in the terminal set (Claude's own title), even under a fixed title.
@@ -319,20 +327,22 @@ final class SessionsAPI {
         if let input = json["input"] as? String, !input.isEmpty { config.initialInput = input }
         if let env = json["env"] as? [String: String] { config.environmentVariables = env }
         let focus = (json["focus"] as? Bool) ?? true
-        let previousKey = NSApp.keyWindow
-        let frame = SessionsAPI.workspaceFrame()
-        // A session is its own window, like a cmux workspace: it has its own splits
-        // (and its own tabs if you add some). All windows sit on the same frame, so
-        // switching sessions swaps what you see instead of opening a global tab bar.
-        let controller = TerminalController.newWindow(appDelegate.ghostty, withBaseConfig: config)
-        if let window = controller.window {
-            window.tabbingMode = .disallowed
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                if let frame { window.setFrame(frame, display: true) }
-                window.tabbingMode = .automatic
-                if !focus, let previousKey, previousKey !== window {
-                    previousKey.makeKeyAndOrderFront(nil)
-                }
+        // One window holds every session, like cmux: a new session is a new tab at the
+        // end of it (the macOS tab bar is hidden; the sidebar and the panel show them).
+        let host = SessionsAPI.mainWindow()
+        let previous = host?.tabGroup?.selectedWindow ?? host
+        let controller: TerminalController
+        if let host, let tab = TerminalController.newTab(appDelegate.ghostty, from: host.tabGroup?.windows.last ?? host,
+                                                          withBaseConfig: config) {
+            controller = tab
+        } else {
+            controller = TerminalController.newWindow(appDelegate.ghostty, withBaseConfig: config)
+        }
+        controller.sessionsWorkspace = UUID().uuidString
+        if !focus, let previous, previous !== controller.window {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                previous.tabGroup?.selectedWindow = previous
+                previous.makeKeyAndOrderFront(nil)
             }
         }
         guard let view = controller.surfaceTree.root?.leaves().first else { return (500, ["error": "no surface"]) }
@@ -343,54 +353,7 @@ final class SessionsAPI {
             _ = controller.newSplit(at: view, direction: .right, baseConfig: shell)
             controller.focusSurface(view)
         }
-        return (200, ["id": view.id.uuidString, "tab": ScriptTab.stableID(controller: controller)])
+        return (200, ["id": view.id.uuidString, "tab": ScriptTab.stableID(controller: controller), "ws": controller.sessionsWorkspace])
     }
 }
 
-/// All session windows sit on one frame, so you only ever see the front one.
-/// When you move or resize the window you are using (or bring another one to
-/// the front), every other session window takes the same frame. Without this,
-/// windows behind it peek out and look empty: the sidebar and the panel only
-/// draw in the front window.
-@MainActor
-enum SessionsWindowStack {
-    private static var pending: DispatchWorkItem?
-    private static var applying = false
-
-    static func start() {
-        let names: [Notification.Name] = [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification,
-                                          NSWindow.didBecomeKeyNotification, NSWindow.didExitFullScreenNotification]
-        for name in names {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { note in
-                guard let window = note.object as? NSWindow else { return }
-                MainActor.assumeIsolated { schedule(from: window) }
-            }
-        }
-    }
-
-    private static func schedule(from window: NSWindow) {
-        guard !applying, window.isKeyWindow, window.windowController is TerminalController else { return }
-        pending?.cancel()
-        let work = DispatchWorkItem { MainActor.assumeIsolated { align(to: window) } }
-        pending = work
-        // Once the drag or resize settles, not on every step of it.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
-    }
-
-    static func align(to window: NSWindow) {
-        guard window.isVisible, !window.isMiniaturized, !window.styleMask.contains(.fullScreen) else { return }
-        let frame = window.frame
-        let mine = Set((window.tabGroup?.windows ?? [window]).map(ObjectIdentifier.init))
-        var groups = Set<ObjectIdentifier>()
-        applying = true
-        defer { applying = false }
-        for controller in SessionsAPI.allControllers() where controller is TerminalController {
-            guard let other = controller.window, !mine.contains(ObjectIdentifier(other)),
-                  other.isVisible, !other.isMiniaturized, !other.styleMask.contains(.fullScreen) else { continue }
-            // A window with tabs: move its group once, through the tab you see.
-            let target = other.tabGroup?.selectedWindow ?? other
-            guard groups.insert(ObjectIdentifier(target)).inserted, target.frame != frame else { continue }
-            target.setFrame(frame, display: false)
-        }
-    }
-}

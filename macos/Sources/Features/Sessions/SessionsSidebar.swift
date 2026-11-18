@@ -160,7 +160,13 @@ final class SessionsStore: ObservableObject {
                     self.failures = 0
                     if UserDefaults.standard.bool(forKey: "sessions.restoreAfterRestart") {
                         UserDefaults.standard.set(false, forKey: "sessions.restoreAfterRestart")
-                        self.send(["op": "restore_after_restart"])
+                        // The app opens one empty shell window at launch. After a restart the
+                        // sessions come back in their own windows, so close that empty one.
+                        let initial = NSApp.windows.filter { $0.windowController is BaseTerminalController }
+                        self.send(["op": "restore_after_restart"]) { ok in
+                            guard ok else { return }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { Self.closeUntouched(initial) }
+                        }
                     }
                 } else {
                     self.helperUp = false
@@ -223,7 +229,20 @@ final class SessionsStore: ObservableObject {
         }.resume()
     }
 
-    func send(_ op: [String: Any]) {
+    /// Close windows that hold one plain shell nobody used, when other session windows exist.
+    static func closeUntouched(_ windows: [NSWindow]) {
+        let all = NSApp.windows.filter { $0.windowController is BaseTerminalController && $0.isVisible }
+        guard all.contains(where: { w in !windows.contains(where: { $0 === w }) }) else { return }
+        for w in windows {
+            guard let controller = w.windowController as? BaseTerminalController,
+                  (w.tabGroup?.windows.count ?? 1) <= 1,
+                  let leaves = controller.surfaceTree.root?.leaves(), leaves.count == 1,
+                  let view = leaves.first, !view.needsConfirmQuit else { continue }
+            controller.closeSurface(view, withConfirmation: false)
+        }
+    }
+
+    func send(_ op: [String: Any], then: (@MainActor (Bool) -> Void)? = nil) {
         var req = URLRequest(url: base.appendingPathComponent("api/op"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -234,6 +253,7 @@ final class SessionsStore: ObservableObject {
             let reply = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let ok = (reply?["ok"] as? Bool) ?? (error == nil)
             let message = reply?["message"] as? String ?? error?.localizedDescription ?? "The session helper did not answer."
+            if let then { Task { @MainActor in then(ok) } }
             guard !ok else { return }
             Task { @MainActor in
                 let alert = NSAlert()

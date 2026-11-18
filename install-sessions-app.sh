@@ -22,7 +22,11 @@ COMMIT=$(git -C "$(dirname "$0")" rev-parse --short HEAD)
 /usr/libexec/PlistBuddy -c "Delete :SessionsCommit" "$P" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :SessionsCommit string $COMMIT" "$P"
 echo "Build b$BUILD ($COMMIT)"
-codesign --force --deep -s - --entitlements "$(dirname "$0")/macos/GhosttyReleaseLocal.entitlements" "$DST.new"
+# Sign with the Apple Development certificate, not ad hoc. An ad-hoc signature is a new
+# identity on every build, so macOS forgot every privacy grant (Documents, Desktop, Full
+# Disk Access…) after each install and asked again. A certificate keeps one identity.
+IDENTITY=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $2; exit}')
+codesign --force --deep -s "${IDENTITY:--}" --entitlements "$(dirname "$0")/macos/GhosttyReleaseLocal.entitlements" "$DST.new"
 rm -rf "$DST"
 mv "$DST.new" "$DST"
 # The app used to be called "Ghostty Sessions". Point the old path at the new app,

@@ -40,6 +40,7 @@ final class Switchboard {
     private var writable = false
     /// Sessions in the middle of a login switch (no second switch or open meanwhile).
     private var switching = Set<String>()
+    private var switchOpening = false
 
     static let scanEvery = 1.5
     static let defaultFolder = "~/Simplero"
@@ -85,11 +86,12 @@ final class Switchboard {
             x.state = stateOf(x)
             reg.sessions[k] = x
         }
-        let restoring = UserDefaults.standard.bool(forKey: "sessions.restoreAfterRestart")
-        if restoring {
-            UserDefaults.standard.set(false, forKey: "sessions.restoreAfterRestart")
-            markStaleClosed(reason: "restart")
-        }
+        // After a restart for an update: the saved list is the signal (the flag alone could be
+        // used up by a launch that died before it restored anything).
+        let flagged = UserDefaults.standard.bool(forKey: "sessions.restoreAfterRestart")
+        let saved = (SBFiles.readJSON(SBPaths.restart) as? [String: Any]).map { now - (($0["at"] as? NSNumber)?.doubleValue ?? 0) <= 600 } ?? false
+        let restoring = flagged || saved
+        if restoring { markStaleClosed(reason: "restart") }
         loaded = true
         save()
         timer = Timer.scheduledTimer(withTimeInterval: Self.scanEvery, repeats: true) { _ in
@@ -109,6 +111,7 @@ final class Switchboard {
                 // come back as tabs of the one window, so that untouched one closes.
                 let initial = NSApp.windows.filter { $0.windowController is BaseTerminalController }
                 let (ok, msg) = await restoreAfterRestart()
+                UserDefaults.standard.set(false, forKey: "sessions.restoreAfterRestart")
                 if !ok { SessionsStore.shared.showFailure(msg) }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 SessionsStore.closeUntouched(initial)
@@ -163,8 +166,7 @@ final class Switchboard {
     // MARK: Scan
 
     func stateOf(_ e: SBEntry) -> String {
-        if e.parked == true { return "parked" }
-        if !e.isOpen { return e.archived == true ? "archived" : "closed" }
+        if !e.isOpen { return e.parked == true ? "parked" : e.archived == true ? "archived" : "closed" }
         if e.agent == "shell" { return "shell" }
         if e.screen == "working" { return "working" }
         if e.screen == "permission" { return "permission" }
@@ -691,6 +693,7 @@ final class Switchboard {
         }
         // A second click before the scan sees the first one running: do not start it twice.
         if !e.isOpen, now - (e.opening_at ?? 0) < 25 { return (true, "Opening…", nil) }
+        if switching.contains(k) && !switchOpening { return (true, "Switching login…", nil) }
         // The same conversation must never run in two places.
         if runningElsewhere(k) != nil {
             return (false, "“\(e.name ?? "This session")” still runs in cmux. Click its row in the sidebar to move it here.", nil)
@@ -808,7 +811,9 @@ final class Switchboard {
             x.closing = nil
             x.opening_at = nil
         }
+        switchOpening = true
         let r = openEntry(k, focus: focus, tabOf: mate)
+        switchOpening = false
         return (r.ok, r.ok ? "Now on \(SBLogins.short(loginDir))." : r.message)
     }
 

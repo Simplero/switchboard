@@ -139,6 +139,7 @@ final class SessionsStore: ObservableObject {
         if id != focusedSurfaceID {
             focusedSurfaceID = id
             SessionsWeb.shared.setFocus(id)
+            SessionsWeb.banner.pushBannerContext()
         }
         recordVisit()
         if let p = picked, let s = payload?.s.first(where: { $0.k == p }), s.sf == id { picked = nil }
@@ -147,6 +148,7 @@ final class SessionsStore: ObservableObject {
     private func tick() {
         now = Int(Date().timeIntervalSince1970)
         refreshFocus()
+        SessionsWeb.banner.pushBannerContext()
         var req = URLRequest(url: base.appendingPathComponent("api/sidebar"))
         req.timeoutInterval = 2
         URLSession.shared.dataTask(with: req) { data, _, error in
@@ -921,8 +923,12 @@ struct SessionsSidebarContainer<Content: View>: View {
                 .help("Show the sessions sidebar")
             }
             VStack(spacing: 0) {
-                UpdateBanner()
-                SessionBanner(surfaceIDs: surfaceIDs)
+                if web {
+                    WebBanner()
+                } else {
+                    UpdateBanner()
+                    SessionBanner(surfaceIDs: surfaceIDs)
+                }
                 content
             }
         }
@@ -1028,5 +1034,16 @@ struct SearchResults: View {
             .padding(.bottom, 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+
+/// The banner above the terminal as a web page (http://127.0.0.1:4477/banner).
+struct WebBanner: View {
+    @ObservedObject var page = SessionsWeb.banner
+
+    var body: some View {
+        SessionsWebSidebar(page: page)
+            .frame(height: page.height)
     }
 }

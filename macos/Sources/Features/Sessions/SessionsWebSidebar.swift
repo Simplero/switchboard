@@ -11,13 +11,20 @@ import WebKit
 /// Clicks, menus, questions and keyboard shortcuts stay native: the page calls
 /// the app through `window.webkit.messageHandlers.sessions`.
 @MainActor
-final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
-    static let shared = SessionsWeb()
+final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate, ObservableObject {
+    /// The sidebar page.
+    static let shared = SessionsWeb(path: "sidebar")
+    /// The banner above the terminal: this session, its login, what it needs, and its tabs.
+    static let banner = SessionsWeb(path: "banner")
 
     let webView: WKWebView
+    let path: String
     private var loaded = false
+    /// Height the banner page reports, so its frame fits.
+    @Published var height: CGFloat = 0
 
-    override init() {
+    init(path: String) {
+        self.path = path
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         let controller = WKUserContentController()
@@ -33,11 +40,39 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate 
     func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
-        webView.load(URLRequest(url: URL(string: "http://127.0.0.1:4477/sidebar")!))
+        webView.load(URLRequest(url: URL(string: "http://127.0.0.1:4477/\(path)")!))
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        setFocus(SessionsStore.shared.focusedSurfaceID)
+        if path == "sidebar" { setFocus(SessionsStore.shared.focusedSurfaceID) } else { pushBannerContext() }
+    }
+
+    // MARK: Banner context (which window, its terminals, its tabs, update)
+
+    private var lastContext = ""
+
+    /// Tell the banner which session window is in front, its terminals and tabs.
+    func pushBannerContext() {
+        guard path == "banner" else { return }
+        let key = NSApp.keyWindow?.windowController is BaseTerminalController ? NSApp.keyWindow : nil
+        let controller = key?.windowController as? BaseTerminalController
+        let surfaces = controller?.surfaceTree.root?.leaves().map { $0.id.uuidString } ?? []
+        var tabs: [[String: Any]] = []
+        if let key, let group = key.tabGroup, group.windows.count > 1 {
+            // Tabs live in the banner, not in a bar at the top of the window.
+            if group.isTabBarVisible { key.toggleTabBar(nil) }
+            for w in group.windows {
+                tabs.append(["id": w.windowNumber, "title": w.title, "selected": w === group.selectedWindow])
+            }
+        }
+        var ctx: [String: Any] = ["surfaces": surfaces, "tabs": tabs]
+        let v = SessionsVersion.shared
+        if v.updateAvailable { ctx["update"] = ["running": v.runningBuild, "installed": v.installedBuild] }
+        guard let data = try? JSONSerialization.data(withJSONObject: ctx, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        if json == lastContext { return }
+        lastContext = json
+        webView.evaluateJavaScript("window.Banner && Banner.setContext(\(json))")
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { retry() }
@@ -89,6 +124,29 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate 
         case "menu":
             guard let k = body["k"] as? String, let s = store.payload?.s.first(where: { $0.k == k }) else { return }
             showMenu(for: s)
+        case "height":
+            if let h = body["h"] as? Double, abs(CGFloat(h) - height) > 0.5 { height = CGFloat(h) }
+        case "switchLogin":
+            guard let k = body["k"] as? String, let login = body["login"] as? String else { return }
+            store.send(["op": "switch", "k": k, "login": login])
+        case "op":
+            if let o = body["o"] as? [String: Any] { store.send(o) }
+        case "restartUpdate":
+            SessionsVersion.shared.restart()
+        case "selectTab":
+            guard let id = body["id"] as? Int, let w = NSApp.window(withWindowNumber: id) else { return }
+            w.tabGroup?.selectedWindow = w
+            w.makeKeyAndOrderFront(nil)
+            lastContext = ""
+            pushBannerContext()
+        case "newTab":
+            guard let appDelegate = NSApp.delegate as? AppDelegate, let key = NSApp.keyWindow else { return }
+            _ = TerminalController.newTab(appDelegate.ghostty, from: key)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.lastContext = ""; self.pushBannerContext() }
+        case "closeTab":
+            guard let id = body["id"] as? Int, let w = NSApp.window(withWindowNumber: id) else { return }
+            w.performClose(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.lastContext = ""; self.pushBannerContext() }
         case "blur":
             // Esc in the search box: give the keyboard back to the terminal.
             if let controller = webView.window?.windowController as? BaseTerminalController,
@@ -199,6 +257,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate 
 /// front, the web view moves into it.
 final class SessionsWebHolder: NSView {
     private var observer: Any?
+    var page: SessionsWeb = .shared
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -208,12 +267,13 @@ final class SessionsWebHolder: NSView {
         observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.adopt() }
         }
-        if window.isKeyWindow || SessionsWeb.shared.webView.superview == nil { adopt() }
+        if window.isKeyWindow || page.webView.superview == nil { adopt() }
     }
 
     @MainActor func adopt() {
-        let web = SessionsWeb.shared.webView
-        SessionsWeb.shared.loadIfNeeded()
+        let web = page.webView
+        page.loadIfNeeded()
+        if page.path == "banner" { page.pushBannerContext() }
         guard web.superview !== self else { return }
         web.removeFromSuperview()
         web.frame = bounds
@@ -227,6 +287,11 @@ final class SessionsWebHolder: NSView {
 }
 
 struct SessionsWebSidebar: NSViewRepresentable {
-    func makeNSView(context: Context) -> SessionsWebHolder { SessionsWebHolder() }
+    var page: SessionsWeb = .shared
+    func makeNSView(context: Context) -> SessionsWebHolder {
+        let h = SessionsWebHolder()
+        h.page = page
+        return h
+    }
     func updateNSView(_ nsView: SessionsWebHolder, context: Context) {}
 }

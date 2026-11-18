@@ -17,6 +17,8 @@ final class SessionsVersion: ObservableObject {
     @Published var installedCommit: String
 
     private var timer: Timer?
+    /// Set while restarting for an update: quit without the "quit Ghostty?" question.
+    static var quittingForUpdate = false
 
     var updateAvailable: Bool { installedBuild > runningBuild }
     var label: String { "Ghostty Sessions b\(runningBuild)" }
@@ -60,12 +62,15 @@ final class SessionsVersion: ObservableObject {
 
         SessionsStore.shared.send(["op": "remember_open"])
         let path = Bundle.main.bundleURL.path
+        let pid = getpid()
+        // Wait until this copy has fully quit, then open the new one. Never two at once.
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
-        relaunch.arguments = ["-c", "sleep 1.5; /usr/bin/open -n \"\(path)\""]
+        relaunch.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; sleep 0.3; /usr/bin/open \"\(path)\""]
         try? relaunch.run()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             UserDefaults.standard.set(true, forKey: "sessions.restoreAfterRestart")
+            SessionsVersion.quittingForUpdate = true
             NSApp.terminate(nil)
         }
     }

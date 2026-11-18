@@ -410,6 +410,7 @@ class AppDelegate: NSObject,
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let windows = NSApplication.shared.windows
         if windows.isEmpty { return .terminateNow }
+        if SessionsVersion.quittingForUpdate { return .terminateNow }
 
         // If we've already accepted to install an update, then we don't need to
         // confirm quit. The user is already expecting the update to happen.

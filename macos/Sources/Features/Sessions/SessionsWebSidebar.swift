@@ -107,6 +107,12 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
 
     // MARK: App → page
 
+    func setFolder(_ path: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [path]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.Sessions && Sessions.setFolder(\(json)[0])")
+    }
+
     func setFocus(_ id: String?) {
         let arg = id.map { "'\($0)'" } ?? "null"
         webView.evaluateJavaScript("window.Sessions && Sessions.setFocus(\(arg))")
@@ -130,6 +136,35 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
             } else {
                 store.send(["op": "open", "k": k])
             }
+        case "folderMenu":
+            // Where new sessions start: your usual folders, or any folder.
+            let folders = body["folders"] as? [String] ?? []
+            let current = body["current"] as? String ?? ""
+            menuActions = []
+            let menu = NSMenu()
+            let head = NSMenuItem(title: "Start new sessions in:", action: nil, keyEquivalent: "")
+            head.isEnabled = false
+            menu.addItem(head)
+            for f in folders {
+                menu.addItem(item(f, checked: f == current) { [weak self] in self?.setFolder(f) })
+            }
+            menu.addItem(.separator())
+            menu.addItem(item("Other folder…") { [weak self] in
+                let panel = NSOpenPanel()
+                panel.canChooseDirectories = true
+                panel.canChooseFiles = false
+                panel.allowsMultipleSelection = false
+                panel.prompt = "Use this folder"
+                panel.message = "New sessions start in this folder."
+                panel.directoryURL = URL(fileURLWithPath: (current as NSString).expandingTildeInPath)
+                guard panel.runModal() == .OK, let url = panel.url else { return }
+                let home = NSHomeDirectory()
+                let path = url.path.hasPrefix(home) ? "~" + url.path.dropFirst(home.count) : url.path
+                self?.setFolder(path)
+            })
+            let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
+            let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
+            menu.popUp(positioning: nil, at: point, in: webView)
         case "preview":
             // The keyboard cursor rests on a session running here: bring its window to the
             // front, but keep the keyboard in the sidebar so the arrows keep working.

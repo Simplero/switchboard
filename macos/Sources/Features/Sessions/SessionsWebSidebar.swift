@@ -45,7 +45,14 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // A new page (first load, or a reload after the page changed) knows nothing yet.
+        lastContext = ""
         if path == "sidebar" { setFocus(SessionsStore.shared.focusedSurfaceID) } else { pushBannerContext() }
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        lastContext = ""
+        webView.reload()
     }
 
     // MARK: Banner context (which window, its terminals, its tabs, update)
@@ -86,7 +93,10 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
               let json = String(data: data, encoding: .utf8) else { return }
         if json == lastContext { return }
         lastContext = json
-        webView.evaluateJavaScript("window.Banner && Banner.setContext(\(json))")
+        webView.evaluateJavaScript("window.Banner ? (Banner.setContext(\(json)), true) : false") { [weak self] result, _ in
+            // Not delivered (the page was still loading): send it again next time.
+            if (result as? Bool) != true { self?.lastContext = "" }
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { retry() }
@@ -168,18 +178,6 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
             let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
             let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
             menu.popUp(positioning: nil, at: point, in: webView)
-        case "preview":
-            // The keyboard cursor rests on a session running here: bring its window to the
-            // front, but keep the keyboard in the sidebar so the arrows keep working.
-            guard let k = body["k"] as? String, let s = store.payload?.s.first(where: { $0.k == k }),
-                  s.isOpen, s.be == "ghostty", let sf = s.sf,
-                  let view = SessionsAPI.allSurfaces().first(where: { $0.id.uuidString == sf }) else { return }
-            SessionsAPI.bringFront(view)
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let window = self.webView.window else { return }
-                window.makeFirstResponder(self.webView)
-                self.webView.evaluateJavaScript("window.Sessions && Sessions.refocus()")
-            }
         case "nav":
             store.navOrder = body["keys"] as? [String] ?? []
         case "menu":
@@ -208,7 +206,12 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
             guard let k = body["k"] as? String, let login = body["login"] as? String else { return }
             store.send(["op": "switch", "k": k, "login": login])
         case "op":
-            if let o = body["o"] as? [String: Any] { store.send(o) }
+            if let o = body["o"] as? [String: Any] {
+                if let op = o["op"] as? String, let k = o["k"] as? String,
+                   let action = ["done": "Done with", "close": "Close", "park": "Park"][op],
+                   !store.confirmClose(k, action: action) { return }
+                store.send(o)
+            }
         case "restartUpdate":
             SessionsVersion.shared.restart()
         case "selectTab":
@@ -288,13 +291,21 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
             menu.addItem(item("Open here with another login…") { store.askMove(s) })
         }
         if s.isOpen || !s.isArchived {
-            menu.addItem(item(s.a == "shell" ? "Done (close the window)" : "Done (close it, move it to the Archive)") {
+            menu.addItem(item(s.a == "shell" ? "Done (close it and its tabs)" : "Done (close it, move it to the Archive)") {
+                guard store.confirmClose(s.k, action: "Done with") else { return }
                 store.send(["op": "done", "k": s.k])
             })
         }
-        if s.isOpen {
-            menu.addItem(item("Park (close it, keep it here)") { store.send(["op": "park", "k": s.k]) })
-            menu.addItem(item("Close") { store.send(["op": "close", "k": s.k]) })
+        if s.isOpen && s.a != "shell" {
+            // A shell has nothing to resume, so it cannot be parked or closed "for later".
+            menu.addItem(item("Park (close it, keep it here)") {
+                guard store.confirmClose(s.k, action: "Park") else { return }
+                store.send(["op": "park", "k": s.k])
+            })
+            menu.addItem(item("Close") {
+                guard store.confirmClose(s.k, action: "Close") else { return }
+                store.send(["op": "close", "k": s.k])
+            })
         } else if s.isParked {
             menu.addItem(item("Unpark") { store.send(["op": "unpark", "k": s.k]) })
         }

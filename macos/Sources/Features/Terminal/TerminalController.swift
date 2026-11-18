@@ -11,6 +11,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// them, and tab keys (next, previous, ⌘1…9) stay inside the session.
     var sessionsWorkspace = UUID().uuidString
 
+    /// Switchboard: the tabs of this session, in tab order.
+    var sessionTabWindows: [NSWindow] {
+        guard let window else { return [] }
+        guard let group = window.tabGroup else { return [window] }
+        return group.windows.filter { ($0.windowController as? TerminalController)?.sessionsWorkspace == sessionsWorkspace }
+    }
+
     override var windowNibName: NSNib.Name? {
         let defaultValue = "Terminal"
 
@@ -424,7 +431,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     static func newTab(
         _ ghostty: Ghostty.App,
         from parent: NSWindow? = nil,
-        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil
+        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil,
+        select: Bool = true
     ) -> TerminalController? {
         // Making sure that we're dealing with a TerminalController. If not,
         // then we just create a new window.
@@ -445,6 +453,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             alert.beginSheetModal(for: parent)
             return nil
         }
+
+        // Switchboard: the tab in front before this one (see `select`).
+        let previousSelected = parent.tabGroup?.selectedWindow ?? parent
 
         // Create a new window and add it to the parent
         let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
@@ -501,7 +512,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // so this must cross the Objective-C exception bridge.
         // We don't need to dispatch this because `tabbingMode = .disallowed`
         // for HiddenTitlebarTerminalWindow.
+        // Switchboard: `select: false` (sessions reopened after a restart) still shows the tab
+        // once, so it lays out and draws (a tab never shown stays blank), then goes back to
+        // the tab you were on, and does not bring the app to the front.
         controller.showWindowSafely(self)
+        if !select, previousSelected !== window {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                previousSelected.tabGroup?.selectedWindow = previousSelected
+                previousSelected.makeKeyAndOrderFront(nil)
+            }
+        }
 
         // Windows with `macos-titlebar-style = hidden` create new windows when the
         // new tab binding is pressed, we should cascade those windows as well.
@@ -519,7 +539,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
             // We also activate our app so that it becomes front. This may be
             // necessary for the dock menu.
-            NSApp.activate(ignoringOtherApps: true)
+            if select { NSApp.activate(ignoringOtherApps: true) }
         }
 
         // It takes an event loop cycle until the macOS tabGroup state becomes
@@ -774,8 +794,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             undoManager?.endUndoGrouping()
         }
 
-        // Iterate through all tabs except the current one.
-        for window in tabGroup.windows where window != self.window {
+        // Iterate through all tabs except the current one (Switchboard: of this session only).
+        for window in sessionTabWindows where window != self.window {
             // We ignore any non-terminal tabs. They don't currently exist and we can't
             // properly undo them anyways so I'd rather ignore them and get a bug report
             // later if and when we introduce non-terminal tabs.
@@ -812,10 +832,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     private func closeTabsOnTheRightImmediately() {
         guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
+        guard window.tabGroup != nil else { return }
+        let tabs = sessionTabWindows
+        guard let currentIndex = tabs.firstIndex(of: window) else { return }
 
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
+        let tabsToClose = tabs.enumerated().filter { $0.offset > currentIndex }
         guard !tabsToClose.isEmpty else { return }
 
         undoManager?.beginUndoGrouping()
@@ -1034,10 +1055,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let tabIndex: Int?
         weak var tabGroup: NSWindowTabGroup?
         let tabColor: TerminalTabColor
+        /// Switchboard: an undone tab goes back to its session.
+        var sessionsWorkspace: String? = nil
     }
 
     convenience init(_ ghostty: Ghostty.App, with undoState: UndoState) {
         self.init(ghostty, withSurfaceTree: undoState.surfaceTree)
+        if let id = undoState.sessionsWorkspace { sessionsWorkspace = id }
 
         // Show the window and restore its frame
         showWindow(nil)
@@ -1089,7 +1113,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             focusedSurface: focusedSurface?.id,
             tabIndex: window.tabGroup?.windows.firstIndex(of: window),
             tabGroup: window.tabGroup,
-            tabColor: (window as? TerminalWindow)?.tabColor ?? .none)
+            tabColor: (window as? TerminalWindow)?.tabColor ?? .none,
+            sessionsWorkspace: sessionsWorkspace)
     }
 
     // MARK: - NSWindowController
@@ -1359,7 +1384,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard tabGroup.windows.count > 1 else { return }
 
         // Check if we have to confirm close.
-        guard tabGroup.windows.contains(where: { window in
+        guard sessionTabWindows.contains(where: { window in
             // Ignore ourself
             if window == self.window { return false }
 
@@ -1385,10 +1410,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     @IBAction func closeTabsOnTheRight(_ sender: Any?) {
         guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
+        guard window.tabGroup != nil else { return }
+        let tabs = sessionTabWindows
+        guard let currentIndex = tabs.firstIndex(of: window) else { return }
 
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
+        let tabsToClose = tabs.enumerated().filter { $0.offset > currentIndex }
         guard !tabsToClose.isEmpty else { return }
 
         let needsConfirm = tabsToClose.contains { (_, candidate) in
@@ -1448,6 +1474,23 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     @IBAction override func closeWindow(_ sender: Any?) {
         guard let window = window else { return }
+
+        // Switchboard: the window holds every session. "Close Window" (⌘⇧W, ⌥-click on the
+        // close button) closes this session and its tabs, like cmux's Close Workspace.
+        // Close All Windows and Quit still close everything.
+        if let group = window.tabGroup, sessionTabWindows.count < group.windows.count {
+            let tabs = sessionTabWindows
+            let closeSession = {
+                for tab in tabs { (tab.windowController as? TerminalController)?.closeTabImmediately() }
+            }
+            let busy = tabs.contains { ($0.windowController as? TerminalController)?.surfaceTree.contains(where: { $0.needsConfirmQuit }) == true }
+            guard busy else { closeSession(); return }
+            confirmClose(
+                messageText: "Close Session?",
+                informativeText: "Every tab of this session closes, and what runs in them stops. The other sessions stay."
+            ) { closeSession() }
+            return
+        }
 
         // We need to check all the windows in our tab group for confirmation
         // if we're closing the window. If we don't have a tabgroup for any
@@ -1639,9 +1682,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard let windowController = window.windowController else { return }
         guard let tabGroup = windowController.window?.tabGroup else { return }
         // Switchboard: only the tabs of this session (the window holds every session).
-        let tabbedWindows = tabGroup.windows.filter {
-            ($0.windowController as? TerminalController)?.sessionsWorkspace == sessionsWorkspace
-        }
+        _ = tabGroup
+        let tabbedWindows = sessionTabWindows
 
         // This will be the index we want to actual go to
         let finalIndex: Int

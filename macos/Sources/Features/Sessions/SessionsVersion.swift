@@ -55,23 +55,27 @@ final class SessionsVersion: ObservableObject {
         alert.messageText = "Restart Switchboard to update to b\(installedBuild)?"
         alert.informativeText = open == 0
             ? "No sessions are open here."
-            : "\(open) session\(open == 1 ? "" : "s") open here will close and reopen with the same conversation and login after the restart. A session that is working right now stops its current step."
+            : "\(open) session\(open == 1 ? "" : "s") open here will close and reopen with the same conversation and login after the restart. Their other tabs come back as new shells in the same folder; programs running in them stop. A session that is working right now stops its current step."
         alert.addButton(withTitle: "Restart now")
         alert.addButton(withTitle: "Later")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        SessionsStore.shared.send(["op": "remember_open"])
-        let path = Bundle.main.bundleURL.path
-        let pid = getpid()
-        // Wait until this copy has fully quit, then open the new one. Never two at once.
-        let relaunch = Process()
-        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
-        relaunch.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; sleep 0.3; /usr/bin/open \"\(path)\""]
-        try? relaunch.run()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            UserDefaults.standard.set(true, forKey: "sessions.restoreAfterRestart")
-            SessionsVersion.quittingForUpdate = true
-            NSApp.terminate(nil)
+        // Quit only once the helper has saved which sessions to reopen. If it cannot,
+        // stay open (send shows why).
+        SessionsStore.shared.send(["op": "remember_open"]) { ok in
+            guard ok else { return }
+            let path = Bundle.main.bundleURL.path
+            let pid = getpid()
+            // Wait until this copy has fully quit, then open the new one. Never two at once.
+            let relaunch = Process()
+            relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+            relaunch.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; sleep 0.3; /usr/bin/open \"\(path)\""]
+            try? relaunch.run()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                UserDefaults.standard.set(true, forKey: "sessions.restoreAfterRestart")
+                SessionsVersion.quittingForUpdate = true
+                NSApp.terminate(nil)
+            }
         }
     }
 }
@@ -87,15 +91,6 @@ struct SessionsTitlebarBadge: View {
     var body: some View {
         HStack(spacing: 6) {
             Spacer(minLength: 0)
-            Button { web.toggle() } label: {
-                Text(web ? "Sidebar: web" : "Sidebar: native")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(Capsule().stroke(Color.gray.opacity(0.4)))
-            }
-            .buttonStyle(.plain)
-            .help("Switch between the web sidebar and the native sidebar")
             Text(version.label)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)

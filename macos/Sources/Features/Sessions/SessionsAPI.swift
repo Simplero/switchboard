@@ -171,7 +171,9 @@ final class SessionsAPI {
                   let controller = BaseTerminalController.controller(owning: view) else {
                 return (404, ["error": "no such terminal"])
             }
-            controller.closeSurface(view, withConfirmation: false)
+            // The helper closes on purpose (switch login, park, close): no Undo, so the old
+            // process ends now instead of living on for the Undo timeout.
+            SessionsAPI.withoutUndo(controller) { controller.closeSurface(view, withConfirmation: false) }
             return (200, ["ok": true])
         case ("POST", "/closewindow"):
             // Done with a session: close every tab of that session, without asking.
@@ -180,8 +182,10 @@ final class SessionsAPI {
                   let controller = BaseTerminalController.controller(owning: view) as? TerminalController else {
                 return (404, ["error": "no such terminal"])
             }
-            for window in SessionsAPI.windows(ofWorkspace: controller.sessionsWorkspace) {
-                (window.windowController as? TerminalController)?.closeTabImmediately(registerRedo: false)
+            SessionsAPI.withoutUndo(controller) {
+                for window in SessionsAPI.windows(ofWorkspace: controller.sessionsWorkspace) {
+                    (window.windowController as? TerminalController)?.closeTabImmediately(registerRedo: false)
+                }
             }
             return (200, ["ok": true])
         case ("POST", "/new"):
@@ -193,12 +197,28 @@ final class SessionsAPI {
             else { return (404, ["error": "no window"]) }
             _ = TerminalController.newTab(appDelegate.ghostty, from: window)
             return (200, ["ok": true])
+        case ("POST", "/check"):
+            // For checks only: run what a key does (no keystrokes needed). {"id", "do": "closeWindow" | "tab", "n"}
+            guard let view = surface(req.json["id"] as? String),
+                  let controller = BaseTerminalController.controller(owning: view) as? TerminalController else {
+                return (404, ["error": "no such terminal"])
+            }
+            switch req.json["do"] as? String {
+            case "closeWindow": controller.closeWindow(nil)
+            case "tab": SessionsAPI.gotoSessionTab(req.json["n"] as? Int ?? 1, from: controller)
+            default: return (400, ["error": "unknown check"])
+            }
+            return (200, ["ok": true])
         case ("POST", "/merge"):
             return (200, ["moved": SessionsAPI.mergeAll()])
         case ("GET", "/screenshot"):
             // For checking the sidebar without taking the user's screen: renders a window to PNG.
+            // The tab in front of the one window (background tabs also count as "visible"),
+            // or the window of a given terminal (?id=).
             let windows = SessionsAPI.allControllers().compactMap { $0.window }.filter { $0.isVisible }
-            guard let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first,
+            let chosen = surface(req.query["id"]).flatMap { BaseTerminalController.controller(owning: $0)?.window }
+            guard let window = chosen ?? windows.first(where: { $0.isKeyWindow })
+                    ?? SessionsAPI.mainWindow().map({ $0.tabGroup?.selectedWindow ?? $0 }) ?? windows.first,
                   let view = window.contentView?.superview ?? window.contentView else { return (404, ["error": "no window"]) }
             guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return (500, ["error": "no image"]) }
             view.cacheDisplay(in: view.bounds, to: rep)
@@ -235,8 +255,35 @@ final class SessionsAPI {
                 guard let window = note.object as? NSWindow,
                       let controller = window.windowController as? TerminalController else { return }
                 lastActive[controller.sessionsWorkspace] = window.windowNumber
+                // A second window (Dock "New Window", a file dropped on the Dock icon, …)
+                // joins the one window as its own session.
+                if let main = mainWindow(), let group = main.tabGroup, window.tabGroup !== group {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        MainActor.assumeIsolated { _ = mergeAll() }
+                    }
+                }
             }
         }
+    }
+
+    /// ⌘1…⌘9: tab n of this session (⌘9: its last tab).
+    static func gotoSessionTab(_ n: Int, from controller: TerminalController) {
+        let tabs = controller.sessionTabWindows
+        guard let target = n == 9 ? tabs.last : (n >= 1 && n <= tabs.count ? tabs[n - 1] : nil),
+              target !== controller.window else { return }
+        target.tabGroup?.selectedWindow = target
+        target.makeKeyAndOrderFront(nil)
+    }
+
+    /// Run a close without registering Undo (the terminals end now).
+    static func withoutUndo(_ controller: BaseTerminalController, _ body: () -> Void) {
+        var managers: [UndoManager] = []
+        for c in [controller] + allControllers() {
+            if let u = c.undoManager, !managers.contains(where: { $0 === u }) { managers.append(u) }
+        }
+        managers.forEach { $0.disableUndoRegistration() }
+        body()
+        managers.forEach { $0.enableUndoRegistration() }
     }
 
     /// The tabs of one session, in tab order.
@@ -250,15 +297,8 @@ final class SessionsAPI {
     /// if something opened a second window).
     static func mainWindow() -> NSWindow? {
         let windows = allControllers().filter { $0 is TerminalController }.compactMap { $0.window }
-            .filter { $0.isVisible && !$0.isMiniaturized }
+            .filter { $0.isVisible || $0.isMiniaturized }
         return windows.max { ($0.tabGroup?.windows.count ?? 1) < ($1.tabGroup?.windows.count ?? 1) }
-    }
-
-    /// Show a session without giving its terminal the keyboard.
-    static func bringFront(_ view: Ghostty.SurfaceView) {
-        guard let window = BaseTerminalController.controller(owning: view)?.window else { return }
-        window.tabGroup?.selectedWindow = window
-        window.makeKeyAndOrderFront(nil)
     }
 
     /// Show a session: the tab of it you used last (a shell tab, say), else its own terminal.
@@ -313,6 +353,7 @@ final class SessionsAPI {
                     "pid": view.surfaceModel?.foregroundPID ?? 0,
                     "cwd": view.pwd ?? "",
                     "focused": controller.window === key && controller.focusedSurface === view,
+                    "selected": controller.window.map { $0.tabGroup?.selectedWindow ?? $0 } === controller.window,
                     "surfaces_in_tab": controller.surfaceTree.root?.leaves().count ?? 1,
                 ])
             }
@@ -329,22 +370,19 @@ final class SessionsAPI {
         let focus = (json["focus"] as? Bool) ?? true
         // One window holds every session, like cmux: a new session is a new tab at the
         // end of it (the macOS tab bar is hidden; the sidebar and the panel show them).
-        let host = SessionsAPI.mainWindow()
-        let previous = host?.tabGroup?.selectedWindow ?? host
+        // With "tab_of" (a terminal id) it is a new tab of that terminal's session instead.
+        let tabOf = (json["tab_of"] as? String).flatMap { id in SessionsAPI.allSurfaces().first { $0.id.uuidString == id } }
+            .flatMap { BaseTerminalController.controller(owning: $0)?.window }
+        let host = tabOf ?? SessionsAPI.mainWindow()
         let controller: TerminalController
-        if let host, let tab = TerminalController.newTab(appDelegate.ghostty, from: host.tabGroup?.windows.last ?? host,
-                                                          withBaseConfig: config) {
+        if let host, let tab = TerminalController.newTab(appDelegate.ghostty, from: tabOf ?? host.tabGroup?.windows.last ?? host,
+                                                          withBaseConfig: config, select: focus) {
             controller = tab
         } else {
             controller = TerminalController.newWindow(appDelegate.ghostty, withBaseConfig: config)
         }
-        controller.sessionsWorkspace = UUID().uuidString
-        if !focus, let previous, previous !== controller.window {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                previous.tabGroup?.selectedWindow = previous
-                previous.makeKeyAndOrderFront(nil)
-            }
-        }
+        // newTab gave it the session of its parent; a new session gets its own id.
+        if tabOf == nil { controller.sessionsWorkspace = UUID().uuidString }
         guard let view = controller.surfaceTree.root?.leaves().first else { return (500, ["error": "no surface"]) }
         if let title = json["title"] as? String, !title.isEmpty { view.titleOverride = title }
         if (json["split"] as? Bool) == true {

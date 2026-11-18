@@ -112,16 +112,19 @@ final class SessionsStore: ObservableObject {
                 if event.keyCode == 125 { self.step(1); return nil }    // down arrow
                 switch event.charactersIgnoringModifiers?.lowercased() {
                 case "p":
-                    if UserDefaults.standard.object(forKey: "sessions.sidebar.web") as? Bool ?? true {
-                        UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
-                        SessionsWeb.shared.focusSearch()
-                    } else {
-                        NotificationCenter.default.post(name: .sessionsFocusSearch, object: nil)
-                    }
+                    UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
+                    SessionsWeb.shared.focusSearch()
                     return nil
                 case "n" where self.helperUp:
                     // ⌘N: a new session with a plain shell (no agent), not a bare window.
-                    self.newShellSession()
+                    // Holding the keys down must not open a row of them.
+                    if !event.isARepeat { self.newShellSession() }
+                    return nil
+                case let c? where c.count == 1 && "123456789".contains(c):
+                    // ⌘1…⌘9: tabs of this session only (macOS would count every session's
+                    // tabs, since they are all tabs of the one window). ⌘9 is the last one.
+                    guard let controller = NSApp.keyWindow?.windowController as? TerminalController else { break }
+                    SessionsAPI.gotoSessionTab(Int(c) ?? 1, from: controller)
                     return nil
                 default: break
                 }
@@ -129,6 +132,27 @@ final class SessionsStore: ObservableObject {
             return event
         }
         tick()
+    }
+
+    /// Before Done / Close / Park: if something other than the agent still runs in the
+    /// session (a server in a shell tab, an editor), ask first. The agent's conversation
+    /// is saved, so it does not need asking. Returns true to go ahead.
+    func confirmClose(_ k: String, action: String) -> Bool {
+        guard let s = payload?.s.first(where: { $0.k == k }), s.isOpen, s.be == "ghostty", let sf = s.sf,
+              let view = SessionsAPI.allSurfaces().first(where: { $0.id.uuidString == sf }),
+              let controller = BaseTerminalController.controller(owning: view) as? TerminalController else { return true }
+        let busy = SessionsAPI.windows(ofWorkspace: controller.sessionsWorkspace)
+            .compactMap { ($0.windowController as? BaseTerminalController)?.surfaceTree.root?.leaves() }
+            .flatMap { $0 }
+            .filter { ($0.id.uuidString != sf || s.a == "shell") && $0.needsConfirmQuit }
+        guard !busy.isEmpty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "\(action) “\(s.n)”?"
+        let names = busy.map { $0.title.isEmpty ? "a shell" : "“\($0.title)”" }.joined(separator: ", ")
+        alert.informativeText = "Something still runs in this session: \(names). \(action) ends it."
+        alert.addButton(withTitle: action)
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// A new session window with a plain shell, in the folder of the terminal you are in.
@@ -151,7 +175,16 @@ final class SessionsStore: ObservableObject {
 
     func refreshFocus() {
         let controller = NSApp.keyWindow?.windowController as? BaseTerminalController
-        let id = controller?.focusedSurface?.id.uuidString
+        var id = controller?.focusedSurface?.id.uuidString
+        // In another tab of a session (a shell next to Claude) the session in front is still
+        // that session: report its own terminal, so the sidebar keeps it selected.
+        if let shown = id, payload?.s.contains(where: { $0.sf == shown && $0.isOpen }) != true,
+           let tc = controller as? TerminalController {
+            let ids = Set(SessionsAPI.windows(ofWorkspace: tc.sessionsWorkspace).flatMap {
+                ($0.windowController as? BaseTerminalController)?.surfaceTree.root?.leaves().map { $0.id.uuidString } ?? []
+            })
+            if let s = payload?.s.first(where: { $0.isOpen && $0.sf.map { ids.contains($0) } == true }) { id = s.sf }
+        }
         if id != focusedSurfaceID {
             focusedSurfaceID = id
             SessionsWeb.shared.setFocus(id)
@@ -177,7 +210,7 @@ final class SessionsStore: ObservableObject {
                     if UserDefaults.standard.bool(forKey: "sessions.restoreAfterRestart") {
                         UserDefaults.standard.set(false, forKey: "sessions.restoreAfterRestart")
                         // The app opens one empty shell window at launch. After a restart the
-                        // sessions come back in their own windows, so close that empty one.
+                        // sessions come back as tabs of the one window, so close that empty one.
                         let initial = NSApp.windows.filter { $0.windowController is BaseTerminalController }
                         self.send(["op": "restore_after_restart"]) { ok in
                             guard ok else { return }
@@ -906,19 +939,27 @@ struct SessionsSidebar: View {
 /// Wraps a terminal window's content with the sessions sidebar on the left.
 struct SessionsSidebarContainer<Content: View>: View {
     @AppStorage("sessions.sidebar.visible") private var visible = true
-    /// Web sidebar (served by the helper, reloads without an app restart) or the native one.
-    @AppStorage("sessions.sidebar.web") private var web = true
+    /// The web sidebar (served by the helper). The older native one does not know the
+    /// one-window model, so it is no longer offered.
+    private let web = true
     @AppStorage("sessions.sidebar.width") private var width: Double = 460
     @State private var dragStart: Double?
     let surfaceIDs: [String]
+    /// Off for the quick terminal: the sidebar and panel belong to the session window.
+    let enabled: Bool
     let content: Content
 
-    init(surfaceIDs: [String] = [], @ViewBuilder content: () -> Content) {
+    init(surfaceIDs: [String] = [], enabled: Bool = true, @ViewBuilder content: () -> Content) {
         self.surfaceIDs = surfaceIDs
+        self.enabled = enabled
         self.content = content()
     }
 
     var body: some View {
+        if enabled { withSidebar } else { content }
+    }
+
+    private var withSidebar: some View {
         HStack(spacing: 0) {
             if visible {
                 Group {

@@ -54,14 +54,19 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
     /// Tell the banner which session window is in front, its terminals and tabs.
     func pushBannerContext() {
         guard path == "banner" else { return }
-        let key = NSApp.keyWindow?.windowController is BaseTerminalController ? NSApp.keyWindow : nil
+        // The window that holds the banner now (it follows the front window), even
+        // when the app is not active.
+        let candidates = [webView.window, NSApp.keyWindow, NSApp.mainWindow]
+        let key = candidates.compactMap { $0 }.first { $0.windowController is BaseTerminalController }
         let controller = key?.windowController as? BaseTerminalController
         let surfaces = controller?.surfaceTree.root?.leaves().map { $0.id.uuidString } ?? []
         var tabs: [[String: Any]] = []
         if let key, let group = key.tabGroup, group.windows.count > 1 {
             // Tabs live in the banner. TerminalWindow hides the macOS tab bar.
             for w in group.windows {
-                tabs.append(["id": w.windowNumber, "title": w.title, "selected": w === group.selectedWindow])
+                let surfaceTitle = (w.windowController as? BaseTerminalController)?.focusedSurface?.title ?? ""
+                let title = !surfaceTitle.isEmpty ? surfaceTitle : (w.title == "Switchboard" || w.title.isEmpty ? "Terminal" : w.title)
+                tabs.append(["id": w.windowNumber, "title": title, "selected": w === group.selectedWindow])
             }
         }
         var ctx: [String: Any] = ["surfaces": surfaces, "tabs": tabs]

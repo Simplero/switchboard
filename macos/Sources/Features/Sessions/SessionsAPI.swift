@@ -175,6 +175,13 @@ final class SessionsAPI {
             return (200, ["ok": true])
         case ("POST", "/new"):
             return newTab(req.json)
+        case ("POST", "/newtab"):
+            // A real tab in the front session window (what ⌘T does). Used to check the banner tabs.
+            guard let appDelegate = NSApp.delegate as? AppDelegate,
+                  let window = NSApp.keyWindow ?? SessionsAPI.allControllers().compactMap({ $0.window }).first(where: { $0.isVisible })
+            else { return (404, ["error": "no window"]) }
+            _ = TerminalController.newTab(appDelegate.ghostty, from: window)
+            return (200, ["ok": true])
         case ("POST", "/untab"):
             return (200, ["moved": SessionsAPI.untabAll()])
         case ("GET", "/screenshot"):

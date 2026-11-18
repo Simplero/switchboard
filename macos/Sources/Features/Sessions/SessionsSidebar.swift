@@ -79,6 +79,9 @@ final class SessionsStore: ObservableObject {
     @Published var picked: String?
 
     private var timer: Timer?
+    private var keyMonitor: Any?
+    /// The left column's session order, for ⌘↑ / ⌘↓.
+    var navOrder: [String] = []
     private var startedHelper = false
     private var failures = 0
     private let base = URL(string: "http://127.0.0.1:4477")!
@@ -90,6 +93,22 @@ final class SessionsStore: ObservableObject {
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refreshFocus() }
+        }
+        // ⌘↑ / ⌘↓: previous / next session.  ⌘P: search.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            if mods == .command {
+                switch event.keyCode {
+                case 126: self.step(-1); return nil      // up arrow
+                case 125: self.step(1); return nil       // down arrow
+                case 35:                                  // P
+                    NotificationCenter.default.post(name: .sessionsFocusSearch, object: nil)
+                    return nil
+                default: break
+                }
+            }
+            return event
         }
         tick()
     }
@@ -203,6 +222,20 @@ final class SessionsStore: ObservableObject {
         send(["op": "open", "k": s.k])
     }
 
+    /// Go to the previous (-1) or next (+1) session that is open here, in the
+    /// left column's order.
+    func step(_ delta: Int) {
+        guard let all = payload?.s else { return }
+        let byKey = Dictionary(all.map { ($0.k, $0) }, uniquingKeysWith: { a, _ in a })
+        let order = (navOrder.isEmpty ? all.map(\.k) : navOrder)
+            .compactMap { byKey[$0] }
+            .filter { $0.isOpen && $0.be == "ghostty" }
+        guard !order.isEmpty else { return }
+        let current = order.firstIndex(where: { $0.sf == focusedSurfaceID }) ?? (delta > 0 ? -1 : order.count)
+        let next = (current + delta + order.count) % order.count
+        open(order[next])
+    }
+
     /// Ask what to do with a session that runs in cmux: move it here, or go to it there.
     func askMove(_ s: SessionItem) {
         let alert = NSAlert()
@@ -235,6 +268,10 @@ final class SessionsStore: ObservableObject {
         guard let f = focusedSurfaceID else { return false }
         return s.isOpen && s.sf == f
     }
+}
+
+extension Notification.Name {
+    static let sessionsFocusSearch = Notification.Name("sessions.focusSearch")
 }
 
 // MARK: - Looks
@@ -431,6 +468,15 @@ struct SessionsColumn: View {
 
     // Build this column's rows from the helper's data.
     private func rows() -> [Row] {
+        let built = buildRows()
+        if key == "col1" {
+            let keys = built.compactMap { if case .session(let s) = $0 { return s.k } else { return nil } }
+            if keys != store.navOrder { DispatchQueue.main.async { store.navOrder = keys } }
+        }
+        return built
+    }
+
+    private func buildRows() -> [Row] {
         guard let p = store.payload else {
             return [.empty(store.helperUp ? "Loading…" : "Starting the session helper…")]
         }
@@ -664,6 +710,7 @@ struct SessionRowView: View {
 struct SessionsSidebar: View {
     @ObservedObject var store = SessionsStore.shared
     @Binding var visible: Bool
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -693,9 +740,15 @@ struct SessionsSidebar: View {
             }
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.secondary)
-                TextField("Search sessions: name, next step, label, login, folder…", text: $store.query)
+                TextField("Search sessions (⌘P): name, next step, label, login, folder…", text: $store.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
+                    .focused($searchFocused)
+                    .onSubmit {
+                        // Enter opens the first match.
+                        if let first = store.results.first { store.query = ""; store.open(first) }
+                    }
+                    .onExitCommand { store.query = ""; searchFocused = false }
                 if !store.query.isEmpty {
                     Button { store.query = "" } label: {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -721,6 +774,10 @@ struct SessionsSidebar: View {
         .padding(.horizontal, 8).padding(.top, 8)
         .frame(maxHeight: .infinity, alignment: .top)
         .onAppear { store.start() }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionsFocusSearch)) { _ in
+            if !visible { visible = true }
+            searchFocused = true
+        }
     }
 }
 

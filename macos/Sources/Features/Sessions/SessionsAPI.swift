@@ -175,6 +175,8 @@ final class SessionsAPI {
             return (200, ["ok": true])
         case ("POST", "/new"):
             return newTab(req.json)
+        case ("POST", "/untab"):
+            return (200, ["moved": SessionsAPI.untabAll()])
         case ("GET", "/screenshot"):
             // For checking the sidebar without taking the user's screen: renders a window to PNG.
             let windows = SessionsAPI.allControllers().compactMap { $0.window }.filter { $0.isVisible }
@@ -208,10 +210,39 @@ final class SessionsAPI {
     static func focus(_ view: Ghostty.SurfaceView) {
         guard let controller = BaseTerminalController.controller(owning: view) else { return }
         if let window = controller.window {
+            if let frame = workspaceFrame(), window.tabGroup?.windows.count ?? 1 <= 1,
+               !window.styleMask.contains(.fullScreen) {
+                window.setFrame(frame, display: false)
+            }
             window.tabGroup?.selectedWindow = window
             window.makeKeyAndOrderFront(nil)
         }
         controller.focusSurface(view)
+    }
+
+    /// The frame of the session window you are looking at; new and switched-to
+    /// session windows take it, so they all sit in one place.
+    static func workspaceFrame() -> NSRect? {
+        let key = NSApp.keyWindow?.windowController is BaseTerminalController ? NSApp.keyWindow : nil
+        let any = allControllers().compactMap { $0.window }.first(where: { $0.isVisible })
+        guard let w = key ?? any, !w.styleMask.contains(.fullScreen) else { return nil }
+        return w.frame
+    }
+
+    /// Turn every native tab into its own window on the same frame (one-time cleanup
+    /// for sessions that were opened as tabs).
+    static func untabAll() -> Int {
+        var moved = 0
+        let frame = workspaceFrame()
+        for controller in allControllers() {
+            guard let window = controller.window, let group = window.tabGroup, group.windows.count > 1 else { continue }
+            for w in group.windows where w !== group.selectedWindow {
+                w.moveTabToNewWindow(nil)
+                if let frame { w.setFrame(frame, display: false) }
+                moved += 1
+            }
+        }
+        return moved
     }
 
     private func terminals() -> [[String: Any]] {
@@ -245,12 +276,20 @@ final class SessionsAPI {
         if let env = json["env"] as? [String: String] { config.environmentVariables = env }
         let focus = (json["focus"] as? Bool) ?? true
         let previousKey = NSApp.keyWindow
-        guard let controller = TerminalController.newTab(
-            appDelegate.ghostty,
-            from: TerminalController.preferredParent?.window,
-            withBaseConfig: config
-        ) else {
-            return (500, ["error": "could not open a tab"])
+        let frame = SessionsAPI.workspaceFrame()
+        // A session is its own window, like a cmux workspace: it has its own splits
+        // (and its own tabs if you add some). All windows sit on the same frame, so
+        // switching sessions swaps what you see instead of opening a global tab bar.
+        let controller = TerminalController.newWindow(appDelegate.ghostty, withBaseConfig: config)
+        if let window = controller.window {
+            window.tabbingMode = .disallowed
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                if let frame { window.setFrame(frame, display: true) }
+                window.tabbingMode = .automatic
+                if !focus, let previousKey, previousKey !== window {
+                    previousKey.makeKeyAndOrderFront(nil)
+                }
+            }
         }
         guard let view = controller.surfaceTree.root?.leaves().first else { return (500, ["error": "no surface"]) }
         if let title = json["title"] as? String, !title.isEmpty { view.titleOverride = title }
@@ -259,10 +298,6 @@ final class SessionsAPI {
             shell.workingDirectory = config.workingDirectory
             _ = controller.newSplit(at: view, direction: .right, baseConfig: shell)
             controller.focusSurface(view)
-        }
-        if !focus, let previousKey, previousKey !== controller.window {
-            previousKey.tabGroup?.selectedWindow = previousKey
-            previousKey.makeKeyAndOrderFront(nil)
         }
         return (200, ["id": view.id.uuidString, "tab": ScriptTab.stableID(controller: controller)])
     }

@@ -27,23 +27,36 @@ final class SessionsAPI {
 
     func start() {
         guard listener == nil else { return }
-        for candidate in UInt16(4478)...UInt16(4488) {
-            do {
-                let params = NWParameters.tcp
-                params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: candidate)!)
-                let l = try NWListener(using: params)
-                l.newConnectionHandler = { [weak self] conn in
-                    Task { @MainActor in self?.accept(conn) }
+        listen(on: 4478)
+    }
+
+    /// Bind 127.0.0.1:<port>; if it is taken (another copy runs), try the next one.
+    private func listen(on candidate: UInt16) {
+        guard candidate <= 4498 else { return }
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: candidate)!)
+        guard let l = try? NWListener(using: params) else { listen(on: candidate + 1); return }
+        l.newConnectionHandler = { [weak self] conn in
+            Task { @MainActor in self?.accept(conn) }
+        }
+        l.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    self.port = candidate
+                    self.writeInfo()
+                case .failed:
+                    l.cancel()
+                    if self.listener === l { self.listener = nil }
+                    self.listen(on: candidate + 1)
+                default:
+                    break
                 }
-                l.start(queue: .main)
-                listener = l
-                port = candidate
-                writeInfo()
-                return
-            } catch {
-                continue
             }
         }
+        listener = l
+        l.start(queue: .main)
     }
 
     private func writeInfo() {

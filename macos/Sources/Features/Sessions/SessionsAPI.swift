@@ -181,6 +181,22 @@ final class SessionsAPI {
             }
             controller.closeWindowImmediately()
             return (200, ["ok": true])
+        case ("POST", "/frame"):
+            // For checks only: move one session window the way a drag would, then report every window's frame.
+            guard let view = surface(req.json["id"] as? String),
+                  let window = BaseTerminalController.controller(owning: view)?.window,
+                  let x = req.json["x"] as? Double, let y = req.json["y"] as? Double,
+                  let w = req.json["w"] as? Double, let h = req.json["h"] as? Double else {
+                return (404, ["error": "no such terminal"])
+            }
+            window.setFrame(NSRect(x: x, y: y, width: w, height: h), display: false)
+            SessionsWindowStack.align(to: window)
+            let frames = SessionsAPI.allControllers().compactMap { $0.window }.map { w -> String in
+                let tabs = w.tabGroup?.windows.count ?? 1
+                let sel = w.tabGroup?.selectedWindow === w
+                return "\(w.windowNumber) visible=\(w.isVisible) tabs=\(tabs) selected=\(sel) \(NSStringFromRect(w.frame))"
+            }
+            return (200, ["frames": frames])
         case ("POST", "/new"):
             return newTab(req.json)
         case ("POST", "/newtab"):
@@ -328,5 +344,53 @@ final class SessionsAPI {
             controller.focusSurface(view)
         }
         return (200, ["id": view.id.uuidString, "tab": ScriptTab.stableID(controller: controller)])
+    }
+}
+
+/// All session windows sit on one frame, so you only ever see the front one.
+/// When you move or resize the window you are using (or bring another one to
+/// the front), every other session window takes the same frame. Without this,
+/// windows behind it peek out and look empty: the sidebar and the panel only
+/// draw in the front window.
+@MainActor
+enum SessionsWindowStack {
+    private static var pending: DispatchWorkItem?
+    private static var applying = false
+
+    static func start() {
+        let names: [Notification.Name] = [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification,
+                                          NSWindow.didBecomeKeyNotification, NSWindow.didExitFullScreenNotification]
+        for name in names {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { note in
+                guard let window = note.object as? NSWindow else { return }
+                MainActor.assumeIsolated { schedule(from: window) }
+            }
+        }
+    }
+
+    private static func schedule(from window: NSWindow) {
+        guard !applying, window.isKeyWindow, window.windowController is TerminalController else { return }
+        pending?.cancel()
+        let work = DispatchWorkItem { MainActor.assumeIsolated { align(to: window) } }
+        pending = work
+        // Once the drag or resize settles, not on every step of it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    static func align(to window: NSWindow) {
+        guard window.isVisible, !window.isMiniaturized, !window.styleMask.contains(.fullScreen) else { return }
+        let frame = window.frame
+        let mine = Set((window.tabGroup?.windows ?? [window]).map(ObjectIdentifier.init))
+        var groups = Set<ObjectIdentifier>()
+        applying = true
+        defer { applying = false }
+        for controller in SessionsAPI.allControllers() where controller is TerminalController {
+            guard let other = controller.window, !mine.contains(ObjectIdentifier(other)),
+                  other.isVisible, !other.isMiniaturized, !other.styleMask.contains(.fullScreen) else { continue }
+            // A window with tabs: move its group once, through the tab you see.
+            let target = other.tabGroup?.selectedWindow ?? other
+            guard groups.insert(ObjectIdentifier(target)).inserted, target.frame != frame else { continue }
+            target.setFrame(frame, display: false)
+        }
     }
 }

@@ -130,6 +130,18 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
             } else {
                 store.send(["op": "open", "k": k])
             }
+        case "preview":
+            // The keyboard cursor rests on a session running here: bring its window to the
+            // front, but keep the keyboard in the sidebar so the arrows keep working.
+            guard let k = body["k"] as? String, let s = store.payload?.s.first(where: { $0.k == k }),
+                  s.isOpen, s.be == "ghostty", let sf = s.sf,
+                  let view = SessionsAPI.allSurfaces().first(where: { $0.id.uuidString == sf }) else { return }
+            SessionsAPI.bringFront(view)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.webView.window else { return }
+                window.makeFirstResponder(self.webView)
+                self.webView.evaluateJavaScript("window.Sessions && Sessions.refocus()")
+            }
         case "nav":
             store.navOrder = body["keys"] as? [String] ?? []
         case "menu":

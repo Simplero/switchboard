@@ -214,6 +214,17 @@ final class SessionsAPI {
     }
 
     /// Bring a terminal's window and tab to the front and give it focus.
+    /// Bring a session's window to the front without giving its terminal the keyboard.
+    static func bringFront(_ view: Ghostty.SurfaceView) {
+        guard let window = BaseTerminalController.controller(owning: view)?.window else { return }
+        if let frame = workspaceFrame(), window.tabGroup?.windows.count ?? 1 <= 1,
+           !window.styleMask.contains(.fullScreen) {
+            window.setFrame(frame, display: false)
+        }
+        window.tabGroup?.selectedWindow = window
+        window.makeKeyAndOrderFront(nil)
+    }
+
     static func focus(_ view: Ghostty.SurfaceView) {
         guard let controller = BaseTerminalController.controller(owning: view) else { return }
         if let window = controller.window {

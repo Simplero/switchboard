@@ -21,7 +21,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
     let path: String
     private var loaded = false
     /// Height the banner page reports, so its frame fits.
-    @Published var height: CGFloat = 0
+    @Published var height: CGFloat = 64
 
     init(path: String) {
         self.path = path
@@ -59,8 +59,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         let surfaces = controller?.surfaceTree.root?.leaves().map { $0.id.uuidString } ?? []
         var tabs: [[String: Any]] = []
         if let key, let group = key.tabGroup, group.windows.count > 1 {
-            // Tabs live in the banner, not in a bar at the top of the window.
-            if group.isTabBarVisible { key.toggleTabBar(nil) }
+            // Tabs live in the banner. TerminalWindow hides the macOS tab bar.
             for w in group.windows {
                 tabs.append(["id": w.windowNumber, "title": w.title, "selected": w === group.selectedWindow])
             }
@@ -206,7 +205,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         let menu = NSMenu()
         menu.addItem(item(s.isOpen ? "Go to session" : "Reopen here") { store.open(s) })
         if s.isOpen && s.be != "ghostty" {
-            menu.addItem(item("Move it here from cmux…") { store.askMove(s) })
+            menu.addItem(item("Open here with another login…") { store.askMove(s) })
         }
         if s.isOpen {
             menu.addItem(item("Park (close it, keep it here)") { store.send(["op": "park", "k": s.k]) })

@@ -260,6 +260,9 @@ class TerminalWindow: NSWindow {
         // it. This has been verified to work on macOS 12 to 26
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
+            // Switchboard: a session's tabs show in the banner above the terminal,
+            // so the macOS tab bar stays hidden.
+            childViewController.isHidden = true
             tabBarDidAppear()
         }
     }

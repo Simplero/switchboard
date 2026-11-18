@@ -256,8 +256,10 @@ final class SessionsStore: ObservableObject {
             return
         }
         if s.isOpen {
-            // Running in another terminal (cmux): never move it without asking.
-            askMove(s)
+            // Running somewhere else (cmux): bring it here. Its old process ends, the
+            // conversation resumes here with the same login.
+            picked = s.k
+            send(["op": "move", "k": s.k])
             return
         }
         // Closed or parked: resume it here.
@@ -943,7 +945,7 @@ struct UpdateBanner: View {
         if version.updateAvailable {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.down.circle.fill").foregroundStyle(.white)
-                Text("A newer Ghostty Sessions is installed: b\(version.installedBuild). You run b\(version.runningBuild).")
+                Text("A newer Switchboard is installed: b\(version.installedBuild). You run b\(version.runningBuild).")
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
                 Spacer()
                 Button("Restart to update") { version.restart() }

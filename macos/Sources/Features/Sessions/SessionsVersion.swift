@@ -21,7 +21,7 @@ final class SessionsVersion: ObservableObject {
     static var quittingForUpdate = false
 
     var updateAvailable: Bool { installedBuild > runningBuild }
-    var label: String { "Ghostty Sessions b\(runningBuild)" }
+    var label: String { "Switchboard b\(runningBuild)" }
 
     private init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -52,7 +52,7 @@ final class SessionsVersion: ObservableObject {
     func restart() {
         let open = SessionsStore.shared.payload?.s.filter { $0.isOpen && $0.be == "ghostty" }.count ?? 0
         let alert = NSAlert()
-        alert.messageText = "Restart Ghostty Sessions to update to b\(installedBuild)?"
+        alert.messageText = "Restart Switchboard to update to b\(installedBuild)?"
         alert.informativeText = open == 0
             ? "No sessions are open here."
             : "\(open) session\(open == 1 ? "" : "s") open here will close and reopen with the same conversation and login after the restart. A session that is working right now stops its current step."

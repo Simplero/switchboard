@@ -179,7 +179,7 @@ final class SessionsAPI {
             // For checking the sidebar without taking the user's screen: renders a window to PNG.
             let windows = SessionsAPI.allControllers().compactMap { $0.window }.filter { $0.isVisible }
             guard let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first,
-                  let view = window.contentView else { return (404, ["error": "no window"]) }
+                  let view = window.contentView?.superview ?? window.contentView else { return (404, ["error": "no window"]) }
             guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return (500, ["error": "no image"]) }
             view.cacheDisplay(in: view.bounds, to: rep)
             guard let png = rep.representation(using: .png, properties: [:]) else { return (500, ["error": "no png"]) }

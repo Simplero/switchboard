@@ -17,7 +17,11 @@ final class SessionsAPI {
     private(set) var port: UInt16 = 4478
 
     private var infoURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        // SESSIONS_API_INFO lets a test copy run without taking over the real app's API file.
+        if let p = ProcessInfo.processInfo.environment["SESSIONS_API_INFO"], !p.isEmpty {
+            return URL(fileURLWithPath: p)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/session-inbox/ghostty-api.json")
     }
 

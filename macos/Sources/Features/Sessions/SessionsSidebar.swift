@@ -206,6 +206,9 @@ final class SessionsStore: ObservableObject {
     }
 
     func open(_ s: SessionItem) {
+        if !query.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.query = "" }
+        }
         if s.isOpen, s.be == "ghostty", let sf = s.sf,
            let view = SessionsAPI.allSurfaces().first(where: { $0.id.uuidString == sf }) {
             picked = s.k
@@ -240,7 +243,16 @@ final class SessionsStore: ObservableObject {
     func askMove(_ s: SessionItem) {
         let alert = NSAlert()
         alert.messageText = "“\(s.n)” is open in cmux"
-        alert.informativeText = "Move it here closes it in cmux, with the shell split in that workspace, and resumes the same conversation here with the same login (\(s.login)).\n\nGo to it in cmux leaves it where it is."
+        alert.informativeText = "Move it here closes it in cmux, with the shell split in that workspace, and resumes the same conversation here with the login you pick below.\n\nGo to it in cmux leaves it where it is."
+        // Login to resume with; starts on the one it runs with now.
+        let dirs = ["~/.claude", "~/.claude-ccl", "~/.claude-ccm"]
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26), pullsDown: false)
+        for d in dirs {
+            let name = payload?.spares?[d]?.lg ?? d
+            popup.addItem(withTitle: "Login: " + name + (s.ld == d ? "  (now)" : ""))
+        }
+        popup.selectItem(at: dirs.firstIndex(of: s.ld ?? "~/.claude") ?? 0)
+        alert.accessoryView = popup
         alert.addButton(withTitle: "Move it here")
         alert.addButton(withTitle: "Go to it in cmux")
         alert.addButton(withTitle: "Cancel")
@@ -249,7 +261,7 @@ final class SessionsStore: ObservableObject {
             switch r {
             case .alertFirstButtonReturn:
                 self.picked = s.k
-                self.send(["op": "move", "k": s.k])
+                self.send(["op": "move", "k": s.k, "login": dirs[max(0, popup.indexOfSelectedItem)]])
             case .alertSecondButtonReturn:
                 self.send(["op": "open", "k": s.k])
             default:
@@ -651,7 +663,7 @@ struct SessionRowView: View {
     @ViewBuilder private var menu: some View {
         Button(s.isOpen ? "Go to session" : "Reopen here") { store.open(s) }
         if s.isOpen && s.be != "ghostty" {
-            Button("Move it here from cmux") { store.picked = s.k; store.send(["op": "move", "k": s.k]) }
+            Button("Move it here from cmux…") { store.askMove(s) }
         }
         if s.isOpen {
             Button("Park (close it, keep it here)") { store.send(["op": "park", "k": s.k]) }

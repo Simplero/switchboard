@@ -647,7 +647,7 @@ final class Switchboard {
         switch op {
         case "open", "unpark":
             if msg["end_elsewhere"] as? Bool == true, !(await endElsewhere(k)) {
-                return (false, "It still runs in cmux and did not stop. Close it there, then reopen it here.")
+                return (false, "It still runs outside Switchboard (cmux or another terminal) and did not stop. Close it there, then reopen it here.")
             }
             let r = openEntry(k, focus: focus)
             return (r.ok, r.message)
@@ -696,7 +696,7 @@ final class Switchboard {
         if switching.contains(k) && !switchOpening { return (true, "Switching login…", nil) }
         // The same conversation must never run in two places.
         if runningElsewhere(k) != nil {
-            return (false, "“\(e.name ?? "This session")” still runs in cmux. Click its row in the sidebar to move it here.", nil)
+            return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (cmux or another terminal). Click its row in the sidebar to move it here.", nil)
         }
         guard let cmd = resumeCommand(e) else { return (false, "No way to resume this session.", nil) }
         guard let sf = openAgentTerminal(cwd: e.cwd, command: cmd, loginDir: e.login_dir, focus: focus, split: split, tabOf: tabOf) else {
@@ -713,14 +713,12 @@ final class Switchboard {
     }
 
     /// The process id of a session that still runs outside this app (in cmux), if any.
+    /// The process of a closed session's conversation that runs outside this app's
+    /// terminals (cmux, another terminal app), if any.
     func runningElsewhere(_ k: String) -> Int? {
-        guard let e = reg.sessions[k], !e.isOpen, e.backend != "ghostty", let pid = e.pid, SBProcesses.isAlive(pid),
-              let (args, env) = SBProcesses.argsAndEnv(pid_t(pid)), SBProcesses.agentKind(args) == e.agent else { return nil }
-        if let sid = e.session_id {
-            let fileSid = e.agent == "claude" ? SBBackground.claudeSessionFile(SBLogins.norm(env["CLAUDE_CONFIG_DIR"]), pid) : nil
-            guard args.contains(sid) || fileSid == sid else { return nil }
-        }
-        return pid
+        guard let e = reg.sessions[k], !e.isOpen, let sid = e.session_id, let kind = e.agent, kind != "shell" else { return nil }
+        let ours = Set(SessionsAPI.terminalList().compactMap { SBProcesses.deviceOf(ttyPath: $0.tty) })
+        return SBBackground.findAgent(kind: kind, sid: sid, notOn: ours, hint: e.pid)
     }
 
     /// End a session's process outside this app (its cmux tab stays, at a shell prompt).
@@ -791,7 +789,7 @@ final class Switchboard {
         if e.isOpen && e.screen == "working" { return (false, "It is working right now. Stop it (Ctrl+C) or wait, then switch.") }
         guard !switching.contains(k) else { return (false, "It is switching login already.") }
         if !e.isOpen, runningElsewhere(k) != nil {
-            return (false, "“\(e.name ?? "This session")” still runs in cmux. Click its row in the sidebar to move it here first.")
+            return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (cmux or another terminal). Click its row in the sidebar to move it here first.")
         }
         switching.insert(k)
         defer { switching.remove(k) }
@@ -1037,6 +1035,8 @@ final class Switchboard {
             } else if let e, e.isOpen {
                 (ok, msg) = (true, "Already open.")
             } else if let e {
+                // The Claude of the app that just quit may still be exiting: give it a moment.
+                for _ in 0..<20 where runningElsewhere(e.key) != nil { try? await Task.sleep(nanoseconds: 250_000_000) }
                 (ok, msg, sf) = openEntry(e.key, focus: false, split: it["split"] as? Bool ?? false)
                 if !ok && msg == "No way to resume this session." {
                     // Nothing to resume yet (a new conversation, an agent without an id): start fresh there.

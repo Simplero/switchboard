@@ -91,6 +91,19 @@ enum SBBackground {
         return found
     }
 
+    /// A process of this agent kind running this conversation, on a terminal that is not one
+    /// of `notOn` (tty devices). `hint` (the pid last seen) is checked first.
+    static func findAgent(kind: String, sid: String, notOn: Set<UInt32>, hint: Int?) -> Int? {
+        func matches(_ pid: pid_t) -> Bool {
+            if let dev = SBProcesses.ttyDevice(pid), notOn.contains(dev) { return false }
+            guard let (args, env) = SBProcesses.argsAndEnv(pid), SBProcesses.agentKind(args) == kind else { return false }
+            if sessionIDArgument(kind: kind, args) == sid { return true }
+            return kind == "claude" && claudeSessionFile(SBLogins.norm(env["CLAUDE_CONFIG_DIR"]), Int(pid)) == sid
+        }
+        if let h = hint, h > 0, SBProcesses.isAlive(h), matches(pid_t(h)) { return h }
+        return SBProcesses.allPIDs().first(where: matches).map(Int.init)
+    }
+
     static func isUUID(_ s: String) -> Bool {
         s.range(of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#, options: .regularExpression) != nil
     }

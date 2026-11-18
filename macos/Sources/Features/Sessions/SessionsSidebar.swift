@@ -245,12 +245,12 @@ final class SessionsStore: ObservableObject {
             SessionsAPI.focus(view)
             return
         }
-        // Closed, parked or archived: resume it here. A session that still runs in cmux
-        // would then run twice: ask first, and end it there.
+        // Closed, parked or archived: resume it here. A conversation that still runs in cmux
+        // or another terminal would then run twice: ask first, and end it there.
         if Switchboard.shared.runningElsewhere(k) != nil {
             let alert = NSAlert()
-            alert.messageText = "“\(name)” still runs in cmux"
-            alert.informativeText = "Reopen it here ends it in cmux (its cmux tab stays, at a shell prompt) and resumes the same conversation here."
+            alert.messageText = "“\(name)” still runs outside Switchboard"
+            alert.informativeText = "It runs in cmux or another terminal. Reopen it here ends it there (its tab there stays, at a shell prompt) and resumes the same conversation here."
             alert.addButton(withTitle: "Reopen here")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { picked = nil; return }

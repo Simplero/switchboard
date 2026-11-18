@@ -20,8 +20,9 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
     let webView: WKWebView
     let path: String
     private var loaded = false
-    /// Height the banner page reports, so its frame fits.
-    @Published var height: CGFloat = 64
+    /// The panel above the terminal has one fixed height, so nothing ever jumps.
+    /// banner.html lays itself out for exactly this height.
+    static let bannerHeight: CGFloat = 110
 
     init(path: String) {
         self.path = path
@@ -58,15 +59,21 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         // when the app is not active.
         let candidates = [webView.window, NSApp.keyWindow, NSApp.mainWindow]
         let key = candidates.compactMap { $0 }.first { $0.windowController is BaseTerminalController }
-        let controller = key?.windowController as? BaseTerminalController
-        let surfaces = controller?.surfaceTree.root?.leaves().map { $0.id.uuidString } ?? []
+        // The panel belongs to the whole window (the session), not to one tab: send
+        // the terminals of every tab, first tab first, so a new shell tab keeps the
+        // same session above it.
+        let windows: [NSWindow] = key.map { $0.tabGroup?.windows ?? [$0] } ?? []
+        let surfaces = windows.flatMap {
+            ($0.windowController as? BaseTerminalController)?.surfaceTree.root?.leaves().map { $0.id.uuidString } ?? []
+        }
         var tabs: [[String: Any]] = []
-        if let key, let group = key.tabGroup, group.windows.count > 1 {
-            // Tabs live in the banner. TerminalWindow hides the macOS tab bar.
-            for w in group.windows {
+        if let key {
+            // Tabs live in the panel, always shown. TerminalWindow hides the macOS tab bar.
+            let selected = key.tabGroup?.selectedWindow ?? key
+            for w in windows {
                 let surfaceTitle = (w.windowController as? BaseTerminalController)?.focusedSurface?.title ?? ""
                 let title = !surfaceTitle.isEmpty ? surfaceTitle : (w.title == "Switchboard" || w.title.isEmpty ? "Terminal" : w.title)
-                tabs.append(["id": w.windowNumber, "title": title, "selected": w === group.selectedWindow])
+                tabs.append(["id": w.windowNumber, "title": title, "selected": w === selected])
             }
         }
         var ctx: [String: Any] = ["surfaces": surfaces, "tabs": tabs]
@@ -128,8 +135,6 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         case "menu":
             guard let k = body["k"] as? String, let s = store.payload?.s.first(where: { $0.k == k }) else { return }
             showMenu(for: s)
-        case "height":
-            if let h = body["h"] as? Double, abs(CGFloat(h) - height) > 0.5 { height = CGFloat(h) }
         case "loginMenu":
             // A native menu, so it draws over the terminal instead of being cut off by the banner.
             guard let k = body["k"] as? String else { return }

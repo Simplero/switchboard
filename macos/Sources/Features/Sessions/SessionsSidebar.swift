@@ -1046,6 +1046,6 @@ struct WebBanner: View {
 
     var body: some View {
         SessionsWebSidebar(page: page)
-            .frame(height: page.height)
+            .frame(height: SessionsWeb.bannerHeight)
     }
 }

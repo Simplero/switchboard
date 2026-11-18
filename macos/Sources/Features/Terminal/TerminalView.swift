@@ -72,7 +72,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
             ErrorView()
         case .ready:
             ZStack {
-                SessionsSidebarContainer {
+                SessionsSidebarContainer(surfaceIDs: viewModel.surfaceTree.root?.leaves().map { $0.id.uuidString } ?? []) {
                 VStack(spacing: 0) {
                     // If we're running in debug mode we show a warning so that users
                     // know that performance will be degraded.

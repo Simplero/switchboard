@@ -32,6 +32,9 @@ struct SessionItem: Decodable, Identifiable, Equatable {
     let rp: [[String]]?
     let art: [String]?
     let be: String?
+    let sd: String?
+    let lm: String?
+    let wl: String?
 
     var id: String { k }
     var isOpen: Bool { o ?? false }
@@ -852,9 +855,11 @@ struct SessionsSidebarContainer<Content: View>: View {
     @AppStorage("sessions.sidebar.web") private var web = true
     @AppStorage("sessions.sidebar.width") private var width: Double = 460
     @State private var dragStart: Double?
+    let surfaceIDs: [String]
     let content: Content
 
-    init(@ViewBuilder content: () -> Content) {
+    init(surfaceIDs: [String] = [], @ViewBuilder content: () -> Content) {
+        self.surfaceIDs = surfaceIDs
         self.content = content()
     }
 
@@ -901,7 +906,85 @@ struct SessionsSidebarContainer<Content: View>: View {
                 .buttonStyle(.plain)
                 .help("Show the sessions sidebar")
             }
-            content
+            VStack(spacing: 0) {
+                UpdateBanner()
+                SessionBanner(surfaceIDs: surfaceIDs)
+                content
+            }
+        }
+    }
+}
+
+/// Above the terminal, when a newer build is installed.
+struct UpdateBanner: View {
+    @ObservedObject var version = SessionsVersion.shared
+
+    var body: some View {
+        if version.updateAvailable {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.white)
+                Text("A newer Ghostty Sessions is installed: b\(version.installedBuild). You run b\(version.runningBuild).")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                Spacer()
+                Button("Restart to update") { version.restart() }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(selectedBlue)
+        }
+    }
+}
+
+/// Above the terminal: which session this is, its login, when it last did
+/// something, what it needs from you, and the last thing that happened.
+struct SessionBanner: View {
+    @ObservedObject var store = SessionsStore.shared
+    let surfaceIDs: [String]
+
+    var body: some View {
+        let s = store.payload?.s.first(where: { $0.isOpen && $0.sf.map(surfaceIDs.contains) == true })
+        if let s {
+            let st = state(s)
+            let lk = look(st)
+            let needs = needsYou(s)
+            let step: String = st == "working" ? (s.wl?.isEmpty == false ? s.wl! : "Working…") : (s.ns?.isEmpty == false ? s.ns! : "Nothing needs you here.")
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(s.n).font(.system(size: 13, weight: .bold)).lineLimit(1)
+                    HStack(spacing: 4) {
+                        Image(systemName: lk.icon).font(.system(size: 10, weight: .semibold))
+                        Text(lk.word).font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundStyle(lk.color)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(lk.color.opacity(0.15)))
+                    HStack(spacing: 3) {
+                        Image(systemName: loginIcon(s.login)).font(.system(size: 9))
+                        Text(s.login).font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.gray.opacity(0.18)))
+                    Text("updated \(ago(s.la, now: store.now)) ago".replacingOccurrences(of: "now ago", with: "just now"))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(needs ? "Needs you:" : "Next:").font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(needs ? lk.color : .secondary)
+                    Text(step).font(.system(size: 12, weight: needs ? .semibold : .regular)).lineLimit(2)
+                }
+                if let said = s.sd, !said.isEmpty, st != "working" {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("Last:").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
+                        Text(said).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay(Rectangle().fill(needs ? lk.color : Color.gray.opacity(0.25)).frame(height: needs ? 2 : 1), alignment: .bottom)
         }
     }
 }

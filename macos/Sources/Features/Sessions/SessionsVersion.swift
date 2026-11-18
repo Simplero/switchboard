@@ -71,6 +71,8 @@ final class SessionsVersion: ObservableObject {
     }
 }
 
+private let selectedBlueTitle = Color(red: 0.36, green: 0.52, blue: 1.0)
+
 /// Shown at the right end of every window's title bar: name, build, and an
 /// Update button when a newer build is installed.
 struct SessionsTitlebarBadge: View {
@@ -94,17 +96,7 @@ struct SessionsTitlebarBadge: View {
                 .foregroundStyle(.secondary)
                 .help("Commit \(version.runningCommit)")
             if version.updateAvailable {
-                Button {
-                    version.restart()
-                } label: {
-                    Label("Update to b\(version.installedBuild)", systemImage: "arrow.down.circle.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Capsule().fill(Color(red: 0.23, green: 0.36, blue: 0.86)))
-                }
-                .buttonStyle(.plain)
-                .help("A newer build is installed. Restart to use it.")
+                Text("update ready").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(selectedBlueTitle)
             }
         }
         .padding(.trailing, 10)

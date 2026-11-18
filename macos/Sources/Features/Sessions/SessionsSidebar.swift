@@ -113,10 +113,23 @@ final class SessionsStore: ObservableObject {
         tick()
     }
 
+    /// When you last looked at each session (session key → time). Drives "Visited" sort.
+    @Published var visits: [String: Double] = (UserDefaults.standard.dictionary(forKey: "sessions.visits") as? [String: Double]) ?? [:]
+
+    private func recordVisit() {
+        guard let id = focusedSurfaceID, NSApp.isActive,
+              let s = payload?.s.first(where: { $0.sf == id && $0.isOpen }) else { return }
+        let now = Date().timeIntervalSince1970
+        if let last = visits[s.k], now - last < 30 { visits[s.k] = now; return }
+        visits[s.k] = now
+        UserDefaults.standard.set(visits, forKey: "sessions.visits")
+    }
+
     func refreshFocus() {
         let controller = NSApp.keyWindow?.windowController as? BaseTerminalController
         let id = controller?.focusedSurface?.id.uuidString
         if id != focusedSurfaceID { focusedSurfaceID = id }
+        recordVisit()
         if let p = picked, let s = payload?.s.first(where: { $0.k == p }), s.sf == id { picked = nil }
     }
 
@@ -423,7 +436,8 @@ struct SessionsColumn: View {
             HStack(spacing: 1) {
                 Text("Sort").font(.system(size: 10)).foregroundStyle(.tertiary).padding(.trailing, 2)
                 pill("Needs", $sortBy, "needs")
-                pill("Recent", $sortBy, "recent")
+                pill("Visited", $sortBy, "recent")
+                pill("Active", $sortBy, "active")
                 pill("Manual", $sortBy, "manual")
                 pill("A–Z", $sortBy, "name")
                 Spacer(minLength: 0)
@@ -514,7 +528,10 @@ struct SessionsColumn: View {
         }
         func order(_ a: SessionItem, _ b: SessionItem) -> Bool {
             switch sortBy {
-            case "recent": return (a.la ?? 0) > (b.la ?? 0)
+            case "recent":
+                let va = store.visits[a.k] ?? 0, vb = store.visits[b.k] ?? 0
+                return va != vb ? va > vb : (a.la ?? 0) > (b.la ?? 0)
+            case "active": return (a.la ?? 0) > (b.la ?? 0)
             case "name": return a.n.localizedCaseInsensitiveCompare(b.n) == .orderedAscending
             case "manual": return a.n.localizedCaseInsensitiveCompare(b.n) == .orderedAscending
             default:
@@ -560,7 +577,7 @@ struct SessionsColumn: View {
         if filter != "all" {
             let inList = Set(shown.map(\.k))
             let recent = open.filter { !inList.contains($0.k) && !store.isSelected($0) }
-                .sorted { ($0.la ?? 0) > ($1.la ?? 0) }.prefix(6)
+                .sorted { (store.visits[$0.k] ?? Double($0.la ?? 0) / 1e6) > (store.visits[$1.k] ?? Double($1.la ?? 0) / 1e6) }.prefix(6)
             if !recent.isEmpty {
                 out.append(.header("Recent", recent.count))
                 if !folded.contains("Recent") { out += recent.map { .session($0) } }
@@ -592,17 +609,44 @@ struct SessionRowView: View {
     @State private var newLabel = ""
 
     var body: some View {
+        if s.isOpen { runningRow } else { olderRow }
+    }
+
+    /// A session that is not running: small and grey, one line, no login.
+    private var olderRow: some View {
+        let lk = look(state(s))
+        let title = (s.t?.isEmpty == false ? s.t : s.ns) ?? ""
+        return HStack(spacing: 5) {
+            Image(systemName: lk.icon).font(.system(size: 9)).foregroundStyle(.tertiary).frame(width: 14)
+            Text(s.n).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            if !title.isEmpty {
+                Text(title).font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1)
+            }
+            Spacer(minLength: 2)
+            Text(ago(s.ca ?? s.la, now: store.now)).font(.system(size: 9.5)).foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Color.gray.opacity(0.12) : .clear))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture { store.open(s) }
+        .help("Not running. Click to reopen it here.")
+        .contextMenu { menu }
+    }
+
+    private var runningRow: some View {
         let st = state(s)
         let lk = look(st)
         let sel = store.isSelected(s)
         let line = (s.ns?.isEmpty == false ? s.ns : s.t) ?? ""
-        VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
                 Image(systemName: lk.icon)
                     .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(sel ? Color.white : lk.color)
                     .frame(width: 14)
-                Text(s.n).font(.system(size: 12.5, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                Text(s.n).font(.system(size: 13.5, weight: .semibold)).lineLimit(1).truncationMode(.tail)
                     .foregroundStyle(sel ? Color.white : Color.primary)
                 Spacer(minLength: 2)
                 if hovering && needsYou(s) {

@@ -35,10 +35,12 @@ struct SessionItem: Decodable, Identifiable, Equatable {
     let sd: String?
     let lm: String?
     let wl: String?
+    let ar: Bool?
 
     var id: String { k }
     var isOpen: Bool { o ?? false }
     var isParked: Bool { pk ?? false }
+    var isArchived: Bool { ar ?? false }
     var labels: [String] { lb ?? [] }
     var login: String { lg ?? "" }
 }
@@ -102,10 +104,13 @@ final class SessionsStore: ObservableObject {
             guard let self else { return event }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
             if mods == .command {
-                switch event.keyCode {
-                case 126: self.step(-1); return nil      // up arrow
-                case 125: self.step(1); return nil       // down arrow
-                case 35:                                  // P
+                // Arrows by key code (the same on every layout). Letters by the
+                // character the layout types: key code 35 is P only on QWERTY
+                // (on Dvorak it is L, and Dvorak P is key code 15).
+                if event.keyCode == 126 { self.step(-1); return nil }   // up arrow
+                if event.keyCode == 125 { self.step(1); return nil }    // down arrow
+                switch event.charactersIgnoringModifiers?.lowercased() {
+                case "p":
                     if UserDefaults.standard.object(forKey: "sessions.sidebar.web") as? Bool ?? true {
                         UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
                         SessionsWeb.shared.focusSearch()
@@ -113,12 +118,22 @@ final class SessionsStore: ObservableObject {
                         NotificationCenter.default.post(name: .sessionsFocusSearch, object: nil)
                     }
                     return nil
+                case "n" where self.helperUp:
+                    // ⌘N: a new session with a plain shell (no agent), not a bare window.
+                    self.newShellSession()
+                    return nil
                 default: break
                 }
             }
             return event
         }
         tick()
+    }
+
+    /// A new session window with a plain shell, in the folder of the terminal you are in.
+    func newShellSession() {
+        let pwd = (NSApp.keyWindow?.windowController as? BaseTerminalController)?.focusedSurface?.pwd
+        send(["op": "new_shell", "cwd": pwd ?? "~"])
     }
 
     /// When you last looked at each session (session key → time). Drives "Visited" sort.

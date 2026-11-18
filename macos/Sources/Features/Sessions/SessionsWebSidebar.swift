@@ -283,6 +283,11 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
         if s.isOpen && s.be != "ghostty" {
             menu.addItem(item("Open here with another login…") { store.askMove(s) })
         }
+        if s.isOpen || !s.isArchived {
+            menu.addItem(item(s.a == "shell" ? "Done (close the window)" : "Done (close it, move it to the Archive)") {
+                store.send(["op": "done", "k": s.k])
+            })
+        }
         if s.isOpen {
             menu.addItem(item("Park (close it, keep it here)") { store.send(["op": "park", "k": s.k]) })
             menu.addItem(item("Close") { store.send(["op": "close", "k": s.k]) })

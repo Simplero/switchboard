@@ -1048,6 +1048,11 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func newWindow(_ sender: Any?) {
+        // Switchboard: "New Session" (⌘N) is a session window with a plain shell.
+        if SessionsStore.shared.helperUp {
+            SessionsStore.shared.newShellSession()
+            return
+        }
         _ = TerminalController.newWindow(ghostty)
     }
 
@@ -1203,6 +1208,7 @@ extension AppDelegate {
         self.menuReloadConfig?.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90")
         self.menuSecureInput?.setImageIfDesired(systemSymbolName: "lock.display")
         self.menuNewWindow?.setImageIfDesired(systemSymbolName: "macwindow.badge.plus")
+        self.menuNewWindow?.title = "New Session"
         self.menuNewTab?.setImageIfDesired(systemSymbolName: "macwindow")
         self.menuSplitRight?.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
         self.menuSplitLeft?.setImageIfDesired(systemSymbolName: "rectangle.leadinghalf.inset.filled")

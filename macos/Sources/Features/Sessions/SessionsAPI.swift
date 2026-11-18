@@ -173,6 +173,14 @@ final class SessionsAPI {
             }
             controller.closeSurface(view, withConfirmation: false)
             return (200, ["ok": true])
+        case ("POST", "/closewindow"):
+            // Done with a session: close its whole window, every tab in it, without asking.
+            guard let view = surface(req.json["id"] as? String),
+                  let controller = BaseTerminalController.controller(owning: view) as? TerminalController else {
+                return (404, ["error": "no such terminal"])
+            }
+            controller.closeWindowImmediately()
+            return (200, ["ok": true])
         case ("POST", "/new"):
             return newTab(req.json)
         case ("POST", "/newtab"):

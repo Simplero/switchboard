@@ -101,7 +101,17 @@ struct SessionsTitlebarBadge: View {
                 .foregroundStyle(.secondary)
                 .help("Commit \(version.runningCommit)")
             if version.updateAvailable {
-                Text("update ready").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(selectedBlueTitle)
+                Button { version.restart() } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.down").font(.system(size: 9.5, weight: .bold))
+                        Text("Restart to update to b\(version.installedBuild)").font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(Capsule().fill(selectedBlueTitle))
+                }
+                .buttonStyle(.plain)
+                .help("Switchboard b\(version.installedBuild) is installed. You run b\(version.runningBuild).")
             }
         }
         .padding(.trailing, 10)

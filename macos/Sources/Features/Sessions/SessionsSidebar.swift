@@ -226,7 +226,21 @@ final class SessionsStore: ObservableObject {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: op)
-        URLSession.shared.dataTask(with: req).resume()
+        req.timeoutInterval = 60
+        URLSession.shared.dataTask(with: req) { data, _, error in
+            // Never fail silently: show why an action did not happen.
+            let reply = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let ok = (reply?["ok"] as? Bool) ?? (error == nil)
+            let message = reply?["message"] as? String ?? error?.localizedDescription ?? "The session helper did not answer."
+            guard !ok else { return }
+            Task { @MainActor in
+                let alert = NSAlert()
+                alert.messageText = "That did not work"
+                alert.informativeText = message
+                alert.addButton(withTitle: "OK")
+                if let window = NSApp.keyWindow { alert.beginSheetModal(for: window) } else { alert.runModal() }
+            }
+        }.resume()
     }
 
     func open(_ s: SessionItem) {

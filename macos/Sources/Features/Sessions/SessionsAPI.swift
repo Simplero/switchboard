@@ -275,6 +275,8 @@ final class SessionsAPI {
                     "tab": tab,
                     "tab_title": tabTitle,
                     "title": view.titleOverride ?? view.title,
+                    // What the program in the terminal set (Claude's own title), even under a fixed title.
+                    "program_title": view.title,
                     "tty": view.surfaceModel?.ttyName ?? "",
                     "pid": view.surfaceModel?.foregroundPID ?? 0,
                     "cwd": view.pwd ?? "",

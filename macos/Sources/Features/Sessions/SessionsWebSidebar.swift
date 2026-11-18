@@ -130,6 +130,25 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate,
             showMenu(for: s)
         case "height":
             if let h = body["h"] as? Double, abs(CGFloat(h) - height) > 0.5 { height = CGFloat(h) }
+        case "loginMenu":
+            // A native menu, so it draws over the terminal instead of being cut off by the banner.
+            guard let k = body["k"] as? String else { return }
+            let current = body["ld"] as? String ?? ""
+            menuActions = []
+            let menu = NSMenu()
+            let head = NSMenuItem(title: "Resume this conversation with:", action: nil, keyEquivalent: "")
+            head.isEnabled = false
+            menu.addItem(head)
+            for (dir, name) in [("~/.claude", "simplero.com"), ("~/.claude-ccl", "corre.li"), ("~/.claude-ccm", "correli.me")] {
+                let i = item(dir == current ? "\(name) (now)" : name, checked: dir == current) {
+                    store.send(["op": "switch", "k": k, "login": dir])
+                }
+                if dir == current { i.action = nil }
+                menu.addItem(i)
+            }
+            let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
+            let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
+            menu.popUp(positioning: nil, at: point, in: webView)
         case "switchLogin":
             guard let k = body["k"] as? String, let login = body["login"] as? String else { return }
             store.send(["op": "switch", "k": k, "login": login])

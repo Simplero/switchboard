@@ -21,6 +21,8 @@ final class Switchboard {
     private var summaries: [String: SBSummary] = [:]
     private var summaryOrder: [String] = []
     private var pendingSummaries = Set<String>()
+    /// Screens Haiku did not answer for, and when: tried again after a minute, not every scan.
+    private var failedSummaries: [String: Double] = [:]
     private var usage: [String: Any] = [:]
     private var usageAt: Double = 0
     private var artifacts: [String: [String]] = [:]
@@ -34,6 +36,10 @@ final class Switchboard {
     private var lastPushed: Data?
     private var saveScheduled = false
     private(set) var loaded = false
+    /// False when another program holds the session list: then nothing is saved.
+    private var writable = false
+    /// Sessions in the middle of a login switch (no second switch or open meanwhile).
+    private var switching = Set<String>()
 
     static let scanEvery = 1.5
     static let defaultFolder = "~/Simplero"
@@ -46,11 +52,28 @@ final class Switchboard {
     func start() {
         guard !started else { return }
         started = true
-        // The old Python helper must not write the registry any more (the test copy
-        // has its own data folder and leaves the real one alone).
-        if !SBPaths.overridden { SBBackground.stopOldHelper() }
-        reg = SBRegistry.load()
-        loadSummaries()
+        let real = !SBPaths.overridden
+        // Changes from the last second must not be lost when the app quits.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { _ = Switchboard.shared.saveNow(wait: true) }
+        }
+        Task.detached(priority: .userInitiated) {
+            // The old Python helper must not write the registry any more (a test copy has its
+            // own data folder and leaves the real one alone). Then hold the helper's lock, so
+            // a helper started again later (cmux restores it) exits at once.
+            if real { SBBackground.stopOldHelper() }
+            let locked = SBFiles.takeLock()
+            let reg = SBRegistry.load()
+            let summaries = Switchboard.readSummaries()
+            await MainActor.run { Switchboard.shared.finishStart(reg, summaries: summaries, writable: locked) }
+        }
+    }
+
+    private func finishStart(_ loadedReg: SBRegistry, summaries cache: [String: SBSummary], writable: Bool) {
+        reg = loadedReg
+        summaries = cache
+        summaryOrder = Array(cache.keys)
+        self.writable = writable
         // Sessions that ran in cmux are not shown as running here: they show as
         // closed and reopen here (cmux is no longer read).
         for (k, e) in reg.sessions where e.isOpen && e.backend != "ghostty" {
@@ -76,9 +99,8 @@ final class Switchboard {
             Task { @MainActor in Switchboard.shared.slowWork() }
         }
         slowWork()
-        // Changes from the last second must not be lost when the app quits.
-        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { Switchboard.shared.saveNow(wait: true) }
+        if !writable {
+            SessionsStore.shared.showFailure("Another program keeps the session list (\(SBPaths.registry)): another Switchboard, or the old session helper. This window shows your sessions but does not save changes to the list.")
         }
         Task { @MainActor in
             await scan()
@@ -108,28 +130,28 @@ final class Switchboard {
         }
     }
 
-    func saveNow(wait: Bool = false) {
-        guard loaded, let data = reg.encoded() else { return }
-        if wait {
-            SBFiles.queue.sync { SBFiles.writeAtomic(data, SBPaths.registry) }
-        } else {
-            SBFiles.queue.async { SBFiles.writeAtomic(data, SBPaths.registry) }
-        }
+    /// Save the registry. With `wait`, on return it is on disk (or the result says it is not).
+    @discardableResult
+    func saveNow(wait: Bool = false) -> Bool {
+        guard loaded, writable, let data = reg.encoded() else { return false }
+        if wait { return SBFiles.queue.sync { SBFiles.writeAtomic(data, SBPaths.registry) } }
+        SBFiles.queue.async { SBFiles.writeAtomic(data, SBPaths.registry) }
+        return true
     }
 
-    private func loadSummaries() {
+    nonisolated static func readSummaries() -> [String: SBSummary] {
         guard let d = FileManager.default.contents(atPath: SBPaths.summaries),
-              let top = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+              let top = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
         let decoder = JSONDecoder()
+        var out: [String: SBSummary] = [:]
         for (k, v) in top {
-            if let vd = try? JSONSerialization.data(withJSONObject: v), let s = try? decoder.decode(SBSummary.self, from: vd) {
-                summaries[k] = s
-                summaryOrder.append(k)
-            }
+            if let vd = try? JSONSerialization.data(withJSONObject: v), let s = try? decoder.decode(SBSummary.self, from: vd) { out[k] = s }
         }
+        return out
     }
 
     private func saveSummaries() {
+        guard writable else { return }
         let encoder = JSONEncoder()
         var top: [String: Any] = [:]
         for (k, s) in summaries {
@@ -197,11 +219,13 @@ final class Switchboard {
         for (a, t) in found {
             let wid = "g:" + t.tab, sf = t.id
             let title = !t.programTitle.isEmpty ? t.programTitle : (!t.title.isEmpty ? t.title : t.tabTitle)
-            let screen = SessionsAPI.screenText(sf) ?? ""
+            let screen = screenOf(sf)
             var key = a.sid.map { "\(a.kind):\($0)" } ?? "surface:\(sf)"
-            if a.sid == nil, let known = reg.sessions.first(where: { $0.value.surface_id == sf && $0.value.isOpen
+            if a.sid == nil, let known = reg.sessions.first(where: { $0.value.surface_id == sf
+                && ($0.value.isOpen || now - ($0.value.opening_at ?? 0) < 25)
                 && !$0.key.hasPrefix("surface:") && !$0.key.hasPrefix("shell:") })?.key {
-                // The session file can be missing for a moment; keep the real key this tab already has.
+                // No id on the command line or in a session file (yet): this terminal belongs to
+                // the session it already showed, or the one we just opened it for.
                 key = known
             }
             let cwd = a.cwd ?? (t.cwd.isEmpty ? nil : t.cwd)
@@ -240,7 +264,7 @@ final class Switchboard {
             e.workspace_id = wid
             e.surface_id = sf
             e.pid = a.pid
-            e.cwd = cwd
+            e.cwd = cwd ?? e.cwd
             e.branch = a.branch
             e.last_seen = now
             e.backend = "ghostty"
@@ -280,6 +304,8 @@ final class Switchboard {
         for t in terms where !t.ws.isEmpty { byWS[t.ws, default: []].append(t) }
         let agentWSs = Set(byWS.filter { $0.value.contains { agentSurfaces.contains($0.id) } }.keys)
         recentNew = recentNew.filter { now - $0.value < 120 }
+        let liveIDs = Set(terms.map(\.id))
+        screenMemo = screenMemo.filter { liveIDs.contains($0.key) }
         for (ws, ts) in byWS where !agentWSs.contains(ws) {
             let k = "shell:" + ws
             var e: SBEntry
@@ -346,8 +372,22 @@ final class Switchboard {
         save()
     }
 
+    /// The last 120 lines of a terminal. Copying them means copying the whole scrollback,
+    /// which is slow for long sessions, so it happens only when the screen changed and the
+    /// agent is not working; otherwise the last copy (or the active area) does.
+    private var screenMemo: [String: (active: String, screen: String)] = [:]
+
+    private func screenOf(_ sf: String) -> String {
+        guard let active = SessionsAPI.activeText(sf) else { return "" }
+        if let m = screenMemo[sf], m.active == active { return m.screen }
+        if SBScreen.state(active) == "working" { return active }
+        let screen = SessionsAPI.screenText(sf) ?? active
+        screenMemo[sf] = (active, screen)
+        return screen
+    }
+
     private func requestSummary(_ key: String, _ tail: String) {
-        guard summariesOn, !pendingSummaries.contains(key) else { return }
+        guard summariesOn, !pendingSummaries.contains(key), now - (failedSummaries[key] ?? 0) > 60 else { return }
         pendingSummaries.insert(key)
         SBBackground.summaryQueue.addOperation {
             let s = SBBackground.summarize(tail)
@@ -357,7 +397,8 @@ final class Switchboard {
 
     private func summaryDone(_ key: String, _ s: SBSummary?) {
         pendingSummaries.remove(key)
-        guard let s else { return }
+        failedSummaries = failedSummaries.filter { now - $0.value < 600 }
+        guard let s else { failedSummaries[key] = now; return }
         summaries[key] = s
         summaryOrder.removeAll { $0 == key }
         summaryOrder.append(key)
@@ -422,7 +463,7 @@ final class Switchboard {
             u["hist"] = h
             out[d] = u
         }
-        SBFiles.queue.async { SBFiles.writeJSON(hist, SBPaths.usageHistory) }
+        if writable { SBFiles.queue.async { SBFiles.writeJSON(hist, SBPaths.usageHistory) } }
         usage = out
         publish()
     }
@@ -534,9 +575,12 @@ final class Switchboard {
 
     /// A pasted conversation id: where it is on this Mac, to offer resuming it.
     func lookupSessionID(_ sid: String) async -> [String: Any]? {
-        guard let info = await Task.detached(priority: .userInitiated, operation: { SBBackground.lookupConversation(sid) }).value else { return nil }
+        let found = await Task.detached(priority: .userInitiated) { () -> (SBBackground.Conversation, String?)? in
+            guard let info = SBBackground.lookupConversation(sid) else { return nil }
+            return (info, info.account.flatMap { SBLogins.byAccount()[$0] })
+        }.value
+        guard let (info, owner) = found else { return nil }
         let e = reg.sessions["claude:" + sid]
-        let owner = info.account.flatMap { SBLogins.byAccount()[$0] }
         let login = e?.login_dir ?? owner
         func n(_ x: Any?) -> Any { x ?? NSNull() }
         return ["id": sid, "cwd": n(e?.cwd ?? info.cwd), "title": n(e?.name ?? info.title ?? info.firstAsk), "login": n(login),
@@ -600,7 +644,9 @@ final class Switchboard {
         defer { publish() }
         switch op {
         case "open", "unpark":
-            if msg["end_elsewhere"] as? Bool == true { await endElsewhere(k) }
+            if msg["end_elsewhere"] as? Bool == true, !(await endElsewhere(k)) {
+                return (false, "It still runs in cmux and did not stop. Close it there, then reopen it here.")
+            }
             let r = openEntry(k, focus: focus)
             return (r.ok, r.message)
         case "park": return close(k, park: true)
@@ -645,6 +691,10 @@ final class Switchboard {
         }
         // A second click before the scan sees the first one running: do not start it twice.
         if !e.isOpen, now - (e.opening_at ?? 0) < 25 { return (true, "Opening…", nil) }
+        // The same conversation must never run in two places.
+        if runningElsewhere(k) != nil {
+            return (false, "“\(e.name ?? "This session")” still runs in cmux. Click its row in the sidebar to move it here.", nil)
+        }
         guard let cmd = resumeCommand(e) else { return (false, "No way to resume this session.", nil) }
         guard let sf = openAgentTerminal(cwd: e.cwd, command: cmd, loginDir: e.login_dir, focus: focus, split: split, tabOf: tabOf) else {
             return (false, "Switchboard could not open a terminal.", nil)
@@ -654,6 +704,7 @@ final class Switchboard {
             x.open = false
             x.parked = false
             x.archived = false
+            x.surface_id = sf      // the scan ties the agent in this terminal to this session
         }
         return (true, "Reopened.", sf)
     }
@@ -670,14 +721,17 @@ final class Switchboard {
     }
 
     /// End a session's process outside this app (its cmux tab stays, at a shell prompt).
-    private func endElsewhere(_ k: String) async {
-        guard let pid = runningElsewhere(k) else { return }
-        kill(pid_t(pid), SIGHUP)
-        for _ in 0..<20 {
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            if !SBProcesses.isAlive(pid) { return }
+    /// True once it is gone.
+    private func endElsewhere(_ k: String) async -> Bool {
+        guard let pid = runningElsewhere(k) else { return true }
+        for (signal, tries) in [(SIGHUP, 20), (SIGTERM, 12)] {
+            kill(pid_t(pid), signal)
+            for _ in 0..<tries {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if !SBProcesses.isAlive(pid) { return true }
+            }
         }
-        kill(pid_t(pid), SIGTERM)
+        return false
     }
 
     /// Close a session: every tab of it (whole), or only the agent's terminal (to replace it).
@@ -732,13 +786,20 @@ final class Switchboard {
         guard e.agent == "claude", e.session_id != nil else { return (false, "Only Claude sessions with a session id can switch login.") }
         guard SBLogins.dirs.contains(loginDir) else { return (false, "Unknown login \(loginDir).") }
         if e.isOpen && e.screen == "working" { return (false, "It is working right now. Stop it (Ctrl+C) or wait, then switch.") }
+        guard !switching.contains(k) else { return (false, "It is switching login already.") }
+        if !e.isOpen, runningElsewhere(k) != nil {
+            return (false, "“\(e.name ?? "This session")” still runs in cmux. Click its row in the sidebar to move it here first.")
+        }
+        switching.insert(k)
+        defer { switching.remove(k) }
         let mate = e.isOpen ? sessionTabMate(e) : nil
         if e.isOpen {
             let (ok, msg) = close(k, park: false, whole: false)
             if !ok { return (ok, msg) }
-            // Let the old Claude exit before the new one opens the same conversation.
+            // The old Claude must be gone before the new one opens the same conversation.
             if let pid = e.pid {
-                for _ in 0..<20 where SBProcesses.isAlive(pid) { try? await Task.sleep(nanoseconds: 150_000_000) }
+                for _ in 0..<30 where SBProcesses.isAlive(pid) { try? await Task.sleep(nanoseconds: 150_000_000) }
+                if SBProcesses.isAlive(pid) { return (false, "The old Claude did not stop. Try again in a moment.") }
             }
         }
         update(k) { x in
@@ -917,9 +978,14 @@ final class Switchboard {
             items.append(["k": k, "shell": e.agent == "shell", "cwd": (t?.cwd).flatMap { $0.isEmpty ? nil : $0 } ?? e.cwd ?? SBPaths.home,
                           "split": e.split == true, "tabs": tabs])
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: ["items": items, "at": now]) else { return (false, "Could not save the list.") }
-        SBFiles.writeAtomic(data, SBPaths.restart)   // now, not later: the app quits next
-        saveNow(wait: true)
+        // On disk now, not later: the app quits next. If it cannot be saved, it does not quit.
+        guard let data = try? JSONSerialization.data(withJSONObject: ["items": items, "at": now]),
+              SBFiles.writeAtomic(data, SBPaths.restart) else {
+            return (false, "Could not save the list of open sessions in \(SBPaths.data), so Switchboard did not restart.")
+        }
+        guard saveNow(wait: true) else {
+            return (false, "Could not save the session list (\(SBPaths.registry)), so Switchboard did not restart.")
+        }
         return (true, "Remembered \(items.count).")
     }
 
@@ -952,7 +1018,17 @@ final class Switchboard {
             var ok = false, msg = "", sf: String?
             if it["shell"] as? Bool == true || e?.agent == "shell" {
                 (ok, msg, sf) = newShell(it["cwd"] as? String, focus: false)
-                if ok, let e, reg.sessions[e.key]?.isOpen != true { reg.sessions.removeValue(forKey: e.key) }   // the new shell has its own row
+                // The new shell has its own row: it takes the old row's name, class and labels.
+                if ok, let e, let sf, reg.sessions[e.key]?.isOpen != true,
+                   let newKey = reg.sessions.first(where: { $0.value.surface_id == sf })?.key, newKey != e.key {
+                    update(newKey) { x in
+                        if e.custom_name == true { x.name = e.name; x.custom_name = true }
+                        x.cls = e.cls ?? x.cls
+                        x.labels = e.labels ?? x.labels
+                        x.was = e.key
+                    }
+                    reg.sessions.removeValue(forKey: e.key)
+                }
             } else if let e, e.isOpen {
                 (ok, msg) = (true, "Already open.")
             } else if let e {

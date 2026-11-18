@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Network
+import GhosttyKit
 
 /// A small local HTTP API for checks and scripts: list the terminals (with tty and
 /// pid), read their text, type into them, focus, close, open tabs, see what the
@@ -410,6 +411,20 @@ final class SessionsAPI {
         guard let view = surface(id: id) else { return nil }
         let all = view.cachedScreenContents.get()
         return lines > 0 ? all.components(separatedBy: "\n").suffix(lines).joined(separator: "\n") : all
+    }
+
+    /// The active area of a terminal (its last screenful, whatever is scrolled into view).
+    /// Cheap: it does not copy the scrollback.
+    static func activeText(_ id: String) -> String? {
+        guard let view = surface(id: id), let s = view.surface else { return nil }
+        var text = ghostty_text_s()
+        let sel = ghostty_selection_s(
+            top_left: ghostty_point_s(tag: GHOSTTY_POINT_ACTIVE, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
+            bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_ACTIVE, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
+            rectangle: false)
+        guard ghostty_surface_read_text(s, sel, &text) else { return nil }
+        defer { ghostty_surface_free_text(s, &text) }
+        return String(cString: text.text)
     }
 
     /// Type text into a terminal, then Enter if asked.

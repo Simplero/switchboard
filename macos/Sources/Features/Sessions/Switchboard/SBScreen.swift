@@ -24,8 +24,24 @@ enum SBScreen {
 
     /// Lines like Python's str.splitlines(): no empty last line for a trailing newline.
     static func lines(_ s: String) -> [String] {
-        var out = s.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
-        if out.last == "" { out.removeLast() }
+        // The same line ends as Python: \n \r \r\n \v \f \x1c \x1d \x1e \x85 \u2028 \u2029.
+        var out: [String] = []
+        var cur = String.UnicodeScalarView()
+        var it = s.unicodeScalars.makeIterator()
+        var pending: Unicode.Scalar? = nil
+        while let c = pending ?? it.next() {
+            pending = nil
+            switch c.value {
+            case 0x0D:
+                out.append(String(cur)); cur = .init()
+                if let n = it.next(), n.value != 0x0A { pending = n }
+            case 0x0A, 0x0B, 0x0C, 0x1C, 0x1D, 0x1E, 0x85, 0x2028, 0x2029:
+                out.append(String(cur)); cur = .init()
+            default:
+                cur.append(c)
+            }
+        }
+        if !cur.isEmpty { out.append(String(cur)) }
         return out
     }
 

@@ -47,13 +47,7 @@ enum SBBackground {
         for (tty, p) in best {
             let pid = Int(p.pid)
             let loginDir = SBLogins.norm(p.env["CLAUDE_CONFIG_DIR"])
-            var argSid: String?
-            for (i, a) in p.args.enumerated() {
-                if (a == "--resume" || a == "--session-id"), i + 1 < p.args.count, isUUID(p.args[i + 1]) { argSid = p.args[i + 1] }
-                for pre in ["--resume=", "--session-id="] where a.hasPrefix(pre) && isUUID(String(a.dropFirst(pre.count))) {
-                    argSid = String(a.dropFirst(pre.count))
-                }
-            }
+            let argSid = sessionIDArgument(kind: p.kind, p.args)
             let fileSid = p.kind == "claude" ? claudeSessionFile(loginDir, pid) : nil
             let sid = fileSid ?? argSid
             lock.lock()
@@ -71,6 +65,30 @@ enum SBBackground {
                              branch: slow?.branch, transcriptTitle: t.title, transcriptMtime: t.mtime))
         }
         return out
+    }
+
+    /// The conversation id in an agent's command line: claude --resume / --session-id <uuid>,
+    /// codex resume <id>, opencode --session / -s <id>.
+    static func sessionIDArgument(kind: String, _ args: [String]) -> String? {
+        var found: String?
+        for (i, a) in args.enumerated() {
+            let next = i + 1 < args.count ? args[i + 1] : nil
+            switch kind {
+            case "claude":
+                if a == "--resume" || a == "--session-id", let n = next, isUUID(n) { found = n }
+                for pre in ["--resume=", "--session-id="] where a.hasPrefix(pre) && isUUID(String(a.dropFirst(pre.count))) {
+                    found = String(a.dropFirst(pre.count))
+                }
+            case "codex":
+                if a == "resume", let n = next, !n.hasPrefix("-"), n.count >= 8 { found = n }
+            case "opencode":
+                if a == "--session" || a == "-s", let n = next, !n.hasPrefix("-") { found = n }
+                if a.hasPrefix("--session=") { found = String(a.dropFirst("--session=".count)) }
+            default:
+                break
+            }
+        }
+        return found
     }
 
     static func isUUID(_ s: String) -> Bool {
@@ -146,7 +164,9 @@ enum SBBackground {
 
     /// Find a Claude conversation on this Mac by its id: its folder, title, first ask
     /// and the account it last ran with.
-    static func lookupConversation(_ sid: String) -> (cwd: String?, title: String?, firstAsk: String?, account: String?)? {
+    typealias Conversation = (cwd: String?, title: String?, firstAsk: String?, account: String?)
+
+    static func lookupConversation(_ sid: String) -> Conversation? {
         guard let f = transcriptPath(sid), let fh = FileHandle(forReadingAtPath: f) else { return nil }
         defer { try? fh.close() }
         let size = (try? FileManager.default.attributesOfItem(atPath: f)[.size] as? NSNumber)?.uint64Value ?? 0
@@ -363,22 +383,27 @@ enum SBBackground {
     // MARK: The old helper
 
     /// Stop the Python session helper (~/code/session-inbox/server.py) if it runs: this
-    /// app does its work now, and two writers would fight over the registry.
+    /// app does its work now, and two writers would fight over the registry. Only a
+    /// Python process whose script is that file is stopped.
     static func stopOldHelper() {
         var pids: [pid_t] = []
-        for pid in SBProcesses.allPIDs() where pid != getpid() {
-            guard let (args, _) = SBProcesses.argsAndEnv(pid), args.count >= 2 else { continue }
-            // "python3 …/session-inbox/server.py", or "python3 server.py" started in that folder (cmux).
-            let script = args.dropFirst().first { $0.hasSuffix("server.py") } ?? ""
-            if script.hasSuffix("session-inbox/server.py") || (script == "server.py" && isInSessionInbox(pid)) { pids.append(pid) }
-        }
+        for pid in SBProcesses.allPIDs() where pid != getpid() && isOldHelper(pid) { pids.append(pid) }
         guard !pids.isEmpty else { return }
         pids.forEach { kill($0, SIGTERM) }
         for _ in 0..<30 {
-            if !pids.contains(where: { kill($0, 0) == 0 }) { return }
+            if !pids.contains(where: { SBProcesses.isAlive(Int($0)) }) { return }
             usleep(100_000)
         }
         pids.forEach { kill($0, SIGKILL) }
+    }
+
+    static func isOldHelper(_ pid: pid_t) -> Bool {
+        guard let (args, _) = SBProcesses.argsAndEnv(pid), args.count >= 2,
+              (args[0] as NSString).lastPathComponent.lowercased().hasPrefix("python"),
+              let script = args.dropFirst().first(where: { !$0.hasPrefix("-") }) else { return false }
+        let path = SBPaths.home + "/code/session-inbox/server.py"
+        if script == path || (script as NSString).resolvingSymlinksInPath == path { return true }
+        return script == "server.py" && isInSessionInbox(pid)
     }
 
     private static func isInSessionInbox(_ pid: pid_t) -> Bool {

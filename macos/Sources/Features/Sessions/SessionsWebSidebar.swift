@@ -178,11 +178,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             pageReady()
         case "open":
             guard let k = body["k"] as? String else { return }
-            if let s = store.payload?.s.first(where: { $0.k == k }) {
-                store.open(s)
-            } else {
-                store.send(["op": "open", "k": k])
-            }
+            store.open(key: k)
         case "folderMenu":
             // Where new sessions start: your usual folders, or any folder.
             let folders = body["folders"] as? [String] ?? []
@@ -338,7 +334,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 store.send(["op": "close", "k": s.k])
             })
         } else if s.isParked {
-            menu.addItem(item("Unpark") { store.send(["op": "unpark", "k": s.k]) })
+            menu.addItem(item("Unpark") { store.open(s) })
         }
         menu.addItem(item(s.st == "handled" ? "Needs me again" : "Mark as handled") { store.send(["op": "ack", "k": s.k]) })
         menu.addItem(.separator())

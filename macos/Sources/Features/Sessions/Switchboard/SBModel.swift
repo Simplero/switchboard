@@ -164,7 +164,7 @@ struct SBEntry: Codable {
     /// The end of the terminal, for the summary. Not saved.
     var tail: String? = nil
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case key, agent, session_id, name, cls, labels, login_dir, first_seen, custom_name, cwd, branch, open,
              closed_at, closed_reason, opening_at, workspace_id, surface_id, pid, last_seen, resume_cmd, backend,
              screen, working_line, last_message, last_message_at, last_activity, artifacts, summary, summary_key,
@@ -174,6 +174,22 @@ struct SBEntry: Codable {
     init(key: String, agent: String?) {
         self.key = key
         self.agent = agent
+    }
+
+    /// Lenient: a field of an unexpected type is dropped, never the whole session.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ k: CodingKeys) -> T? { (try? c.decodeIfPresent(T.self, forKey: k)) ?? nil }
+        key = v(.key) ?? ""
+        agent = v(.agent); session_id = v(.session_id); name = v(.name); cls = v(.cls); labels = v(.labels)
+        login_dir = v(.login_dir); first_seen = v(.first_seen); custom_name = v(.custom_name); cwd = v(.cwd)
+        branch = v(.branch); open = v(.open); closed_at = v(.closed_at); closed_reason = v(.closed_reason)
+        opening_at = v(.opening_at); workspace_id = v(.workspace_id); surface_id = v(.surface_id); pid = v(.pid)
+        last_seen = v(.last_seen); resume_cmd = v(.resume_cmd); backend = v(.backend); screen = v(.screen)
+        working_line = v(.working_line); last_message = v(.last_message); last_message_at = v(.last_message_at)
+        last_activity = v(.last_activity); artifacts = v(.artifacts); summary = v(.summary); summary_key = v(.summary_key)
+        split = v(.split); state = v(.state); parked = v(.parked); archived = v(.archived); archived_at = v(.archived_at)
+        ack_key = v(.ack_key); was = v(.was); closing = v(.closing); tab_title = v(.tab_title); shared_ws = v(.shared_ws)
     }
 
     var isOpen: Bool { open == true }
@@ -186,6 +202,9 @@ struct SBRegistry {
     var labels = ["later", "ui", "security", "review"]
     /// Entries this build could not read: written back unchanged, never lost.
     var unreadable: [String: Any] = [:]
+    /// Fields of an entry this build does not use (from the Python helper, or a newer
+    /// build): written back as they were.
+    var extraFields: [String: [String: Any]] = [:]
     /// Top-level keys this build does not use (kept as they were).
     var extra: [String: Any] = [:]
 
@@ -194,10 +213,14 @@ struct SBRegistry {
         guard let data = FileManager.default.contents(atPath: SBPaths.registry),
               let top = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return r }
         let decoder = JSONDecoder()
+        let known = Set(SBEntry.CodingKeys.allCases.map(\.rawValue)).union(["tail"])
         for (k, v) in (top["sessions"] as? [String: Any]) ?? [:] {
-            if let d = try? JSONSerialization.data(withJSONObject: v), var e = try? decoder.decode(SBEntry.self, from: d) {
+            if let raw = v as? [String: Any], let d = try? JSONSerialization.data(withJSONObject: raw),
+               var e = try? decoder.decode(SBEntry.self, from: d) {
                 e.key = k
                 r.sessions[k] = e
+                let extra = raw.filter { !known.contains($0.key) }
+                if !extra.isEmpty { r.extraFields[k] = extra }
             } else {
                 r.unreadable[k] = v
             }
@@ -212,7 +235,9 @@ struct SBRegistry {
         let encoder = JSONEncoder()
         var sessions: [String: Any] = unreadable
         for (k, e) in self.sessions {
-            if let d = try? encoder.encode(e), let obj = try? JSONSerialization.jsonObject(with: d) { sessions[k] = obj }
+            if let d = try? encoder.encode(e), let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                sessions[k] = (extraFields[k] ?? [:]).merging(obj) { _, typed in typed }
+            }
         }
         var top = extra
         top["sessions"] = sessions
@@ -224,21 +249,44 @@ struct SBRegistry {
 
 enum SBFiles {
     static let queue = DispatchQueue(label: "switchboard.files")
+    private static var lockFD: Int32 = -1
+
+    /// Hold the session list's lock (the file the Python helper also locked) for the life of
+    /// the app. False when another program keeps holding it.
+    static func takeLock() -> Bool {
+        let fd = open(SBPaths.data + "/helper.lock", O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return false }
+        for _ in 0..<30 {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                lockFD = fd
+                ftruncate(fd, 0)
+                let pid = "\(getpid())"
+                _ = pid.withCString { write(fd, $0, strlen($0)) }
+                return true
+            }
+            usleep(100_000)
+        }
+        close(fd)
+        return false
+    }
 
     static func readJSON(_ path: String) -> Any? {
         guard let d = FileManager.default.contents(atPath: path) else { return nil }
         return try? JSONSerialization.jsonObject(with: d)
     }
 
-    static func writeAtomic(_ data: Data, _ path: String) {
-        let tmp = path + ".tmp"
-        if FileManager.default.createFile(atPath: tmp, contents: data) {
-            _ = rename(tmp, path)
-        }
+    /// Write a whole file at once (a temporary file, then rename). False when it did not land.
+    @discardableResult
+    static func writeAtomic(_ data: Data, _ path: String) -> Bool {
+        let tmp = path + ".\(getpid()).tmp"
+        guard FileManager.default.createFile(atPath: tmp, contents: data) else { return false }
+        guard rename(tmp, path) == 0 else { unlink(tmp); return false }
+        return true
     }
 
-    static func writeJSON(_ obj: Any, _ path: String) {
-        guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
-        writeAtomic(d, path)
+    @discardableResult
+    static func writeJSON(_ obj: Any, _ path: String) -> Bool {
+        guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return false }
+        return writeAtomic(d, path)
     }
 }

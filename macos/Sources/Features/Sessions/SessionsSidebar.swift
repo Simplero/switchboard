@@ -138,10 +138,13 @@ final class SessionsStore: ObservableObject {
         guard let s = payload?.s.first(where: { $0.k == k }), s.isOpen, let sf = s.sf,
               let view = SessionsAPI.surface(id: sf),
               let controller = BaseTerminalController.controller(owning: view) as? TerminalController else { return true }
+        // The agent's own terminal needs no asking, but only while the agent still runs in it
+        // (after it exits, the same terminal may run an editor or a server).
+        let agentRuns = s.a != "shell" && (Switchboard.shared.entry(k)?.pid).map(SBProcesses.isAlive) == true
         let busy = SessionsAPI.windows(ofWorkspace: controller.sessionsWorkspace)
             .compactMap { ($0.windowController as? BaseTerminalController)?.surfaceTree.root?.leaves() }
             .flatMap { $0 }
-            .filter { ($0.id.uuidString != sf || s.a == "shell") && $0.needsConfirmQuit }
+            .filter { ($0.id.uuidString != sf || !agentRuns) && $0.needsConfirmQuit }
         guard !busy.isEmpty else { return true }
         let alert = NSAlert()
         alert.messageText = "\(action) “\(s.n)”?"
@@ -228,25 +231,33 @@ final class SessionsStore: ObservableObject {
         if let window = NSApp.keyWindow { alert.beginSheetModal(for: window) } else { alert.runModal() }
     }
 
-    func open(_ s: SessionItem) {
-        picked = s.k
-        if s.isOpen, let sf = s.sf, let view = SessionsAPI.surface(id: sf) {
+    func open(_ s: SessionItem) { open(key: s.k, name: s.n, surface: s.isOpen ? s.sf : nil) }
+
+    /// Open a session by its key (a search result may not be in the sidebar's data).
+    func open(key k: String) {
+        let e = Switchboard.shared.entry(k)
+        open(key: k, name: e?.name ?? "This session", surface: e?.isOpen == true ? e?.surface_id : nil)
+    }
+
+    private func open(key k: String, name: String, surface sf: String?) {
+        picked = k
+        if let sf, let view = SessionsAPI.surface(id: sf) {
             SessionsAPI.focus(view)
             return
         }
         // Closed, parked or archived: resume it here. A session that still runs in cmux
         // would then run twice: ask first, and end it there.
-        if Switchboard.shared.runningElsewhere(s.k) != nil {
+        if Switchboard.shared.runningElsewhere(k) != nil {
             let alert = NSAlert()
-            alert.messageText = "“\(s.n)” still runs in cmux"
+            alert.messageText = "“\(name)” still runs in cmux"
             alert.informativeText = "Reopen it here ends it in cmux (its cmux tab stays, at a shell prompt) and resumes the same conversation here."
             alert.addButton(withTitle: "Reopen here")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { picked = nil; return }
-            send(["op": "open", "k": s.k, "end_elsewhere": true])
+            send(["op": "open", "k": k, "end_elsewhere": true])
             return
         }
-        send(["op": "open", "k": s.k])
+        send(["op": "open", "k": k])
     }
 
     /// Go to the previous (-1) or next (+1) session that is open, in the left column's order.

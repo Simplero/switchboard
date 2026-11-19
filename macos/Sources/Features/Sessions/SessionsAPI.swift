@@ -106,6 +106,22 @@ final class SessionsAPI {
                         }
                         return
                     }
+                    if req.method == "POST", req.path == "/sb/links", req.headers["x-token"] == self.token {
+                        // For checks: the links (and, with "brief": true, the brief) of any conversation id.
+                        let sid = req.json["sid"] as? String ?? ""
+                        let withBrief = req.json["brief"] as? Bool == true
+                        let login = req.json["login"] as? String
+                        Task.detached(priority: .userInitiated) {
+                            let links = SBLinks.index([(sid: sid, loginDir: login)])[sid] ?? []
+                            let rows: [[String: Any]] = links.map { ["kind": $0.kind, "url": $0.url, "title": $0.title ?? NSNull(), "label": SBLinks.label($0), "login": $0.login ?? NSNull()] }
+                            var body: [String: Any] = ["links": rows, "chrome": SBLinks.chromeCount]
+                            if withBrief, let b = SBLinks.brief(sid) {
+                                body["brief"] = ["goal": b.goal, "open": b.open.map { ["who": $0.who ?? "", "text": $0.text] }]
+                            }
+                            await MainActor.run { self.respond(conn, status: 200, body: body) }
+                        }
+                        return
+                    }
                     if req.method == "GET", req.path == "/sb/snap", req.headers["x-token"] == self.token {
                         // For checks: a picture of the sidebar or the panel page (window pictures leave web views blank).
                         let page = req.query["page"] == "banner" ? SessionsWeb.banner : SessionsWeb.shared

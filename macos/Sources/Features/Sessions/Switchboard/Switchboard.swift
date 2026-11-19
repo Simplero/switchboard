@@ -44,6 +44,15 @@ final class Switchboard {
     private var elsewhereAt: Double = 0
     /// Sessions that ran in another terminal at the last look (shown as "elsewhere", not as closed).
     private var elsewhereKeys = Set<String>()
+    /// Pages each open session gave you (docs, artifacts, dev pages), by conversation id.
+    private var links: [String: [SBLink]] = [:]
+    private var linksAt: Double = 0
+    private var linksRunning = false
+    /// What each session works on and what is still open in it, by conversation id.
+    private var briefs: [String: SBBrief] = [:]
+    private var pendingBriefs = Set<String>()
+    private var failedBriefs: [String: Double] = [:]
+    private var transcriptSizes: [String: Int] = [:]
 
     static let scanEvery = 1.5
     /// How often to look for sessions in other terminals (cmux, Terminal…).
@@ -100,6 +109,7 @@ final class Switchboard {
         // The first look at other terminals waits 20 s: after an update the old app's terminals
         // are still being handed over, and their sessions must not count as running elsewhere.
         elsewhereAt = now + 15
+        briefs = SBLinks.loadBriefs()
         loaded = true
         save()
         timer = Timer.scheduledTimer(withTimeInterval: Self.scanEvery, repeats: true) { _ in
@@ -227,6 +237,76 @@ final class Switchboard {
         merge(t0: t0, agents: agents)
         if let outside { mergeElsewhere(outside) }
         publish()
+        if t0 - linksAt >= Self.linksEvery { linksAt = t0; refreshLinks() }
+    }
+
+    // MARK: Links and briefs
+
+    /// How often to look for new links in the open sessions' transcripts.
+    static let linksEvery = 10.0
+
+    private func refreshLinks() {
+        guard !linksRunning else { return }
+        let open = reg.sessions.values.filter { $0.isOpen && $0.agent == "claude" }
+            .compactMap { e in e.session_id.map { (sid: $0, loginDir: e.login_dir) } }
+        guard !open.isEmpty else { return }
+        linksRunning = true
+        Task.detached(priority: .utility) {
+            let found = SBLinks.index(open)
+            var sizes: [String: Int] = [:]
+            for s in open { sizes[s.sid] = SBLinks.transcriptSize(s.sid) }
+            await MainActor.run {
+                let sb = Switchboard.shared
+                sb.linksRunning = false
+                sb.links.merge(found) { _, new in new }
+                sb.transcriptSizes = sizes
+                sb.scheduleBriefs()
+                sb.publish()
+            }
+        }
+    }
+
+    /// Read a session's conversation again when it grew and its agent stopped: the
+    /// session in front after 90 s, the others after 15 minutes. Two at a time.
+    private func scheduleBriefs() {
+        guard summariesOn else { return }
+        let focusedSF = SessionsStore.shared.focusedSurfaceID
+        let candidates = reg.sessions.values.filter { $0.isOpen && $0.agent == "claude" && $0.session_id != nil }
+            .sorted { a, b in
+                let fa = a.surface_id != nil && a.surface_id == focusedSF, fb = b.surface_id != nil && b.surface_id == focusedSF
+                return fa != fb ? fa : (a.last_activity ?? 0) > (b.last_activity ?? 0)
+            }
+        for e in candidates {
+            guard pendingBriefs.count < 2, let sid = e.session_id, !pendingBriefs.contains(sid),
+                  let size = transcriptSizes[sid], size > 0 else { continue }
+            if e.state == "working" || e.screen == "working" { continue }
+            if now - (failedBriefs[sid] ?? 0) < 300 { continue }
+            if let b = briefs[sid] {
+                let focused = e.surface_id != nil && e.surface_id == focusedSF
+                if size - b.size < 2000 || now - b.at < (focused ? 90 : 900) { continue }
+            }
+            requestBrief(sid)
+        }
+    }
+
+    private func requestBrief(_ sid: String) {
+        pendingBriefs.insert(sid)
+        publish()
+        Task.detached(priority: .utility) {
+            let b = SBLinks.brief(sid)
+            await MainActor.run {
+                let sb = Switchboard.shared
+                sb.pendingBriefs.remove(sid)
+                if let b {
+                    sb.briefs[sid] = b
+                    let all = sb.briefs
+                    SBFiles.queue.async { SBLinks.saveBriefs(all) }
+                } else {
+                    sb.failedBriefs[sid] = sb.now
+                }
+                sb.publish()
+            }
+        }
     }
 
     /// Conversations that run in another terminal (cmux, Terminal, an editor). They show as
@@ -561,8 +641,16 @@ final class Switchboard {
             name = "\(name) · \(extra)"
         }
         func n(_ x: Any?) -> Any { x ?? NSNull() }
+        // The panel's links and brief: open sessions only.
+        let sid = e.isOpen ? e.session_id : nil
+        let lk: [[String]] = (sid.flatMap { links[$0] } ?? []).prefix(30).map { l in
+            [l.kind, l.url, SBLinks.label(l), l.kind == "artifact" ? (l.login.map { SBLogins.short($0) } ?? "") : ""]
+        }
+        let br = sid.flatMap { briefs[$0] }
         return [
             "k": e.key, "n": name, "c": e.cls ?? "Work", "lb": e.labels ?? [],
+            "lk": lk, "gl": br?.goal ?? "", "op": (br?.open ?? []).map { [$0.who ?? "", $0.text] },
+            "bp": sid.map { pendingBriefs.contains($0) } ?? false,
             "lg": e.agent == "shell" ? NSNull() as Any : SBLogins.short(e.login_dir) as Any, "ld": n(e.login_dir), "a": n(e.agent),
             "st": st, "u": s?.urgent == true, "ns": String(ns.prefix(160)), "t": String((s?.title ?? "").prefix(60)),
             "sd": String((s?.said ?? "").prefix(300)), "lm": String((e.last_message ?? "").prefix(300)),

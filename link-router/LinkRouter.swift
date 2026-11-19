@@ -1,11 +1,13 @@
 // Link Router: the default browser that opens every link in the right place.
 //
-// - Dev and test pages (simplero.test, simplero.internal, localhost) open in Google
-//   Chrome. If the page is already open in a Chrome tab, that tab comes to the front
-//   instead of a second copy.
+// - Dev and test pages (any *.test host, with or without a port; simplero.internal;
+//   localhost) open in Google Chrome. If the page is already open in a Chrome tab, that
+//   tab comes to the front instead of a second copy.
 // - claude.ai artifacts open in the Arc Space of the login that published them (the
 //   Claude Code hook records it in ~/.config/session-inbox/artifacts.jsonl). An artifact
 //   already open in that Space comes to the front.
+// - Simplero Docs (doc.simplero.me, /admin/docs/ on simplero.com) open in the main Arc
+//   Space: "docs" in arc-spaces.json, else the Space of ~/.claude.
 // - Every other link opens in Arc.
 //
 // It has no window and no Dock icon, and quits a minute after the last link.
@@ -28,12 +30,15 @@ enum Target: Equatable {
 /// Where a link goes.
 func route(_ url: URL) -> Target {
     let host = (url.host ?? "").lowercased()
-    let dev = host == "simplero.test" || host.hasSuffix(".simplero.test")
+    let dev = host.hasSuffix(".test")
         || host == "simplero.internal" || host.hasSuffix(".simplero.internal")
         || ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"].contains(host)
     if dev { return .chrome }
     if host == "claude.ai", let id = artifactID(url) {
         return .arc(space: arcSpace(forLogin: loginForArtifact(id)))
+    }
+    if host == "doc.simplero.me" || ((host == "simplero.com" || host.hasSuffix(".simplero.com")) && url.path.hasPrefix("/admin/docs/")) {
+        return .arc(space: arcSpace(forLogin: "docs") ?? arcSpace(forLogin: "~/.claude"))
     }
     return .arc(space: nil)
 }

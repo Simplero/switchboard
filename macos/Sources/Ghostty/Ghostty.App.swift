@@ -859,7 +859,8 @@ extension Ghostty {
             let target = UntrustedURL(value)
             switch target.decision {
             case .allow(let url):
-                _ = NSWorkspace.shared.open(url)
+                // Switchboard: web links go where Link Router sends them (dev pages to Chrome…).
+                SessionsLinkOpener.open(url)
 
             case .confirm(let url):
                 UntrustedURLAlert.presentConfirmation(

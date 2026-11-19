@@ -22,7 +22,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
     private var loaded = false
     /// The panel above the terminal has one fixed height, so nothing ever jumps.
     /// banner.html lays itself out for exactly this height.
-    static let bannerHeight: CGFloat = 110
+    static let bannerHeight: CGFloat = 136
 
     init(path: String) {
         self.path = path
@@ -125,7 +125,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         if action.navigationType == .linkActivated, let url = action.request.url {
-            NSWorkspace.shared.open(url)
+            SessionsLinkOpener.open(url)
             decisionHandler(.cancel)
             return
         }
@@ -228,6 +228,33 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 }
                 if dir == current { i.action = nil }
                 menu.addItem(i)
+            }
+            let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
+            let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
+            menu.popUp(positioning: nil, at: point, in: webView)
+        case "openLink":
+            guard let u = body["url"] as? String, let url = URL(string: u) else { return }
+            SessionsLinkOpener.open(url)
+        case "linksMenu":
+            // Every link of the session, when the panel has no room for all of them.
+            let links = (body["links"] as? [[String]] ?? []).filter { $0.count >= 4 }
+            guard !links.isEmpty else { return }
+            menuActions = []
+            let menu = NSMenu()
+            for (kind, head) in [("dev", "Dev pages (Chrome)"), ("doc", "Docs"), ("artifact", "Artifacts")] {
+                let group = links.filter { $0[0] == kind }
+                if group.isEmpty { continue }
+                if menu.numberOfItems > 0 { menu.addItem(.separator()) }
+                let h = NSMenuItem(title: head, action: nil, keyEquivalent: "")
+                h.isEnabled = false
+                menu.addItem(h)
+                for l in group {
+                    let i = item(l[3].isEmpty ? l[2] : "\(l[2])  ·  \(l[3])") {
+                        if let url = URL(string: l[1]) { SessionsLinkOpener.open(url) }
+                    }
+                    i.toolTip = l[1]
+                    menu.addItem(i)
+                }
             }
             let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
             let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
@@ -357,7 +384,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         if let arts = s.art, !arts.isEmpty {
             menu.addItem(submenu("Artifacts", arts.map { u in
                 item("Open " + (u.split(separator: "/").last.map(String.init) ?? u)) {
-                    if let url = URL(string: u) { NSWorkspace.shared.open(url) }
+                    if let url = URL(string: u) { SessionsLinkOpener.open(url) }
                 }
             }))
         }
@@ -416,4 +443,23 @@ struct SessionsWebSidebar: NSViewRepresentable {
         return h
     }
     func updateNSView(_ nsView: SessionsWebHolder, context: Context) {}
+}
+
+
+/// Opens web links where Link Router would (dev pages in Chrome, artifacts in the Arc
+/// Space of the login that published them, Docs in the main Space), when Link Router is
+/// installed, even while it is not the default browser. Otherwise the default browser.
+enum SessionsLinkOpener {
+    static let routerID = "com.simplero.link-router"
+
+    static func open(_ url: URL) {
+        let web = ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+        if web, let router = NSWorkspace.shared.urlForApplication(withBundleIdentifier: routerID) {
+            NSWorkspace.shared.open([url], withApplicationAt: router, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                if error != nil { DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
+            }
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
 }

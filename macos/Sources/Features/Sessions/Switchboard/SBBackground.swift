@@ -67,6 +67,29 @@ enum SBBackground {
         return out
     }
 
+    /// The agents in terminals that are not Switchboard's (cmux, Terminal, an editor): one per
+    /// terminal (the oldest), only those with a conversation id. Processes without a terminal
+    /// (`claude -p`, the Claude app) are not sessions and are skipped.
+    static func agentsElsewhere(notOn ttys: [String]) -> [Agent] {
+        let ours = Set(ttys.compactMap { SBProcesses.deviceOf(ttyPath: $0) })
+        var best: [UInt32: (pid: pid_t, kind: String, args: [String], env: [String: String])] = [:]
+        for pid in SBProcesses.allPIDs() {
+            guard let dev = SBProcesses.ttyDevice(pid), !ours.contains(dev),
+                  let (args, env) = SBProcesses.argsAndEnv(pid), let kind = SBProcesses.agentKind(args) else { continue }
+            if let cur = best[dev], cur.pid < pid { continue }
+            best[dev] = (pid, kind, args, env)
+        }
+        return best.compactMap { dev, p in
+            let pid = Int(p.pid)
+            let loginDir = SBLogins.norm(p.env["CLAUDE_CONFIG_DIR"])
+            let fileSid = p.kind == "claude" ? claudeSessionFile(loginDir, pid) : nil
+            guard let sid = fileSid ?? sessionIDArgument(kind: p.kind, p.args) else { return nil }
+            let t: (title: String?, mtime: Double?) = p.kind == "claude" ? transcript(sid) : (nil, nil)
+            return Agent(pid: pid, kind: p.kind, tty: "dev:\(dev)", loginDir: loginDir, sid: sid, cwd: SBProcesses.cwd(p.pid),
+                         branch: nil, transcriptTitle: t.title, transcriptMtime: t.mtime)
+        }
+    }
+
     /// The conversation id in an agent's command line: claude --resume / --session-id <uuid>,
     /// codex resume <id>, opencode --session / -s <id>.
     static func sessionIDArgument(kind: String, _ args: [String]) -> String? {

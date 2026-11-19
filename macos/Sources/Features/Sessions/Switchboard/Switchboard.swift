@@ -41,8 +41,13 @@ final class Switchboard {
     /// Sessions in the middle of a login switch (no second switch or open meanwhile).
     private var switching = Set<String>()
     private var switchOpening = false
+    private var elsewhereAt: Double = 0
+    /// Sessions that ran in another terminal at the last look (shown as "elsewhere", not as closed).
+    private var elsewhereKeys = Set<String>()
 
     static let scanEvery = 1.5
+    /// How often to look for sessions in other terminals (cmux, Terminal…).
+    static let elsewhereEvery = 5.0
     static let defaultFolder = "~/Simplero"
     private let summariesOn = ProcessInfo.processInfo.environment["SWITCHBOARD_NO_SUMMARIES"] == nil
 
@@ -92,6 +97,9 @@ final class Switchboard {
         let saved = (SBFiles.readJSON(SBPaths.restart) as? [String: Any]).map { now - (($0["at"] as? NSNumber)?.doubleValue ?? 0) <= 600 } ?? false
         let restoring = flagged || saved
         if restoring { markStaleClosed(reason: "restart") }
+        // The first look at other terminals waits 20 s: after an update the old app's terminals
+        // are still being handed over, and their sessions must not count as running elsewhere.
+        elsewhereAt = now + 15
         loaded = true
         save()
         timer = Timer.scheduledTimer(withTimeInterval: Self.scanEvery, repeats: true) { _ in
@@ -211,8 +219,61 @@ final class Switchboard {
         let t0 = now   // entries created or reopened after this are not in this scan's snapshot
         let ttys = SessionsAPI.terminalList().map(\.tty).filter { !$0.isEmpty }
         let agents = await Task.detached(priority: .utility) { SBBackground.agents(onTTYs: ttys) }.value
+        var outside: [SBBackground.Agent]?
+        if t0 - elsewhereAt >= Self.elsewhereEvery {
+            elsewhereAt = t0
+            outside = await Task.detached(priority: .utility) { SBBackground.agentsElsewhere(notOn: ttys) }.value
+        }
         merge(t0: t0, agents: agents)
+        if let outside { mergeElsewhere(outside) }
         publish()
+    }
+
+    /// Conversations that run in another terminal (cmux, Terminal, an editor). They show as
+    /// closed here ("· cmux"), so the sidebar and search list them; opening one asks, ends it
+    /// there and resumes it here. Before this, only sessions known from the cmux days showed:
+    /// one started in cmux later never appeared.
+    private func mergeElsewhere(_ agents: [SBBackground.Agent]) {
+        let now = self.now
+        var seenElsewhere = Set<String>()
+        defer { elsewhereKeys = seenElsewhere }
+        for a in agents {
+            guard let sid = a.sid else { continue }
+            let key = "\(a.kind):\(sid)"
+            let known = reg.sessions[key]
+            // Running here, opening here, or in a login switch: this app owns it.
+            if let x = known, x.isOpen || now - (x.opening_at ?? 0) < 25 || switching.contains(key) { continue }
+            var e = known ?? {
+                var n = SBEntry(key: key, agent: a.kind)
+                n.session_id = sid
+                n.cls = defaultClass(a.cwd)
+                n.labels = []
+                n.first_seen = now
+                n.custom_name = false
+                n.open = false
+                // Sorted with the other closed sessions by when it last did something.
+                n.closed_at = a.transcriptMtime ?? now
+                return n
+            }()
+            e.backend = "cmux"
+            e.closed_reason = "cmux"
+            e.pid = a.pid
+            e.login_dir = a.loginDir
+            if let mt = a.transcriptMtime { e.last_activity = mt }
+            if e.custom_name != true {
+                e.cwd = a.cwd ?? e.cwd
+                if let t = a.transcriptTitle, !t.isEmpty {
+                    e.name = t
+                } else if e.name == nil || e.name!.isEmpty {
+                    let ask = a.kind == "claude" ? SBBackground.lookupConversation(sid)?.firstAsk : nil
+                    e.name = ask ?? sessionName(e, transcriptTitle: nil, terminalTitle: "")
+                }
+            }
+            e.state = stateOf(e)
+            reg.sessions[key] = e
+            seenElsewhere.insert(key)
+        }
+        if !agents.isEmpty { save() }
     }
 
     private func merge(t0: Double, agents: [SBBackground.Agent]) {
@@ -512,6 +573,7 @@ final class Switchboard {
             "cr": n(e.closed_reason), "cwd": SBPaths.tilde(e.cwd ?? ""), "br": n(e.branch),
             "rm": NSNull(), "rp": reps, "art": Array((e.artifacts ?? []).suffix(3)),
             "be": e.backend ?? "cmux",
+            "el": !e.isOpen && elsewhereKeys.contains(e.key),
             "ar": e.archived == true && !e.isOpen, "aa": Int(e.archived_at ?? 0),
             "was": n(e.was),
         ]

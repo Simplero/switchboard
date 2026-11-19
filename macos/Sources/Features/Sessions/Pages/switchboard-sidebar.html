@@ -402,7 +402,7 @@ function rowsFor(ci){
   const whereOk = s => c.where === 'any' || (c.where === 'here' ? (s.o && s.be === 'ghostty') : c.where === 'cmux' ? (s.o && s.be !== 'ghostty') : !s.o);
   if (c.where === 'off'){
     // Not running anywhere: parked and closed sessions only.
-    const off = all.filter(s => !s.o).sort((a,b) => (b.ca||b.la||0) - (a.ca||a.la||0)).slice(0, 80);
+    const off = all.filter(s => !s.o && !s.el).sort((a,b) => (b.ca||b.la||0) - (a.ca||a.la||0)).slice(0, 80);
     return off.length ? off.map(s => ({s})) : [{empty:'Nothing here.'}];
   }
   const open = all.filter(s => s.o && whereOk(s));
@@ -427,22 +427,26 @@ function rowsFor(ci){
     const rec = (recent || []).map(k => byKey.get(k)).filter(s => s && !inList.has(s.k)).slice(0, 6);
     if (rec.length){ out.push({h:'Recently visited', n:rec.length}); if (!folded['Recently visited']) rec.forEach(s => out.push({s})); }
   }
+  // Running in another terminal (cmux): listed so you can find them and move them here.
+  // Ordered by when Switchboard first saw them there, so rows do not move under the mouse.
+  const away = all.filter(s => s.el).sort((a,b) => (b.ca||0) - (a.ca||0) || a.k.localeCompare(b.k));
+  if (away.length && c.filter === 'all'){ out.push({h:'Running elsewhere', n:away.length}); if (!folded['Running elsewhere']) away.forEach(s => out.push({s})); }
   if (c.where !== 'any') return out;
-  const parked = all.filter(s => s.pk && !s.o).sort((a,b) => (b.la||0) - (a.la||0));
+  const parked = all.filter(s => s.pk && !s.o && !s.el).sort((a,b) => (b.la||0) - (a.la||0));
   if (parked.length){ out.push({h:'Parked', n:parked.length}); if (!folded['Parked']) parked.forEach(s => out.push({s})); }
-  const closed = all.filter(s => !s.o && !s.pk && !s.ar).sort((a,b) => (b.ca||0) - (a.ca||0)).slice(0, 40);
+  const closed = all.filter(s => !s.o && !s.pk && !s.ar && !s.el).sort((a,b) => (b.ca||0) - (a.ca||0)).slice(0, 40);
   if (closed.length){ out.push({h:'Closed recently', n:closed.length}); if (!folded['Closed recently']) closed.forEach(s => out.push({s})); }
   // Done (✓ in the panel): closed for good, kept here. Clicking one resumes it and takes it out.
-  const archive = all.filter(s => s.ar && !s.o).sort((a,b) => (b.aa||0) - (a.aa||0));
+  const archive = all.filter(s => s.ar && !s.o && !s.el).sort((a,b) => (b.aa||0) - (a.aa||0));
   if (archive.length){ out.push({h:'Archive', n:archive.length}); if (!folded['Archive']) archive.forEach(s => out.push({s})); }
   return out;
 }
 
 function itemHTML(s){
-  if (s.o && s.be !== 'ghostty'){
-    // Running somewhere else (cmux): one line. Click opens it here.
+  if ((s.o && s.be !== 'ghostty') || s.el){
+    // Running in another terminal (cmux): one line. A click asks, then moves it here.
     const working = stateOf(s) === 'working';
-    return `<div class="else" data-k="${esc(s.k)}" title="Running in another terminal. Click to open it here.">
+    return `<div class="else" data-k="${esc(s.k)}" title="Running in another terminal (cmux or another app). Click to move it here.">
       <span class="dot">${working ? ic('spin',11,2.4,'spin') : '<i></i>'}</span>
       <span class="nm">${esc(s.n)}</span><span class="tag">elsewhere</span>
       <span class="age">${ago(s.la)}</span></div>`;
@@ -480,7 +484,7 @@ function colControls(ci){
   const c = colState[ci], count = f => data.s.filter(s => s.o && f(s)).length;
   const fchip = (v, label, n) => `<button class="fchip" data-f="${v}" aria-pressed="${c.filter===v}">${label} ${n}</button>`;
   const pills = (key, opts) => `<span class="seg">${opts.map(([v,l]) => `<button data-${key}="${v}" aria-pressed="${c[key]===v}">${l}</button>`).join('')}</span>`;
-  const wcount = w => data.s.filter(s => w === 'here' ? (s.o && s.be === 'ghostty') : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? !s.o : true).length;
+  const wcount = w => data.s.filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el) : true).length;
   const wchip = (v, label) => `<button class="fchip" data-w="${v}" aria-pressed="${c.where===v}">${label} ${v === 'any' ? '' : wcount(v)}</button>`;
   return `<div class="ctrl">
     <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
@@ -545,11 +549,12 @@ function render(){
   const host = $('#cols');
   const scroll = [...host.querySelectorAll('.list')].map(l => l.scrollTop);
   if (query){
-    const open = results.filter(s => s.o), older = results.filter(s => !s.o);
+    const open = results.filter(s => s.o), away = results.filter(s => !s.o && s.el), older = results.filter(s => !s.o && !s.el);
     host.innerHTML = `<div class="col" data-col="0"><div class="list">
       ${idHitHTML()}
       ${!results.length && !idHit ? `<div class="empty">No session matches “${esc(query)}”.</div>` : ''}
       ${open.length ? `<div class="group">Open now <span class="n">${open.length}</span></div>` + open.map(itemHTML).join('') : ''}
+      ${away.length ? `<div class="group">Running elsewhere <span class="n">${away.length}</span></div>` + away.map(itemHTML).join('') : ''}
       ${older.length ? `<div class="group">Older <span class="n">${older.length}</span></div>` + older.map(itemHTML).join('') : ''}
     </div></div>`;
     applyCursor(false);

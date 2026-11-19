@@ -56,6 +56,9 @@ final class Switchboard {
     /// Names given in the new-session form, by terminal: the session takes the name when the
     /// scan first sees its agent.
     private var pendingNames: [String: (name: String, at: Double)] = [:]
+    /// Since when each open session needs you (by key): the sidebar lists the longest-waiting first.
+    private var needsSince: [String: Double] = [:]
+    static let needsStates: Set<String> = ["permission", "question", "review", "heads_up"]
 
     static let scanEvery = 1.5
     /// How often to look for sessions in other terminals (cmux, Terminal…).
@@ -453,6 +456,12 @@ final class Switchboard {
             e.summary_key = skey
             e.split = t.surfacesInTab > 1
             e.state = stateOf(e)
+            if Self.needsStates.contains(e.state ?? "") {
+                // From when the agent stopped (a summary that is still being read does not count).
+                if needsSince[key] == nil { needsSince[key] = min(e.last_activity ?? now, now) }
+            } else {
+                needsSince[key] = nil
+            }
             reg.sessions[key] = e
             seen.insert(key)
         }
@@ -465,6 +474,7 @@ final class Switchboard {
         let agentWSs = Set(byWS.filter { $0.value.contains { agentSurfaces.contains($0.id) } }.keys)
         recentNew = recentNew.filter { now - $0.value < 120 }
         pendingNames = pendingNames.filter { now - $0.value.at < 300 }
+        needsSince = needsSince.filter { seen.contains($0.key) }
         let liveIDs = Set(terms.map(\.id))
         screenMemo = screenMemo.filter { liveIDs.contains($0.key) }
         for (ws, ts) in byWS where !agentWSs.contains(ws) {
@@ -676,6 +686,7 @@ final class Switchboard {
             "el": !e.isOpen && elsewhereKeys.contains(e.key),
             "ar": e.archived == true && !e.isOpen, "aa": Int(e.archived_at ?? 0),
             "was": n(e.was),
+            "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
         ]
     }
 
@@ -1033,8 +1044,7 @@ final class Switchboard {
                 recentNew[made.id] = now   // not a shell session while the scan catches up
                 if let label { pendingNames[made.id] = (label, now) }
                 SessionsAPI.focusTerminal(made.id)
-                // Claude already waits at its prompt: type the message, then Enter.
-                if !prompt.isEmpty { _ = SessionsAPI.sendInput(made.id, text: prompt, enter: true) }
+                if !prompt.isEmpty { typeWhenReady(made.id, prompt, since: now, seenAt: nil) }
                 return (true, "Started.", made.id)
             }
             SBSpares.close(spare.controller)
@@ -1056,6 +1066,28 @@ final class Switchboard {
         if let label { pendingNames[sf] = (label, now) }
         if focus { SessionsAPI.focusTerminal(sf) }
         return (true, "Started.", sf)
+    }
+
+    /// Type the first message into a spare once Claude shows its prompt (it may still be
+    /// starting when you press Enter), then Enter.
+    private func typeWhenReady(_ sf: String, _ text: String, since: Double, seenAt: Double?) {
+        guard let view = SessionsAPI.surface(id: sf) else { return }   // closed meanwhile
+        var seen = seenAt
+        if SBSpares.atPrompt(view) {
+            // A moment after the prompt first shows, so Claude reads the paste as input.
+            if let s = seen, now - s >= 0.3 { _ = SessionsAPI.sendInput(sf, text: text, enter: true); return }
+            if seen == nil { seen = now }
+        } else {
+            seen = nil
+        }
+        if now - since > 45 {
+            SessionsWeb.shared.webView.evaluateJavaScript("window.Sessions && Sessions.newFailed && Sessions.newFailed()")
+            SessionsStore.shared.showFailure("Claude did not get to its prompt within 45 seconds, so your first message was not sent. It is back in the new-session form.")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            MainActor.assumeIsolated { self.typeWhenReady(sf, text, since: since, seenAt: seen) }
+        }
     }
 
     /// The first message: what you wrote, then the paths of the files you added, one per line.

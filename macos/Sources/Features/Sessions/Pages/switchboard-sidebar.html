@@ -300,6 +300,15 @@ window.Sessions = {
   // Files dropped on the page (the app knows their paths; the page only their names).
   droppedFiles(paths){ $('#newform').classList.remove('drop'); if (nf.open) addFiles(paths); },
   // The session did not start (the app said why): the message, name and files come back.
+  // The keyboard left the page (a click in the terminal, or the page moved to another window):
+  // no field may look focused, and the new-session form closes (its draft stays).
+  keyboardLeft(){
+    clearTimeout(blurTimer);
+    const a = document.activeElement;
+    if (a && a !== document.body) a.blur();
+    if (kbd){ cur = null; setKbd(false); }
+    if (nf.open) closeNew(false);
+  },
   newFailed(){ if (nf.sent && !nfMsg.value && !nfName.value && !nf.files.length){ nfMsg.value = nf.sent.text; nfName.value = nf.sent.name; nf.files = nf.sent.files; nfFiles(); nfGrow(); } },
   // ⌘P: start at the session in front.
   focusSearch(){ cur = null; q.focus(); q.select(); if (!cur) cur = initialCursor(); applyCursor(true); },
@@ -451,12 +460,15 @@ function ensureOrders(){
 function manualIndex(s){ const i = manual ? manual.indexOf(s.k) : -1; return i < 0 ? 1e9 : i; }
 
 function cmp(c){
-  const rank = s => { const st = stateOf(s); return st === 'urgent' ? 0 : NEEDS.has(st) ? 1 : st === 'working' ? 2 : 3; };
+  // Needs you: the one that has waited longest first, so going down the list is a loop (a
+  // session that needs you again goes to the end). Then busy ones, then the rest, newest first.
+  const rank = s => needsYou(s) ? 0 : stateOf(s) === 'working' ? 1 : 2;
+  const since = s => s.nsn || s.la || 0;
   if (c.sort === 'visited') return (a,b) => (visits[b.k]||0) - (visits[a.k]||0) || (b.la||0) - (a.la||0);
   if (c.sort === 'active') return (a,b) => (b.la||0) - (a.la||0);
   if (c.sort === 'name') return (a,b) => a.n.localeCompare(b.n);
   if (c.sort === 'manual') return (a,b) => manualIndex(a) - manualIndex(b);
-  return (a,b) => rank(a) - rank(b) || (b.la||0) - (a.la||0);
+  return (a,b) => rank(a) - rank(b) || (rank(a) === 0 ? since(a) - since(b) : (b.la||0) - (a.la||0));
 }
 
 function rowsFor(ci){
@@ -655,8 +667,8 @@ function nfStatus(){
   const lg = loginName(nf.login);
   $('#nfhead').innerHTML = `${ic(LOGIN_ICON[lg] || 'person', 13, 2.2)} New Claude · ${esc(lg)}`;
   const sp = data?.spares?.[nf.login];
-  const rd = sp?.ready ? `<span class="rd on">${ic('bolt', 11, 2.4)} Ready: starts at once</span>`
-    : `<span class="rd">${ic('dots', 11, 2.4)} Claude starts in a few seconds</span>`;
+  const rd = sp?.ready ? `<span class="rd on">${ic('bolt', 11, 2.4)} Claude is ready</span>`
+    : `<span class="rd">${ic('dots', 11, 2.4)} Starting Claude…</span>`;
   $('#nfsub').innerHTML = `${ic('folder', 11, 2.2)} <span class="mono">${esc(newCwd)}</span> · ${rd}`;
 }
 function nfFiles(){
@@ -677,6 +689,7 @@ function openNew(login){
   $('#scrim').style.top = (r.bottom + 2) + 'px';
   $('#newform').hidden = false; $('#scrim').hidden = false;
   nfStatus(); nfFiles(); nfGrow(); render();
+  bridge('newWarm', {login});   // Claude starts now, while you write
   if (!was || document.activeElement !== nfName) nfMsg.focus();
 }
 // keep: the draft stays (Esc, ×, a click outside). Starting clears it.
@@ -685,6 +698,7 @@ function closeNew(giveBack){
   nf.open = false;
   $('#newform').hidden = true; $('#scrim').hidden = true;
   $('#newform').classList.remove('drop');
+  bridge('newWarm', {login: null});
   render();
   if (giveBack) bridge('blur');
 }

@@ -182,9 +182,13 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         switch type {
         case "ready":
             pageReady()
+        case "newWarm":
+            // The new-session form opened on a login (or closed): start its Claude now, so it
+            // is at its prompt by the time you press Enter.
+            SBSpares.shared.want(body["login"] as? String)
         case "newFolder":
             // The folder new sessions start in: the spares wait there.
-            if let cwd = body["cwd"] as? String, !cwd.isEmpty { SBSpares.shared.folder = SBPaths.expand(cwd) }
+            if let cwd = body["cwd"] as? String, !cwd.isEmpty { SBSpares.shared.folder = SBPaths.expand(cwd); SBSpares.shared.tick() }
         case "open":
             guard let k = body["k"] as? String else { return }
             store.open(key: k)
@@ -421,6 +425,29 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
 /// The pages' web view. Files dropped on it: the page only learns their names, so their paths
 /// go to the sidebar page from here (the new-session form attaches them).
 final class SessionsWebView: WKWebView {
+    /// The page must not look like it has the keyboard when it does not: tell it when the
+    /// keyboard leaves (a click in the terminal), and after it moves to another window
+    /// (⌘↑ ⌘↓), where the terminal has the keyboard. Its focused field stays focused in the
+    /// page otherwise, with a blinking caret.
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok { keyboardLeft() }
+        return ok
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, let w = self.window else { return }
+            let r = w.firstResponder
+            if !(r === self || (r as? NSView)?.isDescendant(of: self) == true) { self.keyboardLeft() }
+        }
+    }
+
+    private func keyboardLeft() {
+        evaluateJavaScript("window.Sessions && Sessions.keyboardLeft && Sessions.keyboardLeft()")
+    }
+
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
                                                          options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []

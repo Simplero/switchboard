@@ -1,16 +1,17 @@
 import AppKit
 import GhosttyKit
 
-/// Claude started ahead of time: one per login, in the folder new sessions start in, each in
-/// a window that is never shown. A new session from the sidebar takes the spare of its login
-/// (Claude already waits at its prompt), so it is there at once; a new spare starts behind it.
+/// Claude started when you open the new-session form ("+ login"), in the folder new sessions
+/// start in, in a window that is never shown. While you write the first message it gets to
+/// its prompt (about 1.3 s); Enter shows it as the new session and types the message. Nothing
+/// runs ahead of time: after the form closes, the spare stays 2 minutes (you may open the form
+/// again), then it ends.
 ///
 /// - A spare is not a session: the tracker, the tab list, the API and the handoff on update
 ///   skip it (`TerminalController.sessionsSpare`).
-/// - It starts again when it is 30 minutes old, when the claude program on disk changes (an
-///   update), or when you pick another folder: a new session gets the current Claude, its
-///   settings, MCP servers and git status.
-/// - SWITCHBOARD_NO_SPARES=1 turns spares off.
+/// - A spare kept open longer than 30 minutes, or older than the claude program on disk (an
+///   update), starts again; so does one in another folder than the one you picked.
+/// - SWITCHBOARD_NO_SPARES=1 turns spares off (new sessions start the slower way).
 @MainActor
 final class SBSpares {
     static let shared = SBSpares()
@@ -43,9 +44,9 @@ final class SBSpares {
     private(set) var spares: [String: Spare] = [:]
     /// Where new sessions start: the sidebar's "New Claude in" folder (expanded).
     var folder = SBPaths.expand(Switchboard.defaultFolder)
+    /// The logins to keep a spare for, and until when (forever while the form is open on one).
+    private var wanted: [String: Double] = [:]
     private var failedAt: [String: Double] = [:]
-    private var firstTick: Double?
-    private var nextStart: Double = 0
     private var lastRecycle: Double = 0
     private var stamp: String?
     private var stampAt: Double = 0
@@ -53,18 +54,29 @@ final class SBSpares {
 
     /// SWITCHBOARD_SPARE_MAX_AGE (seconds) for checks.
     static let maxAge = Double(ProcessInfo.processInfo.environment["SWITCHBOARD_SPARE_MAX_AGE"] ?? "") ?? 30 * 60
-    /// Claude not at its prompt by then (a dialog, an error): close it, try again later.
+    /// How long a spare stays after the form closes.
+    static let keep = 120.0
+    /// Claude not at its prompt by then (a dialog, an error): close it.
     static let readyWithin = 90.0
-    static let retryAfter = 15.0 * 60
+    static let retryAfter = 30.0
 
     private var now: Double { Date().timeIntervalSince1970 }
 
-    /// Every scan: notice spares that became ready or ended, start missing ones, renew old ones.
+    /// The form opened on this login (nil: the form closed). Starts its spare now.
+    func want(_ login: String?) {
+        let t = now
+        for (k, until) in wanted where until == .infinity { wanted[k] = t + Self.keep }
+        if let login, SBLogins.dirs.contains(login) { wanted[login] = .infinity }
+        tick()
+    }
+
+    /// Every scan (and when the form opens or closes): start the spare the form wants, notice
+    /// spares that got to their prompt or ended, end the ones no longer wanted.
     func tick() {
         guard enabled, Switchboard.shared.loaded else { return }
         let t = now
-        if firstTick == nil { firstTick = t }
         if t - stampAt > 60 { stampAt = t; stamp = Self.claudeStamp() }
+        wanted = wanted.filter { $0.value >= t }
         // No session window left (you closed them all): no spares either, so the app has
         // no windows and the Dock icon opens a new one as usual.
         guard let main = SessionsAPI.mainWindow() else {
@@ -77,8 +89,8 @@ final class SBSpares {
                 spares[login] = nil
                 continue
             }
-            // Another folder for new sessions: this spare is of no use any more.
-            if s.folder != folder {
+            // Not wanted any more, or started in another folder than the one you picked.
+            if wanted[login] == nil || s.folder != folder {
                 discard(login, failed: false)
                 continue
             }
@@ -94,33 +106,27 @@ final class SBSpares {
                     continue
                 }
             }
-            // Old, or an older claude than the one on disk: renew it. One at a time, and only
-            // a spare that got to its prompt (no endless restarts).
+            // Old, or an older claude than the one on disk: renew it (one that got to its prompt).
             let stale = (stamp != nil && s.stamp != stamp) || t - s.started > Self.maxAge
             if stale, s.readyAt != nil, t - lastRecycle > 20 {
                 lastRecycle = t
                 discard(login, failed: false)
             }
         }
-        // Start missing spares one by one, after the app had 20 s to bring its sessions back.
-        guard t - (firstTick ?? t) >= 20, t >= nextStart else { return }
-        for login in SBLogins.dirs where spares[login] == nil && t - (failedAt[login] ?? 0) > Self.retryAfter {
-            nextStart = t + 5
+        for login in wanted.keys.sorted() where spares[login] == nil && t - (failedAt[login] ?? 0) > Self.retryAfter {
             start(login, main: main)
-            break
         }
     }
 
-    /// The spare of this login, when Claude waits at its prompt in this folder. The caller
-    /// shows it as a new session.
+    /// The spare of this login in this folder, ready or still starting. The caller shows it as
+    /// a new session (and types the first message once Claude is at its prompt).
     func take(_ login: String, folder: String) -> Spare? {
-        guard let s = spares[login], s.folder == folder, s.readyAt != nil, Self.atPrompt(s.view) else { return nil }
+        guard let s = spares[login], s.folder == folder else { return nil }
         spares[login] = nil
+        wanted[login] = nil
         s.controller.sessionsSpare = false
         s.controller.window?.isExcludedFromWindowsMenu = false
         s.controller.window?.isRestorable = s.restorable
-        // The next spare waits a bit, so its start does not compete with your first message.
-        nextStart = max(nextStart, now + 15)
         return s
     }
 

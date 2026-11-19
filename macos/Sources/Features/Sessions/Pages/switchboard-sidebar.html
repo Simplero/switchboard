@@ -266,10 +266,12 @@ const navColOf = () => Math.min(navColPick, cols - 1);
 function setNavCol(ci){ if (ci == null || ci === navColPick) return; navColPick = ci; store.set('navCol', ci); render(); }
 const colState = [
   Object.assign({filter:'needs', group:'none', sort:'needs', where:'any'}, store.get('col0', {})),
-  Object.assign({filter:'all', group:'cmux', sort:'manual', where:'any'}, store.get('col1', {})),
+  Object.assign({filter:'all', group:'none', sort:'manual', where:'any'}, store.get('col1', {})),
 ];
 // "Elsewhere" (cmux) is gone: a column that showed it shows everything.
 for (const c of colState) if (c.where === 'cmux') c.where = 'any';
+// "Group" (cmux's workspace groups) is gone too: every session here fell in one "Switchboard" group.
+for (const c of colState) if (c.group === 'cmux') c.group = 'none';
 const folded = store.get('folded', {'Parked':true,'Closed recently':true});
 if (!('Archive' in folded)) folded['Archive'] = true;   // the Archive starts folded
 
@@ -292,8 +294,9 @@ async function ask(type, d={}){
 // ---------- called by the app ----------
 window.Sessions = {
   // The app sends the sessions whenever something changes.
-  setData(d){ data = d; render(); },
+  setData(d){ data = d; noteNeeds(); render(); },
   setFocus(sf){
+    noteNeeds();   // the session you leave keeps its place for another 30 s from now
     const moved = (sf || null) !== focusSf;
     focusSf = sf || null;
     const s = data?.s.find(x => x.sf === focusSf && x.o);
@@ -439,14 +442,38 @@ function openSession(s){
   bridge('open', {k: s.k});
 }
 
+// ---------- "Needs you" holds rows ----------
+// A session that stops needing you (you answered it) keeps its place for 30 s, and for as
+// long as it is the session in front: the list does not jump under you, and ⌘↑ gets you
+// back to it to add more. It shows its real state meanwhile.
+const HOLD = 30;
+const needsMemo = {};   // key → {last: when it last needed you (or was in front), since: needs-you time}
+let holdTimer;
+function noteNeeds(){
+  if (!data) return;
+  const t = Date.now() / 1000;
+  const open = new Set();
+  for (const s of data.s){
+    if (!s.o) continue;
+    open.add(s.k);
+    if (needsYou(s)) needsMemo[s.k] = {last: t, since: s.nsn || s.la || t};
+    else if (needsMemo[s.k] && s.sf && s.sf === focusSf) needsMemo[s.k].last = t;
+  }
+  let next = Infinity;
+  for (const k of Object.keys(needsMemo)){
+    const s = data.s.find(x => x.k === k);
+    if (!open.has(k) || (!needsYou(s) && t - needsMemo[k].last > HOLD)) delete needsMemo[k];
+    else if (!needsYou(s)) next = Math.min(next, needsMemo[k].last + HOLD);
+  }
+  clearTimeout(holdTimer);
+  if (next < Infinity) holdTimer = setTimeout(() => { noteNeeds(); render(); }, Math.max(0, next - t) * 1000 + 300);
+}
+const heldNeeds = s => needsYou(s) || !!needsMemo[s.k];
+
 // ---------- building lists ----------
 function groupKey(c, s){
   if (c.group === 'login') return s.lg || '';
   if (c.group === 'folder') return (s.rm ? s.rm + ':' : '') + (s.cwd || '~');
-  if (c.group === 'cmux'){
-    for (const g of data.grp || []) if ((g.members||[]).includes(s.ws)) return g.name;
-    return s.be === 'ghostty' ? 'Switchboard' : 'No group';
-  }
   return s.c || 'Work';
 }
 // Seed the stable orders once from what the list showed before (A–Z and visit time),
@@ -472,8 +499,8 @@ function manualIndex(s){ const i = manual ? manual.indexOf(s.k) : -1; return i <
 function cmp(c){
   // Needs you: the one that has waited longest first, so going down the list is a loop (a
   // session that needs you again goes to the end). Then busy ones, then the rest, newest first.
-  const rank = s => needsYou(s) ? 0 : stateOf(s) === 'working' ? 1 : 2;
-  const since = s => s.nsn || s.la || 0;
+  const rank = s => heldNeeds(s) ? 0 : stateOf(s) === 'working' ? 1 : 2;
+  const since = s => needsMemo[s.k]?.since || s.nsn || s.la || 0;
   if (c.sort === 'visited') return (a,b) => (visits[b.k]||0) - (visits[a.k]||0) || (b.la||0) - (a.la||0);
   if (c.sort === 'active') return (a,b) => (b.la||0) - (a.la||0);
   if (c.sort === 'name') return (a,b) => a.n.localeCompare(b.n);
@@ -492,7 +519,7 @@ function rowsFor(ci){
     return off.length ? off.map(s => ({s})) : [{empty:'Nothing here.'}];
   }
   const open = all.filter(s => s.o && whereOk(s));
-  const shown = open.filter(s => c.filter === 'all' || (c.filter === 'needs' ? needsYou(s) : stateOf(s) === 'working'));
+  const shown = open.filter(s => c.filter === 'all' || (c.filter === 'needs' ? heldNeeds(s) : stateOf(s) === 'working'));
   const out = [];
   if (c.group === 'none'){
     shown.sort(cmp(c)).forEach(s => out.push({s}));
@@ -576,7 +603,7 @@ function colControls(ci){
   return `<div class="ctrl">
     <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
     <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('all','All',count(()=>true))}</div>
-    <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir'],['cmux','Group']])}</div>
+    <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir']])}</div>
     <div class="row" title="Sort. Manual: drag rows to put them in your order.">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>
   </div>`;
 }

@@ -236,6 +236,7 @@ window.Sessions = {
   // The app sends the sessions whenever something changes.
   setData(d){ data = d; render(); },
   setFocus(sf){
+    const moved = (sf || null) !== focusSf;
     focusSf = sf || null;
     const s = data?.s.find(x => x.sf === focusSf && x.o);
     if (s) {
@@ -243,6 +244,8 @@ window.Sessions = {
       if (recent && !recent.includes(s.k)){ recent.unshift(s.k); recent = recent.slice(0, 30); store.set('recent', recent); }
     }
     render();
+    // ⌘↑ ⌘↓ (or any other switch) can select a row that is scrolled out of view: bring it in.
+    if (moved) document.querySelectorAll('#cols .item.sel').forEach(reveal);
   },
   // The folder menu (native) picked a folder for new sessions.
   setFolder(p){ if (p){ newCwd = p; store.set('newCwd', p); render(); } },
@@ -274,6 +277,15 @@ function initialCursor(){
   for (const ci of cis){ const first = colRows(ci)[0]; if (first) return {col: ci, k: first.dataset.k}; }
   return null;
 }
+// Scroll a row's own list just enough to show the whole row, with a small gap at the edge.
+// (scrollIntoView would also scroll the page itself, which has overflow hidden.)
+function reveal(el){
+  const list = el.closest('.list');
+  if (!list) return;
+  const r = el.getBoundingClientRect(), l = list.getBoundingClientRect(), gap = 6;
+  if (r.top < l.top + gap) list.scrollTop -= l.top + gap - r.top;
+  else if (r.bottom > l.bottom - gap) list.scrollTop += Math.min(r.bottom - l.bottom + gap, r.top - l.top - gap);
+}
 // Mark the cursor row; if its session left the column, take the row now at the same place.
 function applyCursor(scroll){
   document.querySelectorAll('.cur').forEach(el => el.classList.remove('cur', 'cur-off'));
@@ -285,7 +297,7 @@ function applyCursor(scroll){
   cur.i = rows.indexOf(el);
   el.classList.add('cur');
   if (!runsHere(sessionOf(cur.k))) el.classList.add('cur-off');
-  if (scroll) el.scrollIntoView({block: 'nearest'});
+  if (scroll) reveal(el);
 }
 function moveTo(col, el){
   if (!el) return;

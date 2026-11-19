@@ -534,6 +534,10 @@ typedef struct {
   const char* GHOSTTY_NULLABLE initial_input;
   bool wait_after_command;
   ghostty_surface_context_e context;
+  int pty_fd;
+  int pty_pid;
+  const char* GHOSTTY_NULLABLE pty_replay;
+  size_t pty_replay_len;
 } ghostty_surface_config_s;
 
 typedef struct {
@@ -1219,6 +1223,8 @@ GHOSTTY_API void ghostty_surface_set_size(ghostty_surface_t, uint32_t, uint32_t)
 GHOSTTY_API ghostty_surface_size_s ghostty_surface_size(ghostty_surface_t);
 GHOSTTY_API uint64_t ghostty_surface_foreground_pid(ghostty_surface_t);
 GHOSTTY_API ghostty_string_s ghostty_surface_tty_name(ghostty_surface_t);
+GHOSTTY_API int ghostty_surface_pty_handoff(ghostty_surface_t, int*);
+GHOSTTY_API ghostty_string_s ghostty_surface_dump_vt(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_set_color_scheme(ghostty_surface_t,
                                                      ghostty_color_scheme_e);
 GHOSTTY_API ghostty_input_mods_e ghostty_surface_key_translation_mods(ghostty_surface_t,

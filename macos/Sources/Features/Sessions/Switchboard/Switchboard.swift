@@ -105,12 +105,17 @@ final class Switchboard {
             SessionsStore.shared.showFailure("Another program keeps the session list (\(SBPaths.registry)): another Switchboard, or the old session helper. This window shows your sessions but does not save changes to the list.")
         }
         Task { @MainActor in
+            // The app opens one plain shell at launch. After a restart the sessions come
+            // back as tabs of the one window, so that untouched one closes.
+            let initial = NSApp.windows.filter { $0.windowController is BaseTerminalController }
+            // Terminals the app before an update handed over: their programs still run.
+            var handedOver = Set<String>()
+            if let got = await Task.detached(priority: .userInitiated, operation: { SBHandoff.receive() }).value {
+                handedOver = SBHandoff.adopt(got.items, got.fds)
+            }
             await scan()
-            if restoring {
-                // The app opens one plain shell at launch. After a restart the sessions
-                // come back as tabs of the one window, so that untouched one closes.
-                let initial = NSApp.windows.filter { $0.windowController is BaseTerminalController }
-                let (ok, msg) = await restoreAfterRestart()
+            if restoring || !handedOver.isEmpty {
+                let (ok, msg) = await restoreAfterRestart(skipping: handedOver)
                 UserDefaults.standard.set(false, forKey: "sessions.restoreAfterRestart")
                 if !ok { SessionsStore.shared.showFailure(msg) }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -1008,10 +1013,11 @@ final class Switchboard {
 
     /// After a restart: reopen every session that was open, with its tabs. A list of what
     /// could not be reopened is left next to the saved list.
-    func restoreAfterRestart() async -> (Bool, String) {
+    func restoreAfterRestart(skipping handedOver: Set<String> = []) async -> (Bool, String) {
         guard let j = SBFiles.readJSON(SBPaths.restart) as? [String: Any],
               now - ((j["at"] as? NSNumber)?.doubleValue ?? 0) <= 600 else { return (true, "Nothing to restore.") }
-        let items = (j["items"] as? [[String: Any]]) ?? []
+        // Sessions whose terminals were handed over still run: nothing to reopen.
+        let items = ((j["items"] as? [[String: Any]]) ?? []).filter { !handedOver.contains($0["k"] as? String ?? "") }
         markStaleClosed(reason: "restart")
         var n = 0
         var failed: [String] = []

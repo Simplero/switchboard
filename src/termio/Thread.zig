@@ -389,6 +389,26 @@ fn startSynchronizedOutput(self: *Thread, cb: *CallbackData) void {
 fn handleResize(self: *Thread, cb: *CallbackData, resize: renderer.Size) void {
     self.coalesce_data.resize = resize;
 
+    // Switchboard: a terminal adopted after an update goes through a few sizes
+    // while its new tab lays out. Wait until the size is settled, so the program
+    // on it sees one resize at most (none when the size did not change).
+    const settling = switch (cb.data.backend) {
+        .exec => |*e| cb.io.backend.exec.subprocess.adopt != null and
+            e.start.untilNow(global.io(), .awake).toMilliseconds() < 2000,
+    };
+    if (settling) {
+        self.coalesce.reset(
+            &self.loop,
+            &self.coalesce_c,
+            &self.coalesce_cancel_c,
+            400,
+            CallbackData,
+            cb,
+            coalesceCallback,
+        );
+        return;
+    }
+
     // If the timer is already active we just return. In the future we want
     // to reset the timer up to a maximum wait time but for now this ensures
     // relatively smooth resizing.

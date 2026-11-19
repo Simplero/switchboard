@@ -499,6 +499,17 @@ pub const Surface = struct {
 
         /// Context for the new surface
         context: apprt.surface.NewSurfaceContext = .window,
+
+        /// Switchboard: adopt this pty master (its program already runs) instead
+        /// of starting a command. -1 for none.
+        pty_fd: c_int = -1,
+
+        /// Switchboard: the program on that pty (its session leader).
+        pty_pid: c_int = 0,
+
+        /// Switchboard: the old terminal's state as VT sequences, replayed first.
+        pty_replay: ?[*]const u8 = null,
+        pty_replay_len: usize = 0,
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
@@ -611,6 +622,17 @@ pub const Surface = struct {
         if (opts.wait_after_command) {
             config.@"wait-after-command" = true;
         }
+
+        // Switchboard: this surface takes over a pty handed over by the app that ran
+        // before an update. The process backend reads it during init below.
+        if (opts.pty_fd >= 0) {
+            @import("../termio.zig").Exec.pending_adopt = .{
+                .fd = opts.pty_fd,
+                .pid = opts.pty_pid,
+                .replay = if (opts.pty_replay) |r| r[0..opts.pty_replay_len] else null,
+            };
+        }
+        defer @import("../termio.zig").Exec.pending_adopt = null;
 
         // Initialize our surface right away. We're given a view that is
         // ready to use.
@@ -2013,6 +2035,43 @@ pub const CAPI = struct {
     /// Returns the PID of the foreground process for the surface PTY.
     export fn ghostty_surface_foreground_pid(surface: *Surface) u64 {
         return surface.core_surface.getProcessInfo(.foreground_pid) orelse 0;
+    }
+
+    /// Switchboard: hand this surface's pty to the next copy of the app. Returns a
+    /// duplicate of the pty master (the caller owns it; -1 on failure) and writes the
+    /// program's pid. From now on closing the surface does not end the program.
+    export fn ghostty_surface_pty_handoff(surface: *Surface, pid_out: *c_int) c_int {
+        switch (surface.core_surface.io.backend) {
+            .exec => |*exec| {
+                var pid: std.posix.pid_t = 0;
+                const fd = exec.subprocess.handoff(&pid);
+                pid_out.* = pid;
+                return fd;
+            },
+        }
+    }
+
+    /// Switchboard: the whole terminal state (screen with scrollback, cursor, modes,
+    /// styles, working directory) as VT sequences, to replay into a new surface.
+    /// Free with ghostty_string_free.
+    export fn ghostty_surface_dump_vt(surface: *Surface) String {
+        const core_surface = &surface.core_surface;
+        core_surface.renderer_state.mutex.lockUncancelable(global.io());
+        defer core_surface.renderer_state.mutex.unlock(global.io());
+
+        var buf: std.Io.Writer.Allocating = .init(global.alloc());
+        defer buf.deinit();
+        // No trimming: trailing blank rows are part of the layout, so the cursor
+        // lands on the same row after a replay.
+        var f: terminal.formatter.TerminalFormatter = .init(core_surface.renderer_state.terminal, .{ .emit = .vt, .trim = false });
+        f.extra = .all;
+        f.extra.palette = false;
+        f.format(&buf.writer) catch |err| {
+            log.warn("error dumping terminal state err={}", .{err});
+            return .empty;
+        };
+        const out = buf.toOwnedSliceSentinel(0) catch return .empty;
+        return .fromSlice(out);
     }
 
     /// Returns the PTY name for the surface. The returned string must be

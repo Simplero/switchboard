@@ -231,6 +231,10 @@ final class SessionsAPI {
             default: return (400, ["error": "unknown check"])
             }
             return (200, ["ok": true])
+        case ("POST", "/sb/restart"):
+            // For checks: what "Restart to update" does, without the question.
+            Task { @MainActor in SessionsVersion.shared.restart(confirm: false) }
+            return (200, ["ok": true])
         case ("POST", "/merge"):
             return (200, ["moved": SessionsAPI.mergeAll()])
         case ("GET", "/screenshot"):
@@ -315,9 +319,11 @@ final class SessionsAPI {
     /// The Switchboard window: the tab group that holds the sessions (the biggest one,
     /// if something opened a second window).
     static func mainWindow() -> NSWindow? {
-        let windows = allControllers().filter { $0 is TerminalController }.compactMap { $0.window }
-            .filter { $0.isVisible || $0.isMiniaturized }
-        return windows.max { ($0.tabGroup?.windows.count ?? 1) < ($1.tabGroup?.windows.count ?? 1) }
+        let all = allControllers().filter { $0 is TerminalController }.compactMap { $0.window }
+        // Visible windows first; while the app starts hidden (a restart in the background),
+        // any terminal window, so new sessions still join one window.
+        let shown = all.filter { $0.isVisible || $0.isMiniaturized }
+        return (shown.isEmpty ? all : shown).max { ($0.tabGroup?.windows.count ?? 1) < ($1.tabGroup?.windows.count ?? 1) }
     }
 
     /// Show a session: the tab of it you used last (a shell tab, say), else its own terminal.
@@ -464,10 +470,27 @@ final class SessionsAPI {
 
     /// Open a terminal: a new session (a new tab at the end of the one window), or with
     /// `tabOf` (a terminal id) a new tab of that terminal's session.
+    /// A terminal whose program already runs: its pty handed over by the app that ran
+    /// before an update.
+    struct AdoptPTY {
+        let fd: Int32
+        let pid: Int32
+        let replay: Data?
+
+        var config: Ghostty.SurfaceConfiguration {
+            var c = Ghostty.SurfaceConfiguration()
+            c.ptyFD = fd
+            c.ptyPID = pid
+            c.ptyReplay = replay
+            return c
+        }
+    }
+
     static func openTab(cwd: String?, input: String?, env: [String: String], focus: Bool,
-                        split: Bool = false, tabOf: String? = nil, title: String? = nil) -> (id: String, tab: String, ws: String)? {
+                        split: Bool = false, tabOf: String? = nil, title: String? = nil,
+                        adopt: AdoptPTY? = nil, ws: String? = nil) -> (id: String, tab: String, ws: String)? {
         guard let appDelegate = NSApp.delegate as? AppDelegate else { return nil }
-        var config = Ghostty.SurfaceConfiguration()
+        var config = adopt?.config ?? Ghostty.SurfaceConfiguration()
         if let cwd, !cwd.isEmpty { config.workingDirectory = cwd }
         if let input, !input.isEmpty { config.initialInput = input }
         config.environmentVariables = env
@@ -482,8 +505,9 @@ final class SessionsAPI {
         } else {
             controller = TerminalController.newWindow(appDelegate.ghostty, withBaseConfig: config)
         }
-        // newTab gave it the session of its parent; a new session gets its own id.
-        if parent == nil { controller.sessionsWorkspace = UUID().uuidString }
+        // newTab gave it the session of its parent; a new session gets its own id
+        // (or keeps the one it had, after an update).
+        if let ws, !ws.isEmpty { controller.sessionsWorkspace = ws } else if parent == nil { controller.sessionsWorkspace = UUID().uuidString }
         guard let view = controller.surfaceTree.root?.leaves().first else { return nil }
         if let title, !title.isEmpty { view.titleOverride = title }
         if split {
@@ -493,6 +517,13 @@ final class SessionsAPI {
             controller.focusSurface(view)
         }
         return (view.id.uuidString, ScriptTab.stableID(controller: controller), controller.sessionsWorkspace)
+    }
+
+    /// A split next to a terminal, taking over a handed-over pty.
+    static func adoptSplit(nextTo id: String, adopt: AdoptPTY) -> String? {
+        guard let view = surface(id: id), let controller = BaseTerminalController.controller(owning: view),
+              let made = controller.newSplit(at: view, direction: .right, baseConfig: adopt.config) else { return nil }
+        return made.id.uuidString
     }
 }
 

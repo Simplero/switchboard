@@ -6,6 +6,8 @@ SRC="$(dirname "$0")/macos/build/ReleaseLocal/Ghostty.app"
 DST="/Applications/Switchboard.app"
 rm -rf "$DST.new"
 cp -R "$SRC" "$DST.new"
+# The holder that keeps terminals running while the app restarts for an update.
+clang -O2 -Wall -o "$DST.new/Contents/MacOS/switchboard-holder" "$(dirname "$0")/macos/switchboard-holder.c"
 P="$DST.new/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.simplero.ghostty-sessions" "$P"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Switchboard" "$P" 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleName string Switchboard" "$P"

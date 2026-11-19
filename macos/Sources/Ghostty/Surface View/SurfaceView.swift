@@ -599,6 +599,14 @@ extension Ghostty {
         /// Context for surface creation
         var context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_WINDOW
 
+        /// Switchboard: take over this pty master (its program already runs, handed over
+        /// by the app that ran before an update) instead of starting a command. -1: none.
+        var ptyFD: Int32 = -1
+        /// Switchboard: the program on that pty.
+        var ptyPID: Int32 = 0
+        /// Switchboard: the old terminal's state as VT sequences, replayed first.
+        var ptyReplay: Data?
+
         init() {}
 
         init(from config: ghostty_surface_config_s) {
@@ -643,6 +651,17 @@ extension Ghostty {
             // Set context
             config.context = context
 
+            config.pty_fd = ptyFD
+            config.pty_pid = ptyPID
+
+            // The replay bytes stay valid for the duration of the closure.
+            let replay = ptyReplay ?? Data()
+            return try replay.withUnsafeBytes { replayBytes in
+            if ptyFD >= 0, replayBytes.count > 0 {
+                config.pty_replay = replayBytes.baseAddress?.assumingMemoryBound(to: CChar.self)
+                config.pty_replay_len = replayBytes.count
+            }
+
             // Use withCString to ensure strings remain valid for the duration of the closure
             return try workingDirectory.withCString { cWorkingDir in
                 config.working_directory = cWorkingDir
@@ -679,6 +698,7 @@ extension Ghostty {
                         }
                     }
                 }
+            }
             }
         }
     }

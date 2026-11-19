@@ -49,26 +49,38 @@ final class SessionsVersion: ObservableObject {
 
     /// Quit and start the newly installed build. The sessions open now reopen after the
     /// restart, with the same conversation and login.
-    func restart() {
+    func restart(confirm: Bool = true) {
         let open = SessionsStore.shared.payload?.s.filter { $0.isOpen }.count ?? 0
-        let alert = NSAlert()
-        alert.messageText = "Restart Switchboard to update to b\(installedBuild)?"
-        alert.informativeText = open == 0
-            ? "No sessions are open here."
-            : "\(open) session\(open == 1 ? "" : "s") open here will close and reopen with the same conversation and login after the restart. Their other tabs come back as new shells in the same folder; programs running in them stop. A session that is working right now stops its current step."
-        alert.addButton(withTitle: "Restart now")
-        alert.addButton(withTitle: "Later")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let keepsRunning = SBHandoff.available
+        if confirm {
+            let alert = NSAlert()
+            alert.messageText = "Restart Switchboard to update to b\(installedBuild)?"
+            alert.informativeText = open == 0
+                ? "No sessions are open here."
+                : keepsRunning
+                ? "Every terminal and the program in it keeps running through the restart, and comes back in the same session and tab."
+                : "\(open) session\(open == 1 ? "" : "s") open here will close and reopen with the same conversation and login after the restart. Their other tabs come back as new shells in the same folder; programs running in them stop. A session that is working right now stops its current step."
+            alert.addButton(withTitle: "Restart now")
+            alert.addButton(withTitle: "Later")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
 
-        // Quit only once the list of sessions to reopen is saved.
+        // Quit only once the list of sessions to reopen is saved (the fallback for any
+        // terminal that cannot be handed over).
         let (ok, message) = Switchboard.shared.rememberOpen()
         guard ok else { SessionsStore.shared.showFailure(message); return }
+        // Hand the terminals to the holder: their programs keep running.
+        _ = SBHandoff.prepare()
         let path = Bundle.main.bundleURL.path
         let pid = getpid()
+        // A test copy keeps its own data folder and API file across the restart.
+        let env = ProcessInfo.processInfo.environment
+            .filter { $0.key.hasPrefix("SWITCHBOARD_") || $0.key == "SESSIONS_API_INFO" }
+            .map { "--env \(Switchboard.shellQuote("\($0.key)=\($0.value)"))" }.joined(separator: " ")
         // Wait until this copy has fully quit, then open the new one. Never two at once.
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
-        relaunch.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; sleep 0.3; /usr/bin/open \"\(path)\""]
+        relaunch.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; sleep 0.3; /usr/bin/open \(env.isEmpty ? "" : "-g ")\(env) \(Switchboard.shellQuote(path))"]
         try? relaunch.run()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             UserDefaults.standard.set(true, forKey: "sessions.restoreAfterRestart")

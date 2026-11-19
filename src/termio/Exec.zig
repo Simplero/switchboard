@@ -44,6 +44,22 @@ const FlatpakHostCommand = if (!build_config.flatpak) struct {
 /// The subprocess state for our exec backend.
 subprocess: Subprocess,
 
+/// Switchboard: a terminal whose program already runs, handed over from the copy
+/// of the app that ran before an update. The new surface reads and writes the
+/// existing pty instead of starting a program.
+pub const Adopt = struct {
+    /// The pty master.
+    fd: posix.fd_t,
+    /// The program the old app started (the session leader of the pty).
+    pid: posix.pid_t,
+    /// The old terminal's state as VT sequences, replayed before any new output.
+    replay: ?[]const u8 = null,
+};
+
+/// Set by the apprt just before it creates a surface that adopts a pty, and read
+/// by `init` on the same thread.
+pub threadlocal var pending_adopt: ?Adopt = null;
+
 /// Initialize the exec state. This will NOT start it, this only sets
 /// up the internal state necessary to start it later.
 pub fn init(
@@ -52,6 +68,14 @@ pub fn init(
 ) !Exec {
     var subprocess = try Subprocess.init(alloc, cfg);
     errdefer subprocess.deinit();
+    if (pending_adopt) |a| {
+        pending_adopt = null;
+        subprocess.adopt = .{
+            .fd = a.fd,
+            .pid = a.pid,
+            .replay = if (a.replay) |r| try subprocess.arena.allocator().dupe(u8, r) else null,
+        };
+    }
 
     return .{ .subprocess = subprocess };
 }
@@ -103,8 +127,9 @@ pub fn threadEnter(
     };
     errdefer self.subprocess.stop();
 
-    // Watcher to detect subprocess exit
-    var process: ?xev.Process = if (self.subprocess.process) |v| switch (v) {
+    // Watcher to detect subprocess exit. An adopted program is not our child, so
+    // it cannot be waited on: its exit shows as the pty hanging up (read thread).
+    var process: ?xev.Process = if (self.subprocess.adopt != null) null else if (self.subprocess.process) |v| switch (v) {
         .fork_exec => |cmd| try xev.Process.init(
             cmd.pid orelse return error.ProcessNoPid,
         ),
@@ -136,11 +161,32 @@ pub fn threadEnter(
     var termios_timer = try xev.Timer.init();
     errdefer termios_timer.deinit();
 
+    // An adopted terminal first gets the old terminal's state back, at the old
+    // terminal's size (the pty still has it), so the cursor and every line land
+    // where the program left them. Output the program wrote meanwhile waits in
+    // the pty and follows.
+    if (comptime builtin.target.os.tag != .windows) {
+        if (self.subprocess.adopt) |a| {
+            if (self.subprocess.pty.?.getSize()) |ws| {
+                if (ws.ws_col > 0 and ws.ws_row > 0) {
+                    io.renderer_state.mutex.lockUncancelable(global.io());
+                    defer io.renderer_state.mutex.unlock(global.io());
+                    io.terminal.resize(io.alloc, .{
+                        .cols = ws.ws_col,
+                        .rows = ws.ws_row,
+                        .cell_size_px = .{ .width = io.size.cell.width, .height = io.size.cell.height },
+                    }) catch |err| log.warn("adopted pty: could not size the terminal err={}", .{err});
+                }
+            } else |err| log.warn("adopted pty: no size err={}", .{err});
+            if (a.replay) |r| io.processOutput(r);
+        }
+    }
+
     // Start our read thread
     const read_thread = try std.Thread.spawn(
         .{},
         if (builtin.target.os.tag == .windows) ReadThread.threadMainWindows else ReadThread.threadMainPosix,
-        .{ pty_fds.read, io, pipe[0] },
+        if (builtin.target.os.tag == .windows) .{ pty_fds.read, io, pipe[0] } else .{ pty_fds.read, io, pipe[0], self.subprocess.adopt != null, &self.subprocess.detached },
     );
     read_thread.setName(global.io(), "io-reader") catch {};
 
@@ -596,6 +642,13 @@ const Subprocess = struct {
     pty: ?Pty = null,
     process: ?Process = null,
 
+    /// Switchboard: the pty and program handed over by the app that ran before.
+    adopt: ?Adopt = null,
+
+    /// Switchboard: the pty was handed to the next copy of the app. Stopping does
+    /// not end the program then.
+    detached: std.atomic.Value(bool) = .init(false),
+
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
 
@@ -900,6 +953,19 @@ const Subprocess = struct {
     } {
         assert(self.pty == null and self.process == null);
 
+        // Switchboard: the program already runs; use its pty.
+        if (comptime builtin.target.os.tag != .windows) {
+            if (self.adopt) |a| {
+                const flags = posix.system.fcntl(a.fd, posix.F.GETFD);
+                if (flags != -1) _ = posix.system.fcntl(a.fd, posix.F.SETFD, flags | posix.FD_CLOEXEC);
+                // The pty keeps the old terminal's size until this surface is laid
+                // out: a program redraws only if the size really changes.
+                self.pty = .{ .master = a.fd, .slave = -1 };
+                log.info("adopted pty fd={} pid={}", .{ a.fd, a.pid });
+                return .{ .read = a.fd, .write = a.fd };
+            }
+        }
+
         // This function is funny because on POSIX systems it can
         // fail in the forked process. This is flipped to true if
         // we're in an error state in the forked process (child
@@ -1106,6 +1172,24 @@ const Subprocess = struct {
     /// running state.
     pub fn externalExit(self: *Subprocess) void {
         self.process = null;
+        self.adopt = null;
+    }
+
+    /// Switchboard: hand the pty to the next copy of the app. Returns a duplicate of
+    /// the pty master (the caller owns it) and the program's pid, and from now on
+    /// stopping this surface does not end the program. -1 when there is no pty.
+    pub fn handoff(self: *Subprocess, pid_out: *posix.pid_t) posix.fd_t {
+        if (comptime builtin.target.os.tag == .windows) return -1;
+        const pty = self.pty orelse return -1;
+        const pid: posix.pid_t = if (self.adopt) |a| a.pid else if (self.process) |p| switch (p) {
+            .fork_exec => |cmd| cmd.pid orelse return -1,
+            .flatpak => return -1,
+        } else return -1;
+        const fd = posix.system.dup(pty.master);
+        if (fd < 0) return -1;
+        self.detached.store(true, .seq_cst);
+        pid_out.* = pid;
+        return fd;
     }
 
     /// Stop the subprocess. This is safe to call anytime. This will wait
@@ -1113,6 +1197,23 @@ const Subprocess = struct {
     /// for it to terminate, so it will not block.
     /// This does not close the pty.
     pub fn stop(self: *Subprocess) void {
+        // Handed to the next copy of the app: the program keeps running.
+        if (self.detached.load(.seq_cst)) {
+            self.process = null;
+            self.adopt = null;
+            return;
+        }
+
+        // An adopted program: end its process group like our own child's.
+        if (comptime builtin.target.os.tag != .windows) {
+            if (self.adopt) |a| {
+                killPid(a.pid) catch |err|
+                    log.err("error sending SIGHUP to adopted command, may hang: {}", .{err});
+                self.adopt = null;
+                return;
+            }
+        }
+
         switch (self.process orelse return) {
             .fork_exec => |*cmd| {
                 // Note: this will also wait for the command to exit, so
@@ -1364,6 +1465,10 @@ pub const ReadThread = struct {
     const Pipeline = struct {
         mutex: std.Io.Mutex = .init,
 
+        /// The gather stage stopped because the surface is closing (not because
+        /// the pty hung up). Read only after the gather thread has joined.
+        quit: bool = false,
+
         /// Signaled when a batch is published or the gather stage is
         /// done. Waited on by the parse stage.
         batch_ready: std.Io.Condition = .init,
@@ -1409,9 +1514,21 @@ pub const ReadThread = struct {
         bufs: [buffer_count][buffer_capacity]u8 = undefined,
     };
 
-    fn threadMainPosix(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
+    fn threadMainPosix(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t, adopted: bool, detached: *const std.atomic.Value(bool)) void {
         // Always close our end of the pipe when we exit.
         defer _ = posix.system.close(quit);
+
+        // Shared pipeline
+        var pipeline: Pipeline = .{};
+
+        // Switchboard: an adopted program is not our child, so no process watcher
+        // sees it exit. When the pty hangs up (every program on it is gone), the
+        // surface closes as it would for our own child.
+        defer if (adopted and !pipeline.quit) {
+            _ = io.surface_mailbox.push(.{
+                .child_exited = .{ .exit_code = 0, .runtime_ms = std.math.maxInt(u32) },
+            }, .{ .forever = {} });
+        };
 
         // Right now, on Darwin, `std.Thread.setName` can only name the current
         // thread, and we have no way to get the current thread from within it,
@@ -1438,9 +1555,6 @@ pub const ReadThread = struct {
             return;
         }
 
-        // Shared pipeline
-        var pipeline: Pipeline = .{};
-
         // The idle self-pipe (see the Pipeline field docs). If we
         // can't create it we still run correctly, bridge polls are
         // just bounded by their timeout instead of being interrupted
@@ -1462,7 +1576,7 @@ pub const ReadThread = struct {
         const gather_thread = std.Thread.spawn(
             .{},
             gatherMainPosix,
-            .{ fd, quit, &pipeline },
+            .{ fd, quit, &pipeline, detached },
         ) catch |err| {
             // If we can't spawn a thread the process is already
             // doomed (every surface spawns several), so don't try
@@ -1523,7 +1637,7 @@ pub const ReadThread = struct {
     /// bridging the kernel queue's refill gaps for saturated streams,
     /// and publishes each batch to the parse stage. This thread owns
     /// all fd monitoring, including the quit fd.
-    fn gatherMainPosix(fd: posix.fd_t, quit: posix.fd_t, pipeline: *Pipeline) void {
+    fn gatherMainPosix(fd: posix.fd_t, quit: posix.fd_t, pipeline: *Pipeline, detached: *const std.atomic.Value(bool)) void {
         if (builtin.target.os.tag.isDarwin()) {
             internal_os.macos.pthread_setname_np(&"io-gather".*);
             setQosClass();
@@ -1549,6 +1663,15 @@ pub const ReadThread = struct {
         };
 
         while (true) {
+            // Switchboard: the pty was handed to the next copy of the app. Leave
+            // further output in the pty for it, and wait for the surface to close.
+            if (detached.load(.seq_cst)) {
+                var qfd = [1]posix.pollfd{.{ .fd = quit, .events = posix.POLL.IN, .revents = 0 }};
+                _ = posix.poll(&qfd, -1) catch {};
+                pipeline.quit = true;
+                return;
+            }
+
             // Claim the next free buffer. This blocks only when the
             // parse stage is a full ring behind, which is exactly when
             // we should stop reading and let the kernel queue exert
@@ -1636,6 +1759,7 @@ pub const ReadThread = struct {
                         // and stop.
                         if (pollfds[1].revents & posix.POLL.IN != 0) {
                             log.info("read thread got quit signal", .{});
+                            pipeline.quit = true;
                             fatal = true;
                             break :gather;
                         }
@@ -1720,6 +1844,7 @@ pub const ReadThread = struct {
             // If our quit fd is set, we're done.
             if (pollfds[1].revents & posix.POLL.IN != 0) {
                 log.info("read thread got quit signal", .{});
+                pipeline.quit = true;
                 return;
             }
 

@@ -131,6 +131,9 @@ button{font:inherit;color:inherit;cursor:default}
 .item{display:flex;gap:9px;padding:9px 10px;border-radius:10px;align-items:flex-start}
 .item:hover{background:var(--sunk)}
 .item.sel{background:var(--sel);color:var(--sel-ink)}
+/* The session in front, in a column that ⌘↑ ⌘↓ do not follow: a border only. The filled row
+   shows the column the keys follow. */
+.item.sel-ring{box-shadow:inset 0 0 0 2px var(--sel)}
 /* Keyboard cursor (⌘P, then arrows). Solid ring: running here, the terminal follows it.
    Dashed ring: not running here, Enter opens it. */
 .cur{outline:2px solid var(--accent);outline-offset:1px}
@@ -147,9 +150,6 @@ button{font:inherit;color:inherit;cursor:default}
 .item .word{font-weight:700}
 .item .meta{font-size:11px;line-height:1.45;height:1.45em;color:var(--muted2);display:flex;gap:6px;align-items:center;flex-wrap:nowrap;white-space:nowrap;overflow:hidden}
 .item .meta .lab{color:var(--label)}
-.item .ack{display:none;border:0;background:transparent;color:var(--done);font-size:14px;padding:0 2px}
-.item:hover .ack{display:inline}
-.item:hover .age.has-ack{display:none}
 
 .else{display:flex;gap:7px;align-items:center;padding:5px 10px;border-radius:7px;color:var(--ink2);font-size:12.5px;font-weight:600}
 .else:hover{background:var(--sunk)}
@@ -254,6 +254,11 @@ let visits = store.get('visits', {});
 let manual = store.get('manual', null);
 let recent = store.get('recent', null);
 let cols = store.get('cols', 2), showNow = store.get('showNow', true);
+// The column ⌘↑ ⌘↓ follow: the one you last opened a session from. Its row for the session
+// in front is filled; the other column only outlines it.
+let navColPick = store.get('navCol', 0);
+const navColOf = () => Math.min(navColPick, cols - 1);
+function setNavCol(ci){ if (ci == null || ci === navColPick) return; navColPick = ci; store.set('navCol', ci); render(); }
 const colState = [
   Object.assign({filter:'needs', group:'none', sort:'needs', where:'any'}, store.get('col0', {})),
   Object.assign({filter:'all', group:'cmux', sort:'manual', where:'any'}, store.get('col1', {})),
@@ -293,7 +298,7 @@ window.Sessions = {
     }
     render();
     // ⌘↑ ⌘↓ (or any other switch) can select a row that is scrolled out of view: bring it in.
-    if (moved) document.querySelectorAll('#cols .item.sel').forEach(reveal);
+    if (moved) document.querySelectorAll('#cols .item.sel, #cols .item.sel-ring').forEach(reveal);
   },
   // The folder menu (native) picked a folder for new sessions.
   setFolder(p){ if (p){ newCwd = p; store.set('newCwd', p); bridge('newFolder', {cwd: p}); render(); } },
@@ -420,7 +425,7 @@ q.addEventListener('keydown', e => {
   if (e.key === 'Enter'){
     e.preventDefault();
     const s = sessionOf(cur && cur.k) || results[0];
-    if (s){ cur = null; openSession(s); }
+    if (s){ if (!query && cur) setNavCol(cur.col); cur = null; openSession(s); }
   }
 });
 
@@ -518,7 +523,7 @@ function rowsFor(ci){
   return out;
 }
 
-function itemHTML(s){
+function itemHTML(s, ci){
   if ((s.o && s.be !== 'ghostty') || s.el){
     // Running in another terminal (cmux): one line. A click asks, then moves it here.
     const working = stateOf(s) === 'working';
@@ -535,15 +540,16 @@ function itemHTML(s){
       <span class="age">${ago(s.ca || s.la)}</span></div>`;
   }
   const st = stateOf(s), L = LOOK[st] || LOOK.info;
-  const sel = s.sf && s.sf === focusSf;
+  const front = s.sf && s.sf === focusSf;
+  // Filled in the column ⌘↑ ⌘↓ follow (or the only one), a border in the other.
+  const sel = front && (ci == null || ci === navColOf()), ring = front && !sel;
   const line = st === 'working' ? (s.wl || s.ns) : (s.ns || s.sd || s.t || '');
   const labs = (s.lb || []).map(l => `<span class="lab">#${esc(l)}</span>`).join(' ');
-  return `<div class="item${sel ? ' sel' : ''}" data-k="${esc(s.k)}">
+  return `<div class="item${sel ? ' sel' : ''}${ring ? ' sel-ring' : ''}" data-k="${esc(s.k)}">
     <span class="ico" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
     <span class="body">
       <span class="top"><span class="name">${esc(s.n)}</span>
-        <span class="age${needsYou(s) ? ' has-ack' : ''}">${ago(s.la)}</span>
-        ${needsYou(s) ? `<button class="ack" data-ack="${esc(s.k)}" title="Mark as handled. It comes back when the agent writes something new.">${ic('check',14,2.6)}</button>` : ''}
+        <span class="age">${ago(s.la)}</span>
       </span>
       <span class="line"><span class="word" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
       <span class="meta">${s.a === 'shell' ? `<span>${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span>· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
@@ -630,9 +636,9 @@ function render(){
     host.innerHTML = `<div class="col" data-col="0"><div class="list">
       ${idHitHTML()}
       ${!results.length && !idHit ? `<div class="empty">No session matches “${esc(query)}”.</div>` : ''}
-      ${open.length ? `<div class="group">Open now <span class="n">${open.length}</span></div>` + open.map(itemHTML).join('') : ''}
-      ${away.length ? `<div class="group">Running elsewhere <span class="n">${away.length}</span></div>` + away.map(itemHTML).join('') : ''}
-      ${older.length ? `<div class="group">Older <span class="n">${older.length}</span></div>` + older.map(itemHTML).join('') : ''}
+      ${open.length ? `<div class="group">Open now <span class="n">${open.length}</span></div>` + open.map(s => itemHTML(s)).join('') : ''}
+      ${away.length ? `<div class="group">Running elsewhere <span class="n">${away.length}</span></div>` + away.map(s => itemHTML(s)).join('') : ''}
+      ${older.length ? `<div class="group">Older <span class="n">${older.length}</span></div>` + older.map(s => itemHTML(s)).join('') : ''}
     </div></div>`;
     applyCursor(false);
     return;
@@ -641,10 +647,10 @@ function render(){
   const nav = [];
   for (let ci = 0; ci < cols; ci++){
     const rows = rowsFor(ci);
-    if (ci === 0) rows.forEach(r => r.s && r.s.o && nav.push(r.s.k));
+    if (ci === navColOf()) rows.forEach(r => r.s && r.s.o && nav.push(r.s.k));
     html += `<div class="col" data-col="${ci}">${colControls(ci)}<div class="list">` + rows.map(r =>
       r.h ? `<div class="group${folded[r.h] ? ' folded' : ''}" data-fold="${esc(r.h)}"><span class="chev">${ic('chev',10,2.6)}</span>${esc(r.h)} <span class="n">${r.n}</span></div>`
-      : r.empty ? `<div class="empty">${esc(r.empty)}</div>` : itemHTML(r.s)).join('') + `</div></div>`;
+      : r.empty ? `<div class="empty">${esc(r.empty)}</div>` : itemHTML(r.s, ci)).join('') + `</div></div>`;
   }
   host.innerHTML = html;
   [...host.querySelectorAll('.list')].forEach((l, i) => { if (scroll[i]) l.scrollTop = scroll[i]; });
@@ -776,7 +782,10 @@ document.addEventListener('click', e => {
     }
   }
   const row = t.closest('[data-k]');
-  if (row && data){ const s = data.s.find(x => x.k === row.dataset.k) || results.find(x => x.k === row.dataset.k); if (s) openSession(s); }
+  if (row && data){
+    const s = data.s.find(x => x.k === row.dataset.k) || results.find(x => x.k === row.dataset.k);
+    if (s){ if (!query && col) setNavCol(+col.dataset.col); openSession(s); }
+  }
 });
 document.addEventListener('contextmenu', e => {
   const row = e.target.closest('[data-k]');

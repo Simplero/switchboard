@@ -260,7 +260,8 @@ final class SessionsStore: ObservableObject {
         send(["op": "open", "k": k])
     }
 
-    /// Go to the previous (-1) or next (+1) session that is open, in the left column's order.
+    /// Go to the previous (-1) or next (+1) session that is open, in the order of the sidebar
+    /// column you last opened a session from (the page sends it as `nav`).
     func step(_ delta: Int) {
         guard let all = payload?.s else { return }
         let byKey = Dictionary(all.map { ($0.k, $0) }, uniquingKeysWith: { a, _ in a })

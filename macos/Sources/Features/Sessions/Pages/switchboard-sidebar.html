@@ -18,11 +18,14 @@
     --accent:#7FA2FF; --accent-soft:#232B45; --sel:#3B5BDB; --sel-ink:#FFFFFF;
     --needs:#F2A15C; --needs-soft:#3A2618; --work:#7FA2FF; --done:#5BC98E; --label:#7FA2FF;
   }
+  #scrim{background:rgba(0,0,0,.35)}
+  #newform{box-shadow:0 14px 36px rgba(0,0,0,.55),0 2px 6px rgba(0,0,0,.3)}
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden;user-select:none;-webkit-user-select:none}
 button{font:inherit;color:inherit;cursor:default}
-#app{display:flex;flex-direction:column;height:100%}
+#app{display:flex;flex-direction:column;height:100%;position:relative}
 .mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
 
 /* top */
@@ -32,6 +35,39 @@ button{font:inherit;color:inherit;cursor:default}
 .newbtn{border:0;background:var(--sunk);border-radius:7px;padding:4px 8px;font-weight:600;font-size:12px;display:inline-flex;gap:4px;align-items:center}
 .newbtn:hover{background:var(--line2)}
 .newbtn .plus{color:var(--done);font-weight:800}
+.newbtn[aria-pressed=true]{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent)}
+
+/* new-session form: drops down under the + buttons, over the list (nothing below moves) */
+#scrim{position:absolute;left:0;right:0;bottom:0;z-index:20;background:rgba(20,20,26,.08)}
+#newform{position:absolute;left:10px;right:10px;z-index:21;background:var(--surface);border:1px solid var(--line2);border-radius:12px;
+  box-shadow:0 12px 32px rgba(0,0,0,.18),0 2px 6px rgba(0,0,0,.08);padding:12px;display:flex;flex-direction:column;gap:8px}
+#newform .hd{display:flex;align-items:center;gap:6px;font-weight:700;font-size:13px}
+#newform .hd .x{margin-left:auto;border:0;background:transparent;color:var(--muted2);font-size:17px;line-height:1;padding:1px 5px;border-radius:5px}
+#newform .hd .x:hover{background:var(--sunk);color:var(--ink)}
+#newform .sub{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted);flex-wrap:wrap}
+#newform .sub .mono{color:var(--ink2)}
+#newform .rd{display:inline-flex;align-items:center;gap:4px}
+#newform .rd.on{color:var(--done);font-weight:600}
+#newform textarea,#newform input{width:100%;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--ink);
+  font:inherit;font-size:13px;line-height:1.45;padding:7px 9px;outline:0;user-select:text;-webkit-user-select:text;resize:none;display:block}
+#newform textarea{min-height:88px;max-height:240px}
+#newform textarea::placeholder,#newform input::placeholder{color:var(--faint)}
+#newform textarea:focus,#newform input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+#newform .files{display:flex;flex-wrap:wrap;gap:5px}
+#newform .files:empty{display:none}
+#newform .file{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0;background:var(--sunk);border-radius:6px;padding:2px 2px 2px 7px;font-size:11.5px;color:var(--ink2)}
+#newform .file span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+#newform .file button{border:0;background:transparent;color:var(--muted2);padding:0 4px;font-size:14px;line-height:1;border-radius:4px}
+#newform .file button:hover{background:var(--line2);color:var(--ink)}
+#newform .ft{display:flex;align-items:center;gap:8px}
+#newform .hint{font-size:11px;color:var(--muted2);flex:1;min-width:0}
+#newform .hint kbd{font:inherit;font-weight:600;color:var(--muted)}
+#newform .go{border:0;background:var(--sel);color:var(--sel-ink);border-radius:7px;padding:5px 14px;font-weight:600;font-size:12.5px;display:inline-flex;align-items:center;gap:5px}
+#newform .go:hover{filter:brightness(1.08)}
+#newform .dropnote{display:none}
+#newform.drop{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft),0 12px 32px rgba(0,0,0,.18)}
+#newform.drop .dropnote{display:flex;align-items:center;justify-content:center;gap:6px;position:absolute;inset:0;border-radius:12px;
+  background:color-mix(in srgb, var(--surface) 88%, transparent);border:2px dashed var(--accent);color:var(--accent);font-weight:700;font-size:13px;pointer-events:none}
 .dirbtn{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:transparent;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600;color:var(--ink2);max-width:240px}
 .dirbtn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dirbtn:hover{border-color:var(--accent)}
@@ -149,6 +185,16 @@ svg{flex-shrink:0}
     <div class="row"><span class="cap">Columns</span><span class="seg" id="colseg"></span></div>
   </div>
   <div id="cols"></div>
+  <div id="scrim" hidden></div>
+  <div id="newform" hidden role="dialog" aria-label="New Claude session">
+    <div class="hd"><span id="nfhead"></span><button class="x" data-nf="cancel" title="Close (esc). What you wrote stays for next time.">×</button></div>
+    <div class="sub" id="nfsub"></div>
+    <textarea id="nfmsg" rows="4" placeholder="First message (optional)" spellcheck="true"></textarea>
+    <div class="files" id="nffiles"></div>
+    <input id="nfname" placeholder="Name (optional)" autocomplete="off" spellcheck="false">
+    <div class="ft"><span class="hint"><kbd>↩</kbd> start · <kbd>⇧↩</kbd> new line · drop or paste files</span><button class="go" data-nf="go">Start</button></div>
+    <div class="dropnote">Drop to attach</div>
+  </div>
 </div>
 
 <script>
@@ -178,6 +224,8 @@ const ICON = {
   person:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   star:'<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"/>',
   chev:'<polyline points="6 9 12 15 18 9"/>',
+  bolt:'<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>',
+  clip:'<path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
 };
 const ic = (n, s=14, w=2.1, cls='') => `<svg class="${cls}" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
 
@@ -248,7 +296,11 @@ window.Sessions = {
     if (moved) document.querySelectorAll('#cols .item.sel').forEach(reveal);
   },
   // The folder menu (native) picked a folder for new sessions.
-  setFolder(p){ if (p){ newCwd = p; store.set('newCwd', p); render(); } },
+  setFolder(p){ if (p){ newCwd = p; store.set('newCwd', p); bridge('newFolder', {cwd: p}); render(); } },
+  // Files dropped on the page (the app knows their paths; the page only their names).
+  droppedFiles(paths){ $('#newform').classList.remove('drop'); if (nf.open) addFiles(paths); },
+  // The session did not start (the app said why): the message, name and files come back.
+  newFailed(){ if (nf.sent && !nfMsg.value && !nfName.value && !nf.files.length){ nfMsg.value = nf.sent.text; nfName.value = nf.sent.name; nf.files = nf.sent.files; nfFiles(); nfGrow(); } },
   // ⌘P: start at the session in front.
   focusSearch(){ cur = null; q.focus(); q.select(); if (!cur) cur = initialCursor(); applyCursor(true); },
   // The app moved the page to the window the cursor just brought to the front.
@@ -555,7 +607,8 @@ function render(){
   if (!data) return;
   $('#dirbtn').innerHTML = `${ic('folder',12,2.2)}<span>${esc(newCwd)}</span>${ic('chev',9,2.6)}`;
   $('#newbtns').innerHTML = ['~/.claude','~/.claude-ccl','~/.claude-ccm'].map(d =>
-    `<button class="newbtn" data-new="${d}"><span class="plus">+</span>${esc(data.spares?.[d]?.lg || d)}</button>`).join('');
+    `<button class="newbtn" data-new="${d}" aria-pressed="${nf.open && nf.login === d}" title="New Claude session with this login: a first message, files and a name, all optional"><span class="plus">+</span>${esc(data.spares?.[d]?.lg || d)}</button>`).join('');
+  if (nf.open) nfStatus();
   seg('#colseg', [[1,'1'],[2,'2']], cols, v => { cols = v; store.set('cols', v); render(); });
 
   const host = $('#cols');
@@ -588,12 +641,105 @@ function render(){
   if (navKey !== render.lastNav){ render.lastNav = navKey; bridge('nav', {keys: nav}); }
 }
 
+// ---------- new session: first message, files, name ----------
+// "+ login" opens this form under the buttons. Enter starts the session (with the login's
+// spare Claude it is there at once) and puts the keyboard in it. Empty is fine: Enter alone
+// just starts Claude. Esc closes; what you wrote stays for next time.
+const nf = {open: false, login: null, files: [], sent: null};
+const nfMsg = $('#nfmsg'), nfName = $('#nfname');
+const LOGIN_NAMES = {'~/.claude':'simplero.com','~/.claude-ccl':'corre.li','~/.claude-ccm':'correli.me'};
+const loginName = d => data?.spares?.[d]?.lg || LOGIN_NAMES[d] || d;
+const baseName = p => p.split('/').filter(Boolean).pop() || p;
+
+function nfStatus(){
+  const lg = loginName(nf.login);
+  $('#nfhead').innerHTML = `${ic(LOGIN_ICON[lg] || 'person', 13, 2.2)} New Claude · ${esc(lg)}`;
+  const sp = data?.spares?.[nf.login];
+  const rd = sp?.ready ? `<span class="rd on">${ic('bolt', 11, 2.4)} Ready: starts at once</span>`
+    : `<span class="rd">${ic('dots', 11, 2.4)} Claude starts in a few seconds</span>`;
+  $('#nfsub').innerHTML = `${ic('folder', 11, 2.2)} <span class="mono">${esc(newCwd)}</span> · ${rd}`;
+}
+function nfFiles(){
+  $('#nffiles').innerHTML = nf.files.map(p => `<span class="file" title="${esc(p)}">${ic('clip', 11, 2.2)}<span>${esc(baseName(p))}</span>` +
+    `<button data-nf="rm" data-path="${esc(p)}" title="Remove" aria-label="Remove ${esc(baseName(p))}">×</button></span>`).join('');
+}
+function addFiles(paths){
+  for (const p of paths || []) if (p && !nf.files.includes(p)) nf.files.push(p);
+  nfFiles();
+  nfMsg.focus();
+}
+function nfGrow(){ nfMsg.style.height = 'auto'; nfMsg.style.height = Math.min(nfMsg.scrollHeight + 2, 240) + 'px'; }
+function openNew(login){
+  const was = nf.open;
+  nf.open = true; nf.login = login;
+  const r = $('#newbtns').getBoundingClientRect();
+  $('#newform').style.top = (r.bottom + 6) + 'px';
+  $('#scrim').style.top = (r.bottom + 2) + 'px';
+  $('#newform').hidden = false; $('#scrim').hidden = false;
+  nfStatus(); nfFiles(); nfGrow(); render();
+  if (!was || document.activeElement !== nfName) nfMsg.focus();
+}
+// keep: the draft stays (Esc, ×, a click outside). Starting clears it.
+function closeNew(giveBack){
+  if (!nf.open) return;
+  nf.open = false;
+  $('#newform').hidden = true; $('#scrim').hidden = true;
+  $('#newform').classList.remove('drop');
+  render();
+  if (giveBack) bridge('blur');
+}
+function submitNew(){
+  if (!nf.open) return;
+  nf.sent = {text: nfMsg.value, name: nfName.value, files: nf.files.slice()};
+  op({op:'new', login: nf.login, cwd: newCwd, prompt: nfMsg.value, name: nfName.value.trim(), files: nf.files.slice()});
+  nfMsg.value = ''; nfName.value = ''; nf.files = [];
+  nfFiles(); nfGrow();
+  closeNew(false);   // the app puts the keyboard in the new session
+}
+function nfKey(e){
+  if (e.key === 'Escape'){ e.preventDefault(); closeNew(true); return; }
+  // (keyCode 229: Enter that ends an input-method composition, not a send)
+  if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229 && (e.target === nfName || !e.shiftKey)){ e.preventDefault(); submitNew(); }
+}
+nfMsg.addEventListener('keydown', nfKey);
+nfName.addEventListener('keydown', nfKey);
+nfMsg.addEventListener('input', nfGrow);
+// A pasted screenshot or copied files: attached by their paths (the app saves a picture as a file).
+nfMsg.addEventListener('paste', async e => {
+  const cd = e.clipboardData;
+  if (!cd || ![...cd.types].includes('Files')) return;
+  e.preventDefault();
+  const text = cd.getData('text/plain');
+  const r = await ask('pasteFiles');
+  if (r && r.paths && r.paths.length) addFiles(r.paths);
+  else if (text) document.execCommand('insertText', false, text);
+});
+// Files dragged over the page: only the open form takes them. Never let a drop load the file
+// into the page.
+document.addEventListener('dragover', e => {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = nf.open ? 'copy' : 'none';
+  if (nf.open) $('#newform').classList.add('drop');
+});
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) $('#newform').classList.remove('drop'); });
+document.addEventListener('drop', e => { e.preventDefault(); $('#newform').classList.remove('drop'); });
+
 // ---------- events ----------
 document.addEventListener('click', e => {
   const t = e.target;
   const ack = t.closest('[data-ack]'); if (ack){ e.stopPropagation(); op({op:'ack', k: ack.dataset.ack}); return; }
   const send = t.closest('[data-send]'); if (send){ op({op:'send', k: send.dataset.k, text: send.dataset.send}); return; }
-  const nb = t.closest('[data-new]'); if (nb){ op({op:'new', login: nb.dataset.new, cwd: newCwd}); return; }
+  if (t.closest('#scrim')){ closeNew(); return; }
+  const nfb = t.closest('[data-nf]');
+  if (nfb){
+    if (nfb.dataset.nf === 'go') submitNew();
+    else if (nfb.dataset.nf === 'cancel') closeNew(true);
+    else if (nfb.dataset.nf === 'rm'){ nf.files = nf.files.filter(f => f !== nfb.dataset.path); nfFiles(); $('#nfmsg').focus(); }
+    return;
+  }
+  if (t.closest('#newform')) return;
+  const nb = t.closest('[data-new]'); if (nb){ openNew(nb.dataset.new); return; }
   if (t.closest('#dirbtn')){
     const r = $('#dirbtn').getBoundingClientRect();
     bridge('folderMenu', {folders: folderChoices(), current: newCwd, x: r.left, y: r.bottom + 4});
@@ -624,6 +770,7 @@ document.addEventListener('contextmenu', e => {
 });
 setInterval(() => render(), 30000);   // keep "5m ago" fresh
 bridge('ready');
+bridge('newFolder', {cwd: newCwd});
 </script>
 </body>
 </html>

@@ -12,6 +12,10 @@ Switchboard is a macOS terminal for people who run many AI coding sessions at th
   in the sidebar, and one click moves it into Switchboard.
 - **Park, Done and Archive.** Close a session and reopen it later with its conversation.
 - **Several Claude logins.** Each session shows which login it uses and that login's plan usage.
+- **New sessions start at once.** "+ login" asks for a first message, files (drop or paste them)
+  and a name, all optional. For each login, one Claude already waits at its prompt in a hidden
+  window, so the session starts with your message at once, with the keyboard in it. These spares
+  start again every 30 minutes and after a Claude update.
 - **A panel above each session.** What the session works on and what is still open in it (a
   model reads the conversation when the agent stops), and the pages it gave you by title: dev
   pages, Simplero Docs and claude.ai artifacts, with the login that published each artifact.

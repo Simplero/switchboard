@@ -2,6 +2,8 @@ import AppKit
 import Foundation
 import Network
 import GhosttyKit
+import CoreImage
+import IOSurface
 
 /// A small local HTTP API for checks and scripts: list the terminals (with tty and
 /// pid), read their text, type into them, focus, close, open tabs, see what the
@@ -251,6 +253,24 @@ final class SessionsAPI {
             // For checks: what "Restart to update" does, without the question.
             Task { @MainActor in SessionsVersion.shared.restart(confirm: false) }
             return (200, ["ok": true])
+        case ("GET", "/sb/termshot"):
+            // For checks: what a terminal drew (?id=, or ?spare=<login dir>), read from its
+            // layer, without a screen capture.
+            let view = surface(req.query["id"]) ?? req.query["spare"].flatMap { SBSpares.shared.spares[$0]?.view }
+            guard let view else { return (404, ["error": "no such terminal"]) }
+            guard let png = SessionsAPI.drawnPicture(view) else { return (200, ["png": NSNull(), "note": "nothing drawn yet"]) }
+            return (200, ["png": png.base64EncodedString()])
+        case ("GET", "/sb/spares"):
+            // For checks: the spares (Claude started ahead of time, one per login).
+            return (200, ["spares": SBSpares.shared.checkInfo()])
+        case ("POST", "/sb/pastecheck"):
+            // For checks: what a paste in the new-session form attaches, from a private
+            // pasteboard (never the clipboard you use). {"png": base64} or {"paths": [...]}
+            let pb = NSPasteboard(name: NSPasteboard.Name("switchboard-check"))
+            pb.clearContents()
+            if let paths = req.json["paths"] as? [String] { pb.writeObjects(paths.map { URL(fileURLWithPath: $0) as NSURL }) }
+            if let b64 = req.json["png"] as? String, let data = Data(base64Encoded: b64) { pb.setData(data, forType: .png) }
+            return (200, ["paths": SessionsAttachments.fromPasteboard(pb)])
         case ("POST", "/merge"):
             return (200, ["moved": SessionsAPI.mergeAll()])
         case ("GET", "/screenshot"):
@@ -273,8 +293,10 @@ final class SessionsAPI {
 
     // MARK: Terminals
 
+    /// The app's terminal windows, without spares (SBSpares): those are not sessions yet.
     static func allControllers() -> [BaseTerminalController] {
         NSApp.windows.compactMap { $0.windowController as? BaseTerminalController }
+            .filter { ($0 as? TerminalController)?.sessionsSpare != true }
     }
 
     static func allSurfaces() -> [Ghostty.SurfaceView] {
@@ -378,7 +400,9 @@ final class SessionsAPI {
         SessionsAPI.terminalList().map { t in
             ["id": t.id, "tab": t.tab, "ws": t.ws, "tab_title": t.tabTitle, "title": t.title,
              "program_title": t.programTitle, "tty": t.tty, "pid": t.pid, "cwd": t.cwd,
-             "focused": t.focused, "selected": t.selected, "surfaces_in_tab": t.surfacesInTab]
+             "focused": t.focused, "selected": t.selected, "surfaces_in_tab": t.surfacesInTab,
+             "first_responder": surface(t.id).map { $0.window?.firstResponder === $0 } ?? false,
+             "grid": surface(t.id).flatMap(SessionsAPI.gridSize).map { [$0.cols, $0.rows] } ?? []]
         }
     }
 
@@ -438,7 +462,11 @@ final class SessionsAPI {
     /// The active area of a terminal (its last screenful, whatever is scrolled into view).
     /// Cheap: it does not copy the scrollback.
     static func activeText(_ id: String) -> String? {
-        guard let view = surface(id: id), let s = view.surface else { return nil }
+        surface(id: id).flatMap(activeText(of:))
+    }
+
+    static func activeText(of view: Ghostty.SurfaceView) -> String? {
+        guard let s = view.surface else { return nil }
         var text = ghostty_text_s()
         let sel = ghostty_selection_s(
             top_left: ghostty_point_s(tag: GHOSTTY_POINT_ACTIVE, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
@@ -461,6 +489,64 @@ final class SessionsAPI {
             }
         }
         return true
+    }
+
+    /// Put the keyboard in this terminal. Again a moment later if the sidebar page took it
+    /// (the page moves into the window that just came to the front, after a click in it).
+    static func focusTerminal(_ id: String) {
+        guard let view = surface(id: id) else { return }
+        focus(view)
+        view.window?.makeFirstResponder(view)
+        for delay in [0.15, 0.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                MainActor.assumeIsolated {
+                    guard let v = surface(id: id), let w = v.window, w.firstResponder !== v,
+                          (w.tabGroup?.selectedWindow ?? w) === w else { return }
+                    // Only from the sidebar page (or nothing): never from a field you clicked meanwhile.
+                    let r = w.firstResponder
+                    let page = SessionsWeb.shared.webView
+                    guard r == nil || r === w || (r as? NSView).map({ $0 === page || $0.isDescendant(of: page) }) == true else { return }
+                    w.makeFirstResponder(v)
+                }
+            }
+        }
+    }
+
+    /// A spare (SBSpares, Claude already at its prompt) becomes a new session: the last
+    /// tab of the one window, in front. Like `openTab`, without the wait for Claude.
+    static func adoptSpare(_ controller: TerminalController) -> (id: String, tab: String, ws: String)? {
+        guard let window = controller.window, let view = controller.surfaceTree.root?.leaves().first,
+              let host = mainWindow() else { return nil }
+        let last = host.tabGroup?.windows.last ?? host
+        guard last.addTabbedWindowSafely(window, ordered: .above) else { return nil }
+        controller.sessionsWorkspace = UUID().uuidString
+        last.tabGroup?.selectedWindow = window
+        controller.showWindowSafely(nil)
+        controller.focusSurface(view)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { controller.relabelTabs() }
+        return (view.id.uuidString, ScriptTab.stableID(controller: controller), controller.sessionsWorkspace)
+    }
+
+    /// What a terminal last drew, as PNG: the renderer puts each frame in an IOSurface as
+    /// its layer's contents.
+    static func drawnPicture(_ view: Ghostty.SurfaceView) -> Data? {
+        var stack = [view.layer].compactMap { $0 }
+        while let l = stack.popLast() {
+            if let c = l.contents, CFGetTypeID(c as CFTypeRef) == IOSurfaceGetTypeID() {
+                let ci = CIImage(ioSurface: c as! IOSurfaceRef)
+                guard let cg = CIContext().createCGImage(ci, from: ci.extent) else { return nil }
+                return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+            }
+            stack += l.sublayers ?? []
+        }
+        return nil
+    }
+
+    /// Columns and rows of a terminal.
+    static func gridSize(_ view: Ghostty.SurfaceView) -> (cols: Int, rows: Int)? {
+        guard let s = view.surface else { return nil }
+        let size = ghostty_surface_size(s)
+        return (Int(size.columns), Int(size.rows))
     }
 
     /// Close one terminal, without asking and without Undo (the process ends now

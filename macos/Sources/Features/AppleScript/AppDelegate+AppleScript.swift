@@ -325,6 +325,7 @@ extension NSApplication {
     /// All terminal controllers in undefined order.
     fileprivate var allTerminalControllers: [BaseTerminalController] {
         NSApp.windows.compactMap { $0.windowController as? BaseTerminalController }
+            .filter { ($0 as? TerminalController)?.sessionsSpare != true }   // Switchboard: not the spares
     }
 
     /// All terminal controllers in front-to-back order.

@@ -53,6 +53,9 @@ final class Switchboard {
     private var pendingBriefs = Set<String>()
     private var failedBriefs: [String: Double] = [:]
     private var transcriptSizes: [String: Int] = [:]
+    /// Names given in the new-session form, by terminal: the session takes the name when the
+    /// scan first sees its agent.
+    private var pendingNames: [String: (name: String, at: Double)] = [:]
 
     static let scanEvery = 1.5
     /// How often to look for sessions in other terminals (cmux, Terminal…).
@@ -80,6 +83,7 @@ final class Switchboard {
             let locked = SBFiles.takeLock()
             let reg = SBRegistry.load()
             let summaries = Switchboard.readSummaries()
+            SessionsAttachments.prune()
             await MainActor.run { Switchboard.shared.finishStart(reg, summaries: summaries, writable: locked) }
         }
     }
@@ -228,14 +232,17 @@ final class Switchboard {
         defer { scanning = false }
         let t0 = now   // entries created or reopened after this are not in this scan's snapshot
         let ttys = SessionsAPI.terminalList().map(\.tty).filter { !$0.isEmpty }
+        // The spares' Claude runs here too: not "elsewhere", though not a session yet.
+        let ours = ttys + SBSpares.shared.ttys
         let agents = await Task.detached(priority: .utility) { SBBackground.agents(onTTYs: ttys) }.value
         var outside: [SBBackground.Agent]?
         if t0 - elsewhereAt >= Self.elsewhereEvery {
             elsewhereAt = t0
-            outside = await Task.detached(priority: .utility) { SBBackground.agentsElsewhere(notOn: ttys) }.value
+            outside = await Task.detached(priority: .utility) { SBBackground.agentsElsewhere(notOn: ours) }.value
         }
         merge(t0: t0, agents: agents)
         if let outside { mergeElsewhere(outside) }
+        SBSpares.shared.tick()
         publish()
         if t0 - linksAt >= Self.linksEvery { linksAt = t0; refreshLinks() }
     }
@@ -400,6 +407,10 @@ final class Switchboard {
                 n.custom_name = false
                 return n
             }()
+            if let given = pendingNames.removeValue(forKey: sf) {
+                e.name = given.name
+                e.custom_name = true
+            }
             if e.custom_name != true {
                 e.cwd = e.cwd ?? cwd
                 e.name = sessionName(e, transcriptTitle: a.transcriptTitle, terminalTitle: title)
@@ -453,6 +464,7 @@ final class Switchboard {
         for t in terms where !t.ws.isEmpty { byWS[t.ws, default: []].append(t) }
         let agentWSs = Set(byWS.filter { $0.value.contains { agentSurfaces.contains($0.id) } }.keys)
         recentNew = recentNew.filter { now - $0.value < 120 }
+        pendingNames = pendingNames.filter { now - $0.value.at < 300 }
         let liveIDs = Set(terms.map(\.id))
         screenMemo = screenMemo.filter { liveIDs.contains($0.key) }
         for (ws, ts) in byWS where !agentWSs.contains(ws) {
@@ -677,7 +689,7 @@ final class Switchboard {
         var payload: [String: Any] = [
             "v": 1, "at": Int(now), "hub": NSNull(),
             "classes": reg.classes, "labels": reg.labels,
-            "spares": Dictionary(uniqueKeysWithValues: SBLogins.dirs.map { ($0, ["lg": SBLogins.short($0), "ready": false, "warming": false] as [String: Any]) }),
+            "spares": SBSpares.shared.info(),
             "s": rows.map(compact), "ot": [], "grp": [], "use": usage,
         ]
         let vanished = sess.filter { !$0.isOpen && $0.parked != true && $0.closed_reason == "vanished" }
@@ -814,9 +826,12 @@ final class Switchboard {
         case "switch": return await switchLogin(k, msg["login"] as? String ?? "", focus: focus)
         case "new_shell":
             let r = newShell(msg["cwd"] as? String, focus: focus)
+            if focus, let sf = r.surface { SessionsAPI.focusTerminal(sf) }
             return (r.ok, r.message)
         case "new":
-            let r = newClaude(msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true, cwd: msg["cwd"] as? String)
+            // From the sidebar's new-session form: a first message, files and a name, all optional.
+            let r = newClaude(msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true, cwd: msg["cwd"] as? String,
+                              prompt: msg["prompt"] as? String, name: msg["name"] as? String, files: msg["files"] as? [String] ?? [])
             return (r.ok, r.message)
         case "resume_id": return await resumeID(msg["id"] as? String ?? "", login: msg["login"] as? String)
         case "restore": return await restore(msg["keys"] as? [String])
@@ -1001,16 +1016,31 @@ final class Switchboard {
         return (true, "Started.", made.id)
     }
 
-    /// A new Claude session with a login, in a folder. With `prompt`, Claude starts on that
-    /// first message (the phone's new session).
-    func newClaude(_ loginDir: String, focus: Bool = true, cwd: String? = nil, prompt: String? = nil) -> (ok: Bool, message: String, surface: String?) {
+    /// A new Claude session with a login, in a folder. With `prompt` (and `files`, whose paths
+    /// go below it), Claude starts on that first message. With `focus`, the login's spare
+    /// (SBSpares) is used when it is ready: Claude is there at once, and the keyboard is in it.
+    func newClaude(_ loginDir: String, focus: Bool = true, cwd: String? = nil, prompt: String? = nil,
+                   name: String? = nil, files: [String] = []) -> (ok: Bool, message: String, surface: String?) {
         let folder = SBPaths.expand(cwd ?? Self.defaultFolder)
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDir), isDir.boolValue else {
             return (false, "The folder \(cwd ?? folder) does not exist.", nil)
         }
+        let prompt = Self.firstMessage(prompt, files: files)
+        let label = name.map(SBScreen.strip).flatMap { $0.isEmpty ? nil : String($0.prefix(80)) }
+        if focus, let spare = SBSpares.shared.take(loginDir, folder: folder) {
+            if let made = SessionsAPI.adoptSpare(spare.controller) {
+                recentNew[made.id] = now   // not a shell session while the scan catches up
+                if let label { pendingNames[made.id] = (label, now) }
+                SessionsAPI.focusTerminal(made.id)
+                // Claude already waits at its prompt: type the message, then Enter.
+                if !prompt.isEmpty { _ = SessionsAPI.sendInput(made.id, text: prompt, enter: true) }
+                return (true, "Started.", made.id)
+            }
+            SBSpares.close(spare.controller)
+        }
         var command = Self.claudeLaunch(loginDir) + " --dangerously-skip-permissions"
-        if let prompt, !prompt.isEmpty {
+        if !prompt.isEmpty {
             // Through a file, not typed into the shell: any length, any characters, line breaks.
             let dir = SBPaths.data + "/prompts"
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -1023,7 +1053,19 @@ final class Switchboard {
         guard let sf = openAgentTerminal(cwd: folder, command: command, loginDir: loginDir, focus: focus) else {
             return (false, "Switchboard could not open a terminal.", nil)
         }
+        if let label { pendingNames[sf] = (label, now) }
+        if focus { SessionsAPI.focusTerminal(sf) }
         return (true, "Started.", sf)
+    }
+
+    /// The first message: what you wrote, then the paths of the files you added, one per line.
+    static func firstMessage(_ prompt: String?, files: [String]) -> String {
+        var parts: [String] = []
+        let text = (prompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty { parts.append(text) }
+        let paths = files.filter { !$0.isEmpty }
+        if !paths.isEmpty { parts.append(paths.joined(separator: "\n")) }
+        return parts.joined(separator: "\n\n")
     }
 
     /// Resume a Claude conversation by its id, in its own folder, with the login you pick.

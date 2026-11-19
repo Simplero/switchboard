@@ -11,6 +11,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// them, and tab keys (next, previous, ⌘1…9) stay inside the session.
     var sessionsWorkspace = UUID().uuidString
 
+    /// Switchboard: a spare (SBSpares): Claude started ahead of time in a window that is
+    /// never shown. Not a session until "+ login" takes it: the tracker, the tab list and
+    /// the handoff on update skip it.
+    var sessionsSpare = false
+
     /// Switchboard: the tabs of this session, in tab order.
     var sessionTabWindows: [NSWindow] {
         guard let window else { return [] }
@@ -221,10 +226,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     // MARK: Terminal Creation
 
     /// Returns all the available terminal controllers present in the app currently.
+    /// Switchboard: not the spares (windows never shown, see `sessionsSpare`).
     static var all: [TerminalController] {
         return NSApplication.shared.windows.compactMap {
             $0.windowController as? TerminalController
-        }
+        }.filter { !$0.sessionsSpare }
     }
 
     // Keep track of the last point that our window was launched at so that new

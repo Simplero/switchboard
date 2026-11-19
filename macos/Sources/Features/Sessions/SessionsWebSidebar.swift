@@ -30,7 +30,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         config.websiteDataStore = .default()
         let controller = WKUserContentController()
         config.userContentController = controller
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = SessionsWebView(frame: .zero, configuration: config)
         super.init()
         controller.add(self, name: "sessions")
         controller.addScriptMessageHandler(self, contentWorld: .page, name: "sessionsReply")
@@ -155,7 +155,13 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
     /// Questions with an answer: search.
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
-        guard let body = message.body as? [String: Any], body["type"] as? String == "search" else { replyHandler(nil, nil); return }
+        guard let body = message.body as? [String: Any] else { replyHandler(nil, nil); return }
+        if body["type"] as? String == "pasteFiles" {
+            // A paste in the new-session form with files or a picture in it: their paths.
+            replyHandler(["paths": SessionsAttachments.fromPasteboard(.general)], nil)
+            return
+        }
+        guard body["type"] as? String == "search" else { replyHandler(nil, nil); return }
         let q = (body["q"] as? String ?? "").trimmingCharacters(in: .whitespaces)
         var reply: [String: Any] = ["s": Switchboard.shared.search(q)]
         // A pasted session id (or "claude --resume <id>"): offer to resume it.
@@ -176,6 +182,9 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         switch type {
         case "ready":
             pageReady()
+        case "newFolder":
+            // The folder new sessions start in: the spares wait there.
+            if let cwd = body["cwd"] as? String, !cwd.isEmpty { SBSpares.shared.folder = SBPaths.expand(cwd) }
         case "open":
             guard let k = body["k"] as? String else { return }
             store.open(key: k)
@@ -267,6 +276,13 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 if let op = o["op"] as? String, let k = o["k"] as? String,
                    let action = ["done": "Done with", "close": "Close", "park": "Park"][op],
                    !store.confirmClose(k, action: action) { return }
+                if o["op"] as? String == "new" {
+                    // The form cleared itself: give the message back if the session did not start.
+                    store.send(o) { [weak self] ok in
+                        if !ok { self?.webView.evaluateJavaScript("window.Sessions && Sessions.newFailed && Sessions.newFailed()") }
+                    }
+                    return
+                }
                 store.send(o)
             }
         case "restartUpdate":
@@ -399,6 +415,56 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         }
         let point = webView.convert(webView.window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
         menu.popUp(positioning: nil, at: point, in: webView)
+    }
+}
+
+/// The pages' web view. Files dropped on it: the page only learns their names, so their paths
+/// go to the sidebar page from here (the new-session form attaches them).
+final class SessionsWebView: WKWebView {
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                         options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let done = super.performDragOperation(sender)
+        if !urls.isEmpty, let data = try? JSONSerialization.data(withJSONObject: urls.map(\.path)),
+           let json = String(data: data, encoding: .utf8) {
+            evaluateJavaScript("window.Sessions && Sessions.droppedFiles && Sessions.droppedFiles(\(json))")
+        }
+        return done
+    }
+}
+
+/// Files for a new session's first message.
+enum SessionsAttachments {
+    /// Pictures you paste are saved here; Claude reads them by their path.
+    static var folder: String { SBPaths.data + "/attachments" }
+
+    /// What a paste adds: copied files by their own paths, else a copied picture (a
+    /// screenshot) saved as a PNG file.
+    @MainActor
+    static func fromPasteboard(_ pb: NSPasteboard) -> [String] {
+        let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if !urls.isEmpty { return urls.map(\.path) }
+        var png = pb.data(forType: .png)
+        if png == nil, let tiff = pb.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff) {
+            png = rep.representation(using: .png, properties: [:])
+        }
+        guard let png else { return [] }
+        try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        let path = "\(folder)/pasted-\(f.string(from: Date()))-\(UUID().uuidString.prefix(4).lowercased()).png"
+        return SBFiles.writeAtomic(png, path) ? [path] : []
+    }
+
+    /// Pasted pictures older than 30 days go (a session that still needs one has read it by then).
+    static func prune() {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: folder) else { return }
+        let cutoff = Date().addingTimeInterval(-30 * 86400)
+        for n in names where n.hasPrefix("pasted-") {
+            let p = folder + "/" + n
+            if let d = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, d < cutoff { try? fm.removeItem(atPath: p) }
+        }
     }
 }
 

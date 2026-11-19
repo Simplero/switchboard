@@ -827,6 +827,7 @@ class AppDelegate: NSObject,
     private func setDockBadge() {
         let bellCount = NSApp.windows
             .compactMap { $0.windowController as? BaseTerminalController }
+            .filter { ($0 as? TerminalController)?.sessionsSpare != true }   // Switchboard: not the spares
             .reduce(0) { $0 + ($1.bell ? 1 : 0) }
         let wantsBadge = ghostty.config.bellFeatures.contains(.attention) && bellCount > 0
         let label = wantsBadge ? (bellCount > 99 ? "99+" : String(bellCount)) : nil

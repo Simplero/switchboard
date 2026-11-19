@@ -184,7 +184,7 @@ struct TerminalQuery: EntityStringQuery, EnumerableEntityQuery {
         // but only if it was previously opened.
         let controllers = NSApp.windows.compactMap {
             $0.windowController as? BaseTerminalController
-        }
+        }.filter { ($0 as? TerminalController)?.sessionsSpare != true }   // Switchboard: not the spares
 
         // Get all our surfaces
         return controllers.flatMap {

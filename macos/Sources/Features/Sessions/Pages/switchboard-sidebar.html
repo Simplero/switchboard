@@ -134,6 +134,11 @@ button{font:inherit;color:inherit;cursor:default}
 /* The session in front, in a column that ⌘↑ ⌘↓ do not follow: a border only. The filled row
    shows the column the keys follow. */
 .item.sel-ring{box-shadow:inset 0 0 0 2px var(--sel)}
+/* Manual order: drag a row to move it (within its group). */
+.col.manual .item[data-k]{cursor:grab}
+body.dragging-rows,body.dragging-rows *{cursor:grabbing!important}
+.item.dragging{position:relative;z-index:2;box-shadow:0 8px 22px rgba(0,0,0,.22),0 0 0 1px var(--line2)}
+.item.dragging:not(.sel){background:var(--surface)}
 /* Keyboard cursor (⌘P, then arrows). Solid ring: running here, the terminal follows it.
    Dashed ring: not running here, Enter opens it. */
 .cur{outline:2px solid var(--accent);outline-offset:1px}
@@ -572,7 +577,7 @@ function colControls(ci){
     <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
     <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('all','All',count(()=>true))}</div>
     <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir'],['cmux','Group']])}</div>
-    <div class="row" title="Sort">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>
+    <div class="row" title="Sort. Manual: drag rows to put them in your order.">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>
   </div>`;
 }
 
@@ -623,6 +628,8 @@ function folderChoices(){
 
 function render(){
   if (!data) return;
+  // Not while a row is held: the list would be rebuilt under the mouse.
+  if (drag){ renderLater = true; return; }
   $('#dirbtn').innerHTML = `${ic('folder',12,2.2)}<span>${esc(newCwd)}</span>${ic('chev',9,2.6)}`;
   $('#newbtns').innerHTML = ['~/.claude','~/.claude-ccl','~/.claude-ccm'].map(d =>
     `<button class="newbtn" data-new="${d}" aria-pressed="${nf.open && nf.login === d}" title="New Claude session with this login: a first message, files and a name, all optional"><span class="plus">+</span>${esc(data.spares?.[d]?.lg || d)}</button>`).join('');
@@ -648,7 +655,7 @@ function render(){
   for (let ci = 0; ci < cols; ci++){
     const rows = rowsFor(ci);
     if (ci === navColOf()) rows.forEach(r => r.s && r.s.o && nav.push(r.s.k));
-    html += `<div class="col" data-col="${ci}">${colControls(ci)}<div class="list">` + rows.map(r =>
+    html += `<div class="col${colState[ci].sort === 'manual' ? ' manual' : ''}" data-col="${ci}">${colControls(ci)}<div class="list">` + rows.map(r =>
       r.h ? `<div class="group${folded[r.h] ? ' folded' : ''}" data-fold="${esc(r.h)}"><span class="chev">${ic('chev',10,2.6)}</span>${esc(r.h)} <span class="n">${r.n}</span></div>`
       : r.empty ? `<div class="empty">${esc(r.empty)}</div>` : itemHTML(r.s, ci)).join('') + `</div></div>`;
   }
@@ -745,6 +752,71 @@ document.addEventListener('dragover', e => {
 document.addEventListener('dragleave', e => { if (!e.relatedTarget) $('#newform').classList.remove('drop'); });
 document.addEventListener('drop', e => { e.preventDefault(); $('#newform').classList.remove('drop'); });
 
+// ---------- Manual order: drag rows ----------
+// In a column sorted "Manual", press a row and move it up or down; it moves within its
+// group. The order is saved and both columns use it. A short press still opens the session.
+let drag = null, renderLater = false, justDragged = false;
+const groupOf = el => { for (let p = el.previousElementSibling; p; p = p.previousElementSibling) if (p.classList.contains('group')) return p.dataset.fold || p.textContent; return ''; };
+document.addEventListener('mousedown', e => {
+  if (e.button !== 0 || query || !manual) return;
+  const row = e.target.closest('.col.manual .item[data-k]');
+  if (!row || !manual.includes(row.dataset.k)) return;
+  drag = {row, list: row.closest('.list'), y0: e.clientY, y: e.clientY, on: false, group: groupOf(row)};
+});
+function dragMove(y){
+  const d = drag;
+  d.y = y;
+  const rows = [...d.list.querySelectorAll('.item[data-k]')]
+    .filter(r => r !== d.row && groupOf(r) === d.group && manual.includes(r.dataset.k));
+  for (const r of rows){
+    const b = r.getBoundingClientRect();
+    if (y < b.top || y > b.bottom) continue;
+    if (y < b.top + b.height / 2){ if (r.previousElementSibling !== d.row) r.before(d.row); }
+    else if (r.nextElementSibling !== d.row) r.after(d.row);
+    break;
+  }
+}
+document.addEventListener('mousemove', e => {
+  if (!drag) return;
+  if (!e.buttons){ endDrag(); return; }   // released outside the page
+  if (!drag.on){
+    if (Math.abs(e.clientY - drag.y0) < 5) return;
+    drag.on = true;
+    drag.row.classList.add('dragging');
+    document.body.classList.add('dragging-rows');
+    // Near the top or bottom edge of the list: scroll it.
+    drag.timer = setInterval(() => {
+      if (!drag) return;
+      const l = drag.list.getBoundingClientRect(), edge = 36;
+      const v = drag.y < l.top + edge ? -1 : drag.y > l.bottom - edge ? 1 : 0;
+      if (v){ drag.list.scrollTop += v * 10; dragMove(drag.y); }
+    }, 16);
+  }
+  e.preventDefault();
+  dragMove(e.clientY);
+});
+function endDrag(){
+  const d = drag;
+  drag = null;
+  if (!d) return;
+  clearInterval(d.timer);
+  if (d.on){
+    d.row.classList.remove('dragging');
+    document.body.classList.remove('dragging-rows');
+    // The rows of this list in their new order take the places these sessions had.
+    const order = [...d.list.querySelectorAll('.item[data-k]')].map(r => r.dataset.k).filter(k => manual.includes(k));
+    const at = order.map(k => manual.indexOf(k)).sort((a, b) => a - b);
+    at.forEach((pos, i) => { manual[pos] = order[i]; });
+    store.set('manual', manual);
+    justDragged = true;
+    setTimeout(() => { justDragged = false; }, 0);
+  }
+  // After the click (if any) ran: a list rebuilt now would swallow it.
+  if (d.on || renderLater) setTimeout(() => { renderLater = false; render(); }, 0);
+}
+document.addEventListener('mouseup', () => { if (drag) endDrag(); });
+window.addEventListener('blur', () => { if (drag) endDrag(); });
+
 // ---------- events ----------
 document.addEventListener('click', e => {
   const t = e.target;
@@ -782,6 +854,7 @@ document.addEventListener('click', e => {
     }
   }
   const row = t.closest('[data-k]');
+  if (justDragged) return;
   if (row && data){
     const s = data.s.find(x => x.k === row.dataset.k) || results.find(x => x.k === row.dataset.k);
     if (s){ if (!query && col) setNavCol(+col.dataset.col); openSession(s); }

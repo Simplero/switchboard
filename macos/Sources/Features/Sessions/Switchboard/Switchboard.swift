@@ -546,6 +546,7 @@ final class Switchboard {
         guard let same = try? JSONSerialization.data(withJSONObject: p, options: [.sortedKeys]) else { return }
         if same == lastPushed { return }
         lastPushed = same
+        SBRemote.shared.sessionsChanged()
         p["at"] = Int(now)
         guard let data = try? JSONSerialization.data(withJSONObject: p) else { return }
         if let decoded = try? JSONDecoder().decode(SidebarPayload.self, from: data) {
@@ -850,16 +851,26 @@ final class Switchboard {
         return (true, "Started.", made.id)
     }
 
-    /// A new Claude session with a login, in a folder.
-    func newClaude(_ loginDir: String, focus: Bool = true, cwd: String? = nil) -> (ok: Bool, message: String, surface: String?) {
+    /// A new Claude session with a login, in a folder. With `prompt`, Claude starts on that
+    /// first message (the phone's new session).
+    func newClaude(_ loginDir: String, focus: Bool = true, cwd: String? = nil, prompt: String? = nil) -> (ok: Bool, message: String, surface: String?) {
         let folder = SBPaths.expand(cwd ?? Self.defaultFolder)
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDir), isDir.boolValue else {
             return (false, "The folder \(cwd ?? folder) does not exist.", nil)
         }
+        var command = Self.claudeLaunch(loginDir) + " --dangerously-skip-permissions"
+        if let prompt, !prompt.isEmpty {
+            // Through a file, not typed into the shell: any length, any characters, line breaks.
+            let dir = SBPaths.data + "/prompts"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let file = dir + "/\(UUID().uuidString).txt"
+            let text = prompt.hasPrefix("-") ? " " + prompt : prompt     // never read as an option
+            guard SBFiles.writeAtomic(Data(text.utf8), file) else { return (false, "Could not save the first message.", nil) }
+            command += " \"$(cat \(Self.shellQuote(file)); rm -f \(Self.shellQuote(file)))\""
+        }
         // One pane: just Claude. A shell is a tab away (+ in the panel, or ⌘T).
-        guard let sf = openAgentTerminal(cwd: folder, command: Self.claudeLaunch(loginDir) + " --dangerously-skip-permissions",
-                                         loginDir: loginDir, focus: focus) else {
+        guard let sf = openAgentTerminal(cwd: folder, command: command, loginDir: loginDir, focus: focus) else {
             return (false, "Switchboard could not open a terminal.", nil)
         }
         return (true, "Started.", sf)

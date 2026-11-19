@@ -234,6 +234,8 @@ class AppDelegate: NSObject,
         SessionsStore.shared.start()
         SessionsAPI.shared.start()
         SessionsVersion.shared.start()
+        // The iPhone app's way in (Tailscale only).
+        SBRemote.shared.start()
 
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [

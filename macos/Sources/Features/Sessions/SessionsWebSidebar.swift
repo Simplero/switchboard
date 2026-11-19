@@ -186,6 +186,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             // The new-session form opened on a login (or closed): start its Claude now, so it
             // is at its prompt by the time you press Enter.
             SBSpares.shared.want(body["login"] as? String)
+            SessionsWebView.newFormOpen = (body["login"] as? String) != nil
         case "newFolder":
             // The folder new sessions start in: the spares wait there.
             if let cwd = body["cwd"] as? String, !cwd.isEmpty { SBSpares.shared.folder = SBPaths.expand(cwd); SBSpares.shared.tick() }
@@ -425,6 +426,36 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
 /// The pages' web view. Files dropped on it: the page only learns their names, so their paths
 /// go to the sidebar page from here (the new-session form attaches them).
 final class SessionsWebView: WKWebView {
+    /// The new-session form is open (the page says so with `newWarm`).
+    static var newFormOpen = false
+
+    /// ⌘V, ⌘C, ⌘X, ⌘A go straight to the page when it has the keyboard. Through the
+    /// menu, ⌘V did not reach the new-session form. A paste with files or a picture on the
+    /// clipboard attaches them to the open form (by their paths; a picture is saved as a file).
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.type == .keyDown, window?.firstResponder === self,
+              event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command else {
+            return super.performKeyEquivalent(with: event)
+        }
+        let action: Selector
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "v":
+            if Self.newFormOpen, SessionsAttachments.hasFiles(.general) {
+                let paths = SessionsAttachments.fromPasteboard(.general)
+                if let data = try? JSONSerialization.data(withJSONObject: paths), let json = String(data: data, encoding: .utf8) {
+                    evaluateJavaScript("window.Sessions && Sessions.droppedFiles && Sessions.droppedFiles(\(json))")
+                }
+                return true
+            }
+            action = #selector(NSText.paste(_:))
+        case "c": action = #selector(NSText.copy(_:))
+        case "x": action = #selector(NSText.cut(_:))
+        case "a": action = #selector(NSText.selectAll(_:))
+        default: return super.performKeyEquivalent(with: event)
+        }
+        return NSApp.sendAction(action, to: self, from: nil)
+    }
+
     /// The page must not look like it has the keyboard when it does not: tell it when the
     /// keyboard leaves (a click in the terminal), and after it moves to another window
     /// (⌘↑ ⌘↓), where the terminal has the keyboard. Its focused field stays focused in the
@@ -464,6 +495,12 @@ final class SessionsWebView: WKWebView {
 enum SessionsAttachments {
     /// Pictures you paste are saved here; Claude reads them by their path.
     static var folder: String { SBPaths.data + "/attachments" }
+
+    /// The clipboard holds files or a picture (not only text).
+    static func hasFiles(_ pb: NSPasteboard) -> Bool {
+        let types = pb.types ?? []
+        return types.contains(.fileURL) || types.contains(.png) || types.contains(.tiff)
+    }
 
     /// What a paste adds: copied files by their own paths, else a copied picture (a
     /// screenshot) saved as a PNG file.

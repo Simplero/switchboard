@@ -4,6 +4,7 @@ import Network
 import GhosttyKit
 import CoreImage
 import IOSurface
+import WebKit
 
 /// A small local HTTP API for checks and scripts: list the terminals (with tty and
 /// pid), read their text, type into them, focus, close, open tabs, see what the
@@ -260,6 +261,42 @@ final class SessionsAPI {
             guard let view else { return (404, ["error": "no such terminal"]) }
             guard let png = SessionsAPI.drawnPicture(view) else { return (200, ["png": NSNull(), "note": "nothing drawn yet"]) }
             return (200, ["png": png.base64EncodedString()])
+        case ("POST", "/sb/keycheck"):
+            // For checks: press a key with ⌘ on the sidebar page the way AppKit dispatches it
+            // (local monitors, the window's views, then the menu). {"key": "v"}
+            let web = SessionsWeb.shared.webView
+            guard let w = web.window else { return (404, ["error": "no sidebar window"]) }
+            w.makeFirstResponder(web)
+            let ch = req.json["key"] as? String ?? "v"
+            let code: UInt16 = ["v": 9, "c": 8, "x": 7, "a": 0][ch] ?? 9
+            guard let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
+                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                            context: nil, characters: ch, charactersIgnoringModifiers: ch,
+                                            isARepeat: false, keyCode: code) else { return (500, ["error": "no event"]) }
+            let before = String(describing: w.firstResponder.map { type(of: $0) })
+            if req.json["direct"] as? Bool == true {
+                // What the Paste menu item does once AppKit routes it to the page.
+                let ok = NSApp.sendAction(Selector(("paste:")), to: web, from: nil)
+                return (200, ["sent": ok])
+            }
+            if req.json["probe"] as? Bool == true {
+                // Which view takes it: ask the terminals and the web views one by one.
+                var hits: [String] = []
+                var stack: [NSView] = [w.contentView?.superview ?? w.contentView].compactMap { $0 }
+                while let v = stack.popLast() {
+                    if v is Ghostty.SurfaceView || v is WKWebView {
+                        let focused = (v as? Ghostty.SurfaceView)?.focused
+                        let name = v === SessionsWeb.shared.webView ? "sidebar page" : v === SessionsWeb.banner.webView ? "panel page" : "\(type(of: v))"
+                        hits.append("\(name) focused=\(String(describing: focused)) takes=\(v.performKeyEquivalent(with: ev))")
+                    } else { stack += v.subviews }
+                }
+                return (200, ["views": hits])
+            }
+            var by = "nothing"
+            if w.performKeyEquivalent(with: ev) { by = "window views" } else if NSApp.mainMenu?.performKeyEquivalent(with: ev) == true { by = "menu" }
+            return (200, ["handled_by": by, "first_responder_before": before,
+                          "first_responder_after": String(describing: w.firstResponder.map { type(of: $0) }),
+                          "app_active": NSApp.isActive, "window_is_key": w.isKeyWindow])
         case ("GET", "/sb/spares"):
             // For checks: the spares (Claude started ahead of time, one per login).
             return (200, ["spares": SBSpares.shared.checkInfo()])
@@ -270,7 +307,7 @@ final class SessionsAPI {
             pb.clearContents()
             if let paths = req.json["paths"] as? [String] { pb.writeObjects(paths.map { URL(fileURLWithPath: $0) as NSURL }) }
             if let b64 = req.json["png"] as? String, let data = Data(base64Encoded: b64) { pb.setData(data, forType: .png) }
-            return (200, ["paths": SessionsAttachments.fromPasteboard(pb)])
+            return (200, ["has_files": SessionsAttachments.hasFiles(pb), "paths": SessionsAttachments.fromPasteboard(pb)])
         case ("POST", "/merge"):
             return (200, ["moved": SessionsAPI.mergeAll()])
         case ("GET", "/screenshot"):

@@ -23,6 +23,9 @@ COMMIT=$(git -C "$(dirname "$0")" rev-parse --short HEAD)
 /usr/libexec/PlistBuddy -c "Add :SessionsBuild string $BUILD" "$P"
 /usr/libexec/PlistBuddy -c "Delete :SessionsCommit" "$P" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :SessionsCommit string $COMMIT" "$P"
+# The bundle version changes with every build. With a fixed version the Dock and ⌘-Tab
+# kept showing the old app icon after the icon changed (b36 and b37 both said "1").
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$P"
 echo "Build b$BUILD ($COMMIT)"
 # Sign with the Apple Development certificate, not ad hoc. An ad-hoc signature is a new
 # identity on every build, so macOS forgot every privacy grant (Documents, Desktop, Full
@@ -31,6 +34,7 @@ IDENTITY=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Developm
 codesign --force --deep -s "${IDENTITY:--}" --entitlements "$(dirname "$0")/macos/GhosttyReleaseLocal.entitlements" "$DST.new"
 rm -rf "$DST"
 mv "$DST.new" "$DST"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DST" || true
 # The app used to be called "Ghostty Sessions". Point the old path at the new app,
 # so a running old copy sees the update and its restart opens Switchboard.
 OLD="/Applications/Ghostty Sessions.app"

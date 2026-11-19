@@ -73,7 +73,9 @@ func arcSpace(forLogin login: String?) -> String? {
 
 /// A string safe inside an AppleScript string literal.
 func asLiteral(_ s: String) -> String {
-    "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    let e = s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\r", with: "\\r")
+    return "\"" + e + "\""
 }
 
 /// The same page as Chrome may show it: exactly this URL, and for a bare origin
@@ -113,13 +115,12 @@ func openInChrome(_ url: URL) {
         let script = """
         tell application id "\(chromeID)"
           set targets to \(targets)
-          set urls to URL of every tab of every window
           considering case
-            repeat with wi from 1 to count of urls
-              set wl to item wi of urls
+            repeat with wi from 1 to count of windows
+              set w to window wi
+              set wl to URL of every tab of w
               repeat with ti from 1 to count of wl
                 if targets contains (item ti of wl) then
-                  set w to window wi
                   set active tab index of w to ti
                   set index of w to 1
                   activate
@@ -141,22 +142,31 @@ func openInChrome(_ url: URL) {
 func openInArc(_ url: URL, space: String?) {
     let u = url.absoluteString
     guard let space, !u.contains("\""), !u.contains("\\") else { openWith(arcID, url); return }
+    let targets = "{" + variants(url).map(asLiteral).joined(separator: ", ") + "}"
     let script = """
     tell application id "\(arcID)"
       if (count of windows) = 0 then make new window
       set w to front window
       set target to missing value
-      repeat with s in spaces of w
-        if title of s is \(asLiteral(space)) then set target to s
+      -- The Space can be in any Arc window.
+      repeat with aw in windows
+        repeat with s in spaces of aw
+          if title of s is \(asLiteral(space)) then
+            set target to s
+            set w to aw
+          end if
+        end repeat
+        if target is not missing value then exit repeat
       end repeat
       if target is missing value then
         tell w to make new tab with properties {URL:\(asLiteral(u))}
       else
         set found to false
+        set targets to \(targets)
         try
           considering case
             repeat with t in tabs of target
-              if URL of t is \(asLiteral(u)) then
+              if targets contains (URL of t) then
                 tell target to focus
                 tell t to select
                 set found to true

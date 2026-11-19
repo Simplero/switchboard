@@ -7,7 +7,8 @@
 // The pty masters arrive as inherited file descriptors 3 .. 3+count-1. The new app
 // connects to the socket (same user only) and sends "GET\n". The holder sends every fd
 // with SCM_RIGHTS in 8-byte messages "F<start:3><n:3>\n", then "END....\n". The app
-// answers "OK\n" and the holder exits. When no app takes them within the timeout, the
+// answers "OK\n" once every terminal is adopted, and the holder exits. "BYE\n" instead
+// of "GET\n" makes it exit at once (the new app cannot take them). When no app takes them within the timeout, the
 // holder exits too: closing the masters hangs the programs up, as a normal restart would.
 //
 // Built by install-sessions-app.sh into Switchboard.app/Contents/MacOS.
@@ -84,7 +85,11 @@ int main(int argc, char **argv) {
     if (getpeereid(c, &euid, &egid) != 0 || euid != getuid()) { close(c); continue; }
     char req[4];
     struct pollfd pc = {c, POLLIN, 0};
-    if (poll(&pc, 1, 10000) <= 0 || read(c, req, 4) != 4 || memcmp(req, "GET\n", 4) != 0) { close(c); continue; }
+    if (poll(&pc, 1, 10000) <= 0 || read(c, req, 4) != 4) { close(c); continue; }
+    // The new app cannot use them (another version, too late): let the programs go now,
+    // so it can restart them, instead of holding them until the timeout.
+    if (memcmp(req, "BYE\n", 4) == 0) { close(c); break; }
+    if (memcmp(req, "GET\n", 4) != 0) { close(c); continue; }
     int ok = 1;
     for (int i = 0; i < count && ok; i += CHUNK) {
       if (send_chunk(c, i, count - i < CHUNK ? count - i : CHUNK) != 0) ok = 0;

@@ -89,6 +89,10 @@ pub const StreamHandler = struct {
     /// to wake up the termio thread.
     termio_messaged: bool = false,
 
+    /// Switchboard: a handed-over terminal's saved state is being replayed. The program
+    /// asked for its reports long ago; replaying the modes must not send them again.
+    replaying: bool = false,
+
     /// This is set to true when we've seen a title escape sequence. We use
     /// this to determine if we need to default the window title.
     seen_title: bool = false,
@@ -149,6 +153,13 @@ pub const StreamHandler = struct {
     }
 
     inline fn messageWriter(self: *StreamHandler, msg: termio.Message) void {
+        if (self.replaying) switch (msg) {
+            .size_report, .visibility_report, .focused, .color_scheme_report, .write_small, .write_stable, .write_alloc => {
+                msg.deinit();
+                return;
+            },
+            else => {},
+        };
         self.termio_mailbox.send(msg, self.renderer_state.mutex);
         self.termio_messaged = true;
     }

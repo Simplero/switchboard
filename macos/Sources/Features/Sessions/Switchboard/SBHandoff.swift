@@ -172,10 +172,8 @@ enum SBHandoff {
     nonisolated static func receive() -> Received? {
         guard let data = FileManager.default.contents(atPath: listPath),
               let list = try? JSONDecoder().decode(List.self, from: data) else { return nil }
-        guard list.v == version, Date().timeIntervalSince1970 - list.at < 110, !list.items.isEmpty else {
-            try? FileManager.default.removeItem(atPath: listPath)
-            return nil
-        }
+        let usable = list.v == version && Date().timeIntervalSince1970 - list.at < 110 && !list.items.isEmpty
+        if !usable { try? FileManager.default.removeItem(atPath: listPath) }
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
         guard s >= 0 else { return nil }
         _ = fcntl(s, F_SETFD, FD_CLOEXEC)
@@ -187,12 +185,19 @@ enum SBHandoff {
             for (i, b) in pathBytes.enumerated() { raw[i] = b }
         }
         var connected = false
-        for _ in 0..<40 {
+        for _ in 0..<(usable ? 40 : 1) {
             let rc = withUnsafePointer(to: &addr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(s, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
             }
             if rc == 0 { connected = true; break }
             usleep(100_000)
+        }
+        // A list this app cannot use: release the holder now, so the programs end and the
+        // normal restore can restart them (instead of waiting out the holder's timeout).
+        if !usable {
+            if connected { _ = write(s, "BYE\n", 4) }
+            close(s)
+            return nil
         }
         guard connected, write(s, "GET\n", 4) == 4 else { close(s); return nil }
         var tv = timeval(tv_sec: 10, tv_usec: 0)

@@ -181,7 +181,11 @@ pub fn threadEnter(
                     }) catch |err| log.warn("adopted pty: could not size the terminal err={}", .{err});
                 }
             } else |err| log.warn("adopted pty: no size err={}", .{err});
-            if (a.replay) |r| io.processOutput(r);
+            if (a.replay) |r| {
+                io.terminal_stream.handler.replaying = true;
+                defer io.terminal_stream.handler.replaying = false;
+                io.processOutput(r);
+            }
         }
     }
 

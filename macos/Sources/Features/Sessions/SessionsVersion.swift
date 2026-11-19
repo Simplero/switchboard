@@ -58,7 +58,7 @@ final class SessionsVersion: ObservableObject {
             alert.informativeText = open == 0
                 ? "No sessions are open here."
                 : keepsRunning
-                ? "Every terminal and the program in it keeps running through the restart, and comes back in the same session and tab."
+                ? "Every session's terminals, and the programs in them, keep running through the restart and come back in the same session and tab."
                 : "\(open) session\(open == 1 ? "" : "s") open here will close and reopen with the same conversation and login after the restart. Their other tabs come back as new shells in the same folder; programs running in them stop. A session that is working right now stops its current step."
             alert.addButton(withTitle: "Restart now")
             alert.addButton(withTitle: "Later")
@@ -69,8 +69,12 @@ final class SessionsVersion: ObservableObject {
         // terminal that cannot be handed over).
         let (ok, message) = Switchboard.shared.rememberOpen()
         guard ok else { SessionsStore.shared.showFailure(message); return }
-        // Hand the terminals to the holder: their programs keep running.
-        _ = SBHandoff.prepare()
+        // Hand the terminals to the holder: their programs keep running. If that cannot be
+        // done, nothing has changed yet: say why and stay.
+        if case .failed(let why) = SBHandoff.prepare() {
+            SessionsStore.shared.showFailure("Switchboard did not restart: \(why) Your terminals are as they were.")
+            return
+        }
         let path = Bundle.main.bundleURL.path
         let pid = getpid()
         // A test copy keeps its own data folder and API file across the restart.

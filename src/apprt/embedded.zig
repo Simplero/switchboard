@@ -2037,18 +2037,35 @@ pub const CAPI = struct {
         return surface.core_surface.getProcessInfo(.foreground_pid) orelse 0;
     }
 
-    /// Switchboard: hand this surface's pty to the next copy of the app. Returns a
-    /// duplicate of the pty master (the caller owns it; -1 on failure) and writes the
-    /// program's pid. From now on closing the surface does not end the program.
-    export fn ghostty_surface_pty_handoff(surface: *Surface, pid_out: *c_int) c_int {
+    /// Switchboard: a close-on-exec copy of this surface's pty master (the caller owns
+    /// it; -1 when there is none) and the program's pid. Changes nothing else.
+    export fn ghostty_surface_pty_dup(surface: *Surface, pid_out: *c_int) c_int {
         switch (surface.core_surface.io.backend) {
             .exec => |*exec| {
                 var pid: std.posix.pid_t = 0;
-                const fd = exec.subprocess.handoff(&pid);
+                const fd = exec.subprocess.dupForHandoff(&pid);
                 pid_out.* = pid;
                 return fd;
             },
         }
+    }
+
+    /// Switchboard: the pty now belongs to the next copy of the app. Closing this
+    /// surface no longer ends the program, and it stops reading the pty (see
+    /// ghostty_surface_pty_reader_stopped).
+    export fn ghostty_surface_pty_detach(surface: *Surface) void {
+        switch (surface.core_surface.io.backend) {
+            .exec => |*exec| exec.subprocess.detach(),
+        }
+        surface.core_surface.io.queueMessage(.pty_detach, .unlocked);
+    }
+
+    /// Switchboard: after ghostty_surface_pty_detach, true once every byte read from the
+    /// pty is drawn and nothing more is read.
+    export fn ghostty_surface_pty_reader_stopped(surface: *Surface) bool {
+        return switch (surface.core_surface.io.backend) {
+            .exec => |*exec| exec.subprocess.reader_stopped.load(.seq_cst),
+        };
     }
 
     /// Switchboard: the whole terminal state (screen with scrollback, cursor, modes,
@@ -2061,6 +2078,17 @@ pub const CAPI = struct {
 
         var buf: std.Io.Writer.Allocating = .init(global.alloc());
         defer buf.deinit();
+
+        // A full-screen program (vim, less) shows the alternate screen. The shell's
+        // screen and scrollback behind it go first, so they are there when it exits.
+        const t = core_surface.renderer_state.terminal;
+        if (t.screens.active_key == .alternate) {
+            if (t.screens.get(.primary)) |primary| {
+                var pf: terminal.formatter.ScreenFormatter = .init(primary, .{ .emit = .vt, .trim = false });
+                pf.format(&buf.writer) catch |err| log.warn("error dumping the primary screen err={}", .{err});
+            }
+        }
+
         // No trimming: trailing blank rows are part of the layout, so the cursor
         // lands on the same row after a replay.
         var f: terminal.formatter.TerminalFormatter = .init(core_surface.renderer_state.terminal, .{ .emit = .vt, .trim = false });

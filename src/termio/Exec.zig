@@ -60,6 +60,9 @@ pub const Adopt = struct {
 /// by `init` on the same thread.
 pub threadlocal var pending_adopt: ?Adopt = null;
 
+/// The session that a terminal belongs to (termios.h).
+extern "c" fn tcgetsid(fd: c_int) posix.pid_t;
+
 /// Initialize the exec state. This will NOT start it, this only sets
 /// up the internal state necessary to start it later.
 pub fn init(
@@ -239,12 +242,28 @@ pub fn threadEnter(
     }
 }
 
+/// Switchboard: the pty was handed to the next copy of the app. Stop the read thread:
+/// it delivers what it already read, and the rest stays in the pty for the next app.
+pub fn stopReaderForHandoff(self: *Exec, td: *termio.Termio.ThreadData) void {
+    if (td.backend != .exec) return;
+    const exec = &td.backend.exec;
+    if (!exec.read_thread_joined) {
+        _ = posix.system.write(exec.read_thread_pipe, "x", 1);
+        exec.read_thread.join();
+        exec.read_thread_joined = true;
+    }
+    self.subprocess.reader_stopped.store(true, .seq_cst);
+}
+
 pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     assert(td.backend == .exec);
     const exec = &td.backend.exec;
 
     if (exec.exited) self.subprocess.externalExit();
     self.subprocess.stop();
+
+    // Switchboard: the read thread already stopped for a handoff.
+    if (exec.read_thread_joined) return;
 
     // Quit our read thread after exiting the subprocess so that
     // we don't get stuck waiting for data to stop flowing if it is
@@ -580,6 +599,8 @@ pub const ThreadData = struct {
 
     /// Reader thread state
     read_thread: std.Thread,
+    /// Switchboard: the read thread was already stopped and joined (handoff).
+    read_thread_joined: bool = false,
     read_thread_pipe: posix.fd_t,
     read_thread_fd: posix.fd_t,
 
@@ -648,6 +669,9 @@ const Subprocess = struct {
     /// Switchboard: the pty was handed to the next copy of the app. Stopping does
     /// not end the program then.
     detached: std.atomic.Value(bool) = .init(false),
+
+    /// Switchboard: the read thread stopped after a handoff; every byte it read is drawn.
+    reader_stopped: std.atomic.Value(bool) = .init(false),
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -1175,21 +1199,26 @@ const Subprocess = struct {
         self.adopt = null;
     }
 
-    /// Switchboard: hand the pty to the next copy of the app. Returns a duplicate of
-    /// the pty master (the caller owns it) and the program's pid, and from now on
-    /// stopping this surface does not end the program. -1 when there is no pty.
-    pub fn handoff(self: *Subprocess, pid_out: *posix.pid_t) posix.fd_t {
+    /// Switchboard: a close-on-exec copy of the pty master (the caller owns it) and the
+    /// program's pid, for handing the pty to the next copy of the app. Changes nothing
+    /// else: until `detach`, this surface still owns the program. -1 when there is none.
+    pub fn dupForHandoff(self: *Subprocess, pid_out: *posix.pid_t) posix.fd_t {
         if (comptime builtin.target.os.tag == .windows) return -1;
         const pty = self.pty orelse return -1;
         const pid: posix.pid_t = if (self.adopt) |a| a.pid else if (self.process) |p| switch (p) {
             .fork_exec => |cmd| cmd.pid orelse return -1,
             .flatpak => return -1,
         } else return -1;
-        const fd = posix.system.dup(pty.master);
+        const fd = posix.system.fcntl(pty.master, posix.F.DUPFD_CLOEXEC, @as(c_int, 0));
         if (fd < 0) return -1;
-        self.detached.store(true, .seq_cst);
         pid_out.* = pid;
         return fd;
+    }
+
+    /// Switchboard: the pty now belongs to the next copy of the app. Stopping this
+    /// surface no longer ends the program.
+    pub fn detach(self: *Subprocess) void {
+        self.detached.store(true, .seq_cst);
     }
 
     /// Stop the subprocess. This is safe to call anytime. This will wait
@@ -1204,10 +1233,13 @@ const Subprocess = struct {
             return;
         }
 
-        // An adopted program: end its process group like our own child's.
+        // An adopted program: end its process group like our own child's, but only
+        // while it still leads this pty's session (it is not our child, so its pid
+        // could belong to another program by now). Closing the pty hangs up the rest.
         if (comptime builtin.target.os.tag != .windows) {
             if (self.adopt) |a| {
-                killPid(a.pid) catch |err|
+                const sid: posix.pid_t = if (self.pty) |pty| tcgetsid(pty.master) else -1;
+                if (sid == a.pid) killPid(a.pid) catch |err|
                     log.err("error sending SIGHUP to adopted command, may hang: {}", .{err});
                 self.adopt = null;
                 return;

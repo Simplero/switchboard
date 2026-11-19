@@ -35,6 +35,10 @@ pub const Message = union(enum) {
     /// See the "crash" binding action.
     crash: void,
 
+    /// Switchboard: the pty was handed to the next copy of the app. Stop reading it
+    /// (output that is already read is still drawn first).
+    pty_detach: void,
+
     /// The derived configuration to update the implementation with. This
     /// is allocated via the allocator and is expected to be freed when done.
     change_config: struct {

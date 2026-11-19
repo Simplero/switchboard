@@ -76,9 +76,13 @@ func asLiteral(_ s: String) -> String {
     "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
 }
 
-/// The same page: with and without a trailing slash.
-func variants(_ u: String) -> [String] {
-    u.hasSuffix("/") ? [u, String(u.dropLast())] : [u, u + "/"]
+/// The same page as Chrome may show it: exactly this URL, and for a bare origin
+/// (http://localhost:3000) also with its "/" path. Query and fragment always count.
+func variants(_ url: URL) -> [String] {
+    let u = url.absoluteString
+    guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false), c.path.isEmpty || c.path == "/" else { return [u] }
+    c.path = c.path.isEmpty ? "/" : ""
+    return [u] + (c.string.map { [$0] } ?? [])
 }
 
 func runScript(_ source: String) -> String? {
@@ -92,32 +96,38 @@ func appURL(_ id: String) -> URL? { NSWorkspace.shared.urlForApplication(withBun
 
 func isRunning(_ id: String) -> Bool { !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty }
 
+/// Open in a browser by id; if it is not installed, in Safari. Never through the default
+/// browser: that is this app, and the link would come straight back.
 func openWith(_ id: String, _ url: URL) {
-    guard let app = appURL(id) else { NSWorkspace.shared.open(url); return }
-    NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+    guard let app = appURL(id) ?? appURL("com.apple.Safari") else { NSLog("Link Router: no browser for %@", url.absoluteString); return }
+    NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+        if let error { NSLog("Link Router: %@", error.localizedDescription) }
+    }
 }
 
 /// Chrome: bring the tab that already shows this page to the front, else open a new tab.
 func openInChrome(_ url: URL) {
     let u = url.absoluteString
     if isRunning(chromeID), !u.contains("\""), !u.contains("\\") {
-        let targets = "{" + variants(u).map(asLiteral).joined(separator: ", ") + "}"
+        let targets = "{" + variants(url).map(asLiteral).joined(separator: ", ") + "}"
         let script = """
         tell application id "\(chromeID)"
           set targets to \(targets)
           set urls to URL of every tab of every window
-          repeat with wi from 1 to count of urls
-            set wl to item wi of urls
-            repeat with ti from 1 to count of wl
-              if targets contains (item ti of wl) then
-                set w to window wi
-                set active tab index of w to ti
-                set index of w to 1
-                activate
-                return "focused"
-              end if
+          considering case
+            repeat with wi from 1 to count of urls
+              set wl to item wi of urls
+              repeat with ti from 1 to count of wl
+                if targets contains (item ti of wl) then
+                  set w to window wi
+                  set active tab index of w to ti
+                  set index of w to 1
+                  activate
+                  return "focused"
+                end if
+              end repeat
             end repeat
-          end repeat
+          end considering
           return "none"
         end tell
         """
@@ -144,14 +154,16 @@ func openInArc(_ url: URL, space: String?) {
       else
         set found to false
         try
-          repeat with t in tabs of target
-            if URL of t is \(asLiteral(u)) then
-              tell target to focus
-              tell t to select
-              set found to true
-              exit repeat
-            end if
-          end repeat
+          considering case
+            repeat with t in tabs of target
+              if URL of t is \(asLiteral(u)) then
+                tell target to focus
+                tell t to select
+                set found to true
+                exit repeat
+              end if
+            end repeat
+          end considering
         end try
         if not found then
           tell target to make new tab with properties {URL:\(asLiteral(u))}
@@ -166,7 +178,8 @@ func openInArc(_ url: URL, space: String?) {
 
 func open(_ url: URL) {
     guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
-        NSWorkspace.shared.open(url)
+        // A local HTML file or another scheme: Arc shows it.
+        openWith(arcID, url)
         return
     }
     switch route(url) {

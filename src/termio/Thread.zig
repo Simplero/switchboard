@@ -318,6 +318,9 @@ fn drainMailbox(
                 v.force,
             ),
             .crash => @panic("crash request, crashing intentionally"),
+            .pty_detach => switch (io.backend) {
+                .exec => |*exec| exec.stopReaderForHandoff(data),
+            },
             .change_config => |config| {
                 defer config.alloc.destroy(config.ptr);
                 try io.changeConfig(data, config.ptr);

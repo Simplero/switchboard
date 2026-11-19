@@ -49,11 +49,20 @@ enum SBHandoff {
 
     // MARK: Old app
 
-    /// Hand every terminal over to a holder. Returns how many were handed over (0: the
-    /// restart stops the programs as before).
+    enum Prepared {
+        /// No holder in the installed app: the restart stops the programs, as before.
+        case unavailable
+        /// Nothing was handed over and nothing changed: do not restart.
+        case failed(String)
+        case handedOver(Int)
+    }
+
+    /// Hand every terminal over to a holder. Until the holder runs and the list is saved,
+    /// nothing changes (the terminals still own their programs); only then are they
+    /// detached and their state saved.
     @MainActor
-    static func prepare() -> Int {
-        guard available else { return 0 }
+    static func prepare() -> Prepared {
+        guard available else { return .unavailable }
         try? FileManager.default.removeItem(atPath: stateDir)
         try? FileManager.default.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
         let keyBySurface = Dictionary(Switchboard.shared.reg.sessions.values.compactMap { e in
@@ -63,16 +72,15 @@ enum SBHandoff {
             e.isOpen && e.agent == "shell" ? (String(e.key.dropFirst("shell:".count)), e.key) : nil
         }, uniquingKeysWith: { a, _ in a })
 
-        // The one window's tabs in order, then any other terminal window.
+        // The one window's tabs in order, then any other session window. (The quick
+        // terminal is not a session: it restarts as before.)
         var windows = SessionsAPI.mainWindow().map { $0.tabGroup?.windows ?? [$0] } ?? []
         for c in SessionsAPI.allControllers() {
             if let w = c.window, c is TerminalController, !windows.contains(where: { $0 === w }) { windows.append(w) }
         }
         var items: [Item] = []
         var fds: [Int32] = []
-        var views: [Ghostty.SurfaceView] = []
-        // First hand every pty over: from now on this app reads nothing more from them,
-        // so no output is lost between the state saved below and the new app.
+        var surfaces: [ghostty_surface_t] = []
         for w in windows {
             guard let controller = w.windowController as? TerminalController else { continue }
             let selected = (w.tabGroup?.selectedWindow ?? w) === w
@@ -80,34 +88,41 @@ enum SBHandoff {
             for (n, view) in (controller.surfaceTree.root?.leaves() ?? []).enumerated() {
                 guard let surface = view.surface else { continue }
                 var pid: Int32 = 0
-                let fd = ghostty_surface_pty_handoff(surface, &pid)
+                let fd = ghostty_surface_pty_dup(surface, &pid)
                 guard fd >= 0 else { continue }
                 let id = view.id.uuidString
                 items.append(Item(i: items.count, ws: controller.sessionsWorkspace, tab: tab, split: n > 0, cwd: view.pwd ?? "",
                                   pid: pid, selected: selected && n == 0,
                                   key: keyBySurface[id] ?? shellKeyByWS[controller.sessionsWorkspace]))
                 fds.append(fd)
-                views.append(view)
+                surfaces.append(surface)
             }
         }
-        // Output already read is still being drawn: let it land, then save each terminal.
-        usleep(100_000)
-        for (i, view) in views.enumerated() {
-            guard let surface = view.surface else { continue }
+        guard !items.isEmpty else { return .handedOver(0) }
+
+        // 1. The holder takes copies of the masters. 2. The list is saved. Only then:
+        // 3. the terminals let go of their programs.
+        let socket = NSTemporaryDirectory() + "switchboard-\(getpid()).sock"   // short: a socket path must fit in 104 bytes
+        let started = spawnHolder(socket: socket, fds: fds)
+        fds.forEach { close($0) }   // the holder has its own copies
+        guard started else { return .failed("The terminal holder (switchboard-holder) did not start.") }
+        guard let json = try? JSONEncoder().encode(List(v: version, at: Date().timeIntervalSince1970, socket: socket, items: items)),
+              SBFiles.writeAtomic(json, listPath) else {
+            unlink(socket)   // the holder times out and lets go
+            return .failed("Could not save the list of terminals in \(SBPaths.data).")
+        }
+        surfaces.forEach { ghostty_surface_pty_detach($0) }
+
+        // Every byte already read must be drawn before the state is saved; the rest stays
+        // in the pty for the new app.
+        for _ in 0..<200 where !surfaces.allSatisfy({ ghostty_surface_pty_reader_stopped($0) }) { usleep(10_000) }
+        for (i, surface) in surfaces.enumerated() {
             let state = ghostty_surface_dump_vt(surface)
             let data = state.ptr.map { Data(bytes: $0, count: Int(state.len)) } ?? Data()
             ghostty_string_free(state)
             FileManager.default.createFile(atPath: "\(stateDir)/\(i).vt", contents: data)
         }
-        guard !items.isEmpty else { return 0 }
-        // Short path (a socket path must fit in 104 bytes).
-        let socket = NSTemporaryDirectory() + "switchboard-\(getpid()).sock"
-        let started = spawnHolder(socket: socket, fds: fds)
-        fds.forEach { close($0) }   // the holder has its own copies
-        guard started,
-              let json = try? JSONEncoder().encode(List(v: version, at: Date().timeIntervalSince1970, socket: socket, items: items)),
-              SBFiles.writeAtomic(json, listPath) else { return 0 }
-        return items.count
+        return .handedOver(items.count)
     }
 
     /// Start the holder with the masters as its fds 3, 4, 5, … and no other fd of ours.
@@ -144,20 +159,30 @@ enum SBHandoff {
 
     // MARK: New app
 
+    /// What the holder gave: the terminals, their masters, and the open connection (the
+    /// holder lets go only when `finish` says every terminal was adopted).
+    struct Received {
+        let items: [Item]
+        let fds: [Int32]
+        let socket: Int32
+    }
+
     /// Take the terminals from the holder, if the app that ran before handed them over.
     /// Runs off the main thread.
-    nonisolated static func receive() -> (items: [Item], fds: [Int32])? {
+    nonisolated static func receive() -> Received? {
         guard let data = FileManager.default.contents(atPath: listPath),
               let list = try? JSONDecoder().decode(List.self, from: data) else { return nil }
-        try? FileManager.default.removeItem(atPath: listPath)
-        guard list.v == version, Date().timeIntervalSince1970 - list.at < 110, !list.items.isEmpty else { return nil }
+        guard list.v == version, Date().timeIntervalSince1970 - list.at < 110, !list.items.isEmpty else {
+            try? FileManager.default.removeItem(atPath: listPath)
+            return nil
+        }
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
         guard s >= 0 else { return nil }
-        defer { close(s) }
+        _ = fcntl(s, F_SETFD, FD_CLOEXEC)
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(list.socket.utf8)
-        guard pathBytes.count < MemoryLayout.size(ofValue: addr.sun_path) else { return nil }
+        guard pathBytes.count < MemoryLayout.size(ofValue: addr.sun_path) else { close(s); return nil }
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in
             for (i, b) in pathBytes.enumerated() { raw[i] = b }
         }
@@ -169,7 +194,7 @@ enum SBHandoff {
             if rc == 0 { connected = true; break }
             usleep(100_000)
         }
-        guard connected, write(s, "GET\n", 4) == 4 else { return nil }
+        guard connected, write(s, "GET\n", 4) == 4 else { close(s); return nil }
         var tv = timeval(tv_sec: 10, tv_usec: 0)
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -181,14 +206,25 @@ enum SBHandoff {
             guard text.hasPrefix("F"), text.count >= 7,
                   let start = Int(text.dropFirst(1).prefix(3)), let n = Int(text.dropFirst(4).prefix(3)),
                   got.count == n else { got.forEach { close($0) }; break }
-            for (k, fd) in got.enumerated() where start + k < fds.count { fds[start + k] = fd }
+            for (k, fd) in got.enumerated() {
+                if start + k < fds.count { fds[start + k] = fd } else { close(fd) }
+            }
         }
         guard done, !fds.contains(-1) else {
+            // The holder keeps its copies and waits for another try.
             fds.forEach { if $0 >= 0 { close($0) } }
+            close(s)
             return nil
         }
-        _ = write(s, "OK\n", 3)
-        return (list.items, fds)
+        return Received(items: list.items, fds: fds, socket: s)
+    }
+
+    /// Every terminal has its pty: tell the holder to let go, and clean up.
+    nonisolated static func finish(_ r: Received) {
+        _ = write(r.socket, "OK\n", 3)
+        close(r.socket)
+        try? FileManager.default.removeItem(atPath: listPath)
+        try? FileManager.default.removeItem(atPath: stateDir)
     }
 
     /// One 8-byte message and the fds that came with it.
@@ -205,7 +241,11 @@ enum SBHandoff {
                         var msg = msghdr(msg_name: nil, msg_namelen: 0, msg_iov: iovp, msg_iovlen: 1,
                                          msg_control: ctl.baseAddress, msg_controllen: socklen_t(ctl.count), msg_flags: 0)
                         let r = recvmsg(s, &msg, 0)
-                        if r > 0 { fds += parseRights(ctl, Int(msg.msg_controllen)) }
+                        if r > 0 {
+                            let got = parseRights(ctl, Int(msg.msg_controllen))
+                            got.forEach { _ = fcntl($0, F_SETFD, FD_CLOEXEC) }   // never into a child program
+                            fds += got
+                        }
                         return r
                     }
                 }
@@ -241,7 +281,8 @@ enum SBHandoff {
     /// order and sessions. Returns the registry keys of the sessions that came back this
     /// way, so the normal restore skips them.
     @MainActor
-    static func adopt(_ items: [Item], _ fds: [Int32]) -> Set<String> {
+    static func adopt(_ received: Received) -> Set<String> {
+        let items = received.items, fds = received.fds
         var covered = Set<String>()
         var lastInSession: [String: String] = [:]     // ws → last terminal id (tabs keep their order)
         var lastInTab: [String: String] = [:]         // old tab → its first terminal's new id
@@ -258,14 +299,14 @@ enum SBHandoff {
                                             tabOf: lastInSession[item.ws], adopt: pty, ws: item.ws)?.id
                 if let newID { lastInTab[item.tab] = newID }
             }
-            guard let newID else { close(fd); continue }
+            // A terminal whose core did not start never took the fd.
+            guard let newID, SessionsAPI.surface(id: newID)?.surface != nil else { close(fd); continue }
             // The shell reports its folder again at its next prompt; until then, the old one.
             if !item.cwd.isEmpty, let view = SessionsAPI.surface(id: newID), view.pwd == nil { view.pwd = item.cwd }
             lastInSession[item.ws] = newID
             if item.selected { selectedNew = newID }
             if let k = item.key { covered.insert(k) }
         }
-        try? FileManager.default.removeItem(atPath: stateDir)
         // The session that was in front is in front again (without taking the screen).
         if let id = selectedNew, let view = SessionsAPI.surface(id: id),
            let w = BaseTerminalController.controller(owning: view)?.window {

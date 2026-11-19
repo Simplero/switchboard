@@ -111,7 +111,8 @@ final class Switchboard {
             // Terminals the app before an update handed over: their programs still run.
             var handedOver = Set<String>()
             if let got = await Task.detached(priority: .userInitiated, operation: { SBHandoff.receive() }).value {
-                handedOver = SBHandoff.adopt(got.items, got.fds)
+                handedOver = SBHandoff.adopt(got)
+                SBHandoff.finish(got)
             }
             await scan()
             if restoring || !handedOver.isEmpty {

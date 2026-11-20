@@ -330,7 +330,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
             // All new_window actions force our app to be active, so that the new
             // window is focused and visible.
-            NSApp.activate(ignoringOtherApps: true)
+            if !SBPaths.quiet { NSApp.activate(ignoringOtherApps: true) }
         }
 
         // Setup our undo
@@ -564,7 +564,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
             // We also activate our app so that it becomes front. This may be
             // necessary for the dock menu.
-            if select { NSApp.activate(ignoringOtherApps: true) }
+            if select && !SBPaths.quiet { NSApp.activate(ignoringOtherApps: true) }
         }
 
         // It takes an event loop cycle until the macOS tabGroup state becomes
@@ -1306,19 +1306,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             // are closing a tabbed window, we want to set the cascade point to be
             // the next cascade point from this window.
             if focusedWindow != window {
-                // The cascadeTopLeft call below should NOT move the window. Starting with
-                // macOS 15, we found that specifically when used with the new window snapping
-                // features of macOS 15, this WOULD move the frame. So we keep track of the
-                // old frame and restore it if necessary. Issue:
-                // https://github.com/ghostty-org/ghostty/issues/2565
-                let oldFrame = focusedWindow.frame
-
-                Self.lastCascadePoint = focusedWindow.cascadeTopLeft(from: .zero)
-
-                if focusedWindow.frame != oldFrame {
-                    focusedWindow.setFrame(oldFrame, display: true)
-                }
-
+                // Switchboard: no cascade here. Ghostty called cascadeTopLeft on the window you
+                // work in, which can move or resize it on macOS 15 and later (window snapping,
+                // https://github.com/ghostty-org/ghostty/issues/2565), and set it back only if
+                // the change came at once. This runs for every closed tab and every spare that
+                // is thrown away (the new-session form makes and drops spares). Switchboard has
+                // one window, so there is nothing to cascade.
+                SessionSwitchLog.did(sessionsSpare ? "a spare Claude was closed" : "a tab was closed")
                 return
             }
 
@@ -1338,6 +1332,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     override func windowDidMove(_ notification: Notification) {
         super.windowDidMove(notification)
         self.fixTabBar()
+        if let window, !sessionsSpare { SessionSwitchLog.frameChanged(window) }
 
         // Whenever we move save our last position for the next start.
         LastWindowPosition.shared.save(window)
@@ -1345,6 +1340,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     override func windowDidResize(_ notification: Notification) {
         super.windowDidResize(notification)
+        if let window, !sessionsSpare { SessionSwitchLog.frameChanged(window) }
 
         // Whenever we resize save our last position and size for the next start.
         LastWindowPosition.shared.save(window)

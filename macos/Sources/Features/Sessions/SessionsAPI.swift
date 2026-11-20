@@ -433,6 +433,19 @@ final class SessionsAPI {
             return (200, ["back": h.back, "forward": h.forward, "current": (h.current as Any?) ?? NSNull(),
                           "can_back": h.canGoBack, "can_forward": h.canGoForward,
                           "menu": menu.items.map { $0.isSeparatorItem ? "—" : ($0.state == .on ? "✓ " : "") + $0.title }])
+        case ("POST", "/sb/framecheck"):
+            // For checks: the Switchboard window's frame (the tab in front and every tab), and a
+            // way to move it the way a person would ({"set": [x, y, w, h]}) or to ask for a
+            // spare like the new-session form does ({"want": login dir, "" for none}).
+            guard let main = SessionsAPI.mainWindow() else { return (404, ["error": "no window"]) }
+            let front = main.tabGroup?.selectedWindow ?? main
+            if let f = req.json["set"] as? [Double], f.count == 4 {
+                front.setFrame(NSRect(x: f[0], y: f[1], width: f[2], height: f[3]), display: true)
+            }
+            if let l = req.json["want"] as? String { SBSpares.shared.want(l.isEmpty ? nil : l) }
+            func r(_ w: NSWindow) -> [Int] { [Int(w.frame.minX), Int(w.frame.minY), Int(w.frame.width), Int(w.frame.height)] }
+            return (200, ["front": r(front), "tabs": (front.tabGroup?.windows ?? [front]).map(r),
+                          "spares": SBSpares.shared.spares.values.compactMap { $0.controller.window }.map(r)])
         case ("GET", "/sb/spares"):
             // For checks: the spares (Claude started ahead of time, one per login).
             return (200, ["spares": SBSpares.shared.checkInfo()])
@@ -528,13 +541,16 @@ final class SessionsAPI {
     }
 
     /// The Switchboard window: the tab group that holds the sessions (the biggest one,
-    /// if something opened a second window).
+    /// if something opened a second window), as its tab in front. Only that tab has the
+    /// frame you see: a tab in the background keeps the frame it had when it was last in
+    /// front, so a spare sized like it was too small, and a frame taken from it was old.
     static func mainWindow() -> NSWindow? {
         let all = allControllers().filter { $0 is TerminalController }.compactMap { $0.window }
         // Visible windows first; while the app starts hidden (a restart in the background),
         // any terminal window, so new sessions still join one window.
         let shown = all.filter { $0.isVisible || $0.isMiniaturized }
-        return (shown.isEmpty ? all : shown).max { ($0.tabGroup?.windows.count ?? 1) < ($1.tabGroup?.windows.count ?? 1) }
+        let biggest = (shown.isEmpty ? all : shown).max { ($0.tabGroup?.windows.count ?? 1) < ($1.tabGroup?.windows.count ?? 1) }
+        return biggest.map { $0.tabGroup?.selectedWindow ?? $0 }
     }
 
     /// Show a session: the tab of it you used last (a shell tab, say), else its own terminal.
@@ -693,12 +709,16 @@ final class SessionsAPI {
     static func adoptSpare(_ controller: TerminalController) -> (id: String, tab: String, ws: String)? {
         guard let window = controller.window, let view = controller.surfaceTree.root?.leaves().first,
               let host = mainWindow() else { return nil }
+        // The window keeps the place and size you gave it: the spare joins with that frame.
+        let frame = host.frame
+        if window.frame != frame { window.setFrame(frame, display: false) }
         let last = host.tabGroup?.windows.last ?? host
         guard last.addTabbedWindowSafely(window, ordered: .above) else { return nil }
         controller.sessionsWorkspace = UUID().uuidString
         SessionSwitchLog.because("a new session")
         last.tabGroup?.selectedWindow = window
         controller.showWindowSafely(nil)
+        if window.frame != frame { window.setFrame(frame, display: true) }
         controller.focusSurface(view)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { controller.relabelTabs() }
         return (view.id.uuidString, ScriptTab.stableID(controller: controller), controller.sessionsWorkspace)
@@ -777,6 +797,7 @@ final class SessionsAPI {
         // end of it (the macOS tab bar is hidden; the sidebar and the panel show them).
         let parent = surface(id: tabOf).flatMap { BaseTerminalController.controller(owning: $0)?.window }
         let host = parent ?? mainWindow()
+        SessionSwitchLog.did(parent == nil ? "a new session tab" : "a new tab in a session")
         let controller: TerminalController
         if let host, let tab = TerminalController.newTab(appDelegate.ghostty, from: parent ?? host.tabGroup?.windows.last ?? host,
                                                           withBaseConfig: config, select: focus) {

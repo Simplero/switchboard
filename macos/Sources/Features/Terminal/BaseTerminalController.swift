@@ -324,7 +324,7 @@ class BaseTerminalController: NSWindowController,
         DispatchQueue.main.async {
             Ghostty.moveFocus(to: view)
             view.window?.makeKeyAndOrderFront(nil)
-            if !NSApp.isActive {
+            if !NSApp.isActive && !SBPaths.quiet {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }

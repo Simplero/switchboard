@@ -83,6 +83,14 @@ enum SBProcesses {
     }
 
     /// The program with this process id is a shell (zsh, bash, fish…).
+    /// The program name of a process (cheap: no arguments or environment read).
+    static func name(_ pid: Int) -> String? {
+        guard pid > 0 else { return nil }
+        var buf = [CChar](repeating: 0, count: 256)
+        guard proc_name(Int32(pid), &buf, UInt32(buf.count)) > 0 else { return nil }
+        return String(cString: buf)
+    }
+
     static func isShell(_ pid: Int) -> Bool {
         guard pid > 0 else { return false }
         var buf = [CChar](repeating: 0, count: 256)

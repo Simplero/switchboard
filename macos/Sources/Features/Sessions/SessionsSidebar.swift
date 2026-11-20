@@ -350,9 +350,15 @@ final class SessionsStore: ObservableObject {
         // or another terminal would then run twice: ask first, and end it there.
         if Switchboard.shared.runningElsewhere(k) != nil {
             let alert = NSAlert()
-            alert.messageText = "“\(name)” still runs outside Switchboard"
-            alert.informativeText = "It runs in cmux or another terminal. Reopen it here ends it there (its tab there stays, at a shell prompt) and resumes the same conversation here."
-            alert.addButton(withTitle: "Reopen here")
+            if Switchboard.shared.entry(k)?.backend == "claude-app" {
+                alert.messageText = "“\(name)” runs in the Claude app"
+                alert.informativeText = "Move here stops it in the Claude app and resumes the same conversation here. After that, continue it only here: if you type in it in the Claude app again, the conversation splits in two."
+                alert.addButton(withTitle: "Move here")
+            } else {
+                alert.messageText = "“\(name)” still runs outside Switchboard"
+                alert.informativeText = "It runs in cmux or another terminal. Reopen it here ends it there (its tab there stays, at a shell prompt) and resumes the same conversation here."
+                alert.addButton(withTitle: "Reopen here")
+            }
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { picked = nil; return }
             send(["op": "open", "k": k, "end_elsewhere": true])

@@ -17,7 +17,28 @@ enum SessionSwitchLog {
     static var path: String { SBPaths.data + "/switches.log" }
 
     /// A Switchboard action is about to show a session.
-    static func because(_ text: String) { reason = (text, Date()) }
+    static func because(_ text: String) { reason = (text, Date()); did(text) }
+
+    /// The last thing Switchboard did, for a window move nobody asked for.
+    private static var lastAction: (text: String, at: Date)?
+    static func did(_ text: String) { lastAction = (text, Date()) }
+
+    /// The window's frame at the last look (the tab in front).
+    private static var lastFrame: NSRect?
+
+    /// The window moved or changed size, and not by your mouse: one line with the old and
+    /// the new frame and what happened just before. (A drag or a resize by you is not logged.)
+    static func frameChanged(_ w: NSWindow) {
+        guard (w.tabGroup?.selectedWindow ?? w) === w else { return }
+        let f = w.frame
+        defer { lastFrame = f }
+        guard let old = lastFrame, old != f, !w.inLiveResize, NSEvent.pressedMouseButtons == 0,
+              !w.styleMask.contains(.fullScreen) else { return }
+        func r(_ x: NSRect) -> String { "\(Int(x.minX)),\(Int(x.minY)) \(Int(x.width))×\(Int(x.height))" }
+        var before = "nothing Switchboard did in the last 3 s"
+        if let a = lastAction, Date().timeIntervalSince(a.at) < 3 { before = a.text }
+        line("Window \(old.size == f.size ? "moved" : "changed size"): \(r(old)) → \(r(f)). Just before: \(before). AppKit: \(describe(NSApp.currentEvent))")
+    }
 
     /// The same, unless a more specific reason came just before (the sidebar, a key).
     static func becauseIfNone(_ text: String) {

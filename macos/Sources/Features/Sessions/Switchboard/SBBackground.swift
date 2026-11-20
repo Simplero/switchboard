@@ -20,6 +20,8 @@ enum SBBackground {
         /// The /rename name of a Claude conversation.
         let transcriptTitle: String?
         let transcriptMtime: Double?
+        /// A program the Claude app runs (no terminal), not one in a terminal.
+        var inClaudeApp = false
     }
 
     private static let lock = NSLock()
@@ -69,7 +71,7 @@ enum SBBackground {
 
     /// The agents in terminals that are not Switchboard's (cmux, Terminal, an editor): one per
     /// terminal (the oldest), only those with a conversation id. Processes without a terminal
-    /// (`claude -p`, the Claude app) are not sessions and are skipped.
+    /// (`claude -p`) are not sessions and are skipped; the Claude app's are in SBClaudeApp.
     static func agentsElsewhere(notOn ttys: [String]) -> [Agent] {
         let ours = Set(ttys.compactMap { SBProcesses.deviceOf(ttyPath: $0) })
         var best: [UInt32: (pid: pid_t, kind: String, args: [String], env: [String: String])] = [:]

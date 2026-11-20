@@ -9,6 +9,9 @@ import Foundation
 enum SBPaths {
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
     static let overridden: Bool = !(ProcessInfo.processInfo.environment["SWITCHBOARD_DATA"] ?? "").isEmpty
+    /// A test copy (SWITCHBOARD_QUIET) never comes to the front by itself: its new tabs and
+    /// focus changes do not activate it, so it cannot cover the window you work in.
+    static let quiet = ProcessInfo.processInfo.environment["SWITCHBOARD_QUIET"] != nil
     static let data: String = {
         let p = ProcessInfo.processInfo.environment["SWITCHBOARD_DATA"] ?? ""
         let dir = p.isEmpty ? home + "/.config/session-inbox" : p
@@ -165,6 +168,8 @@ struct SBEntry: Codable {
     var pinned: Int?
     /// A pinned shell: the command it runs (lazygit). Opening the pin starts it again.
     var pin_cmd: String?
+    /// Known only from the Claude app (never opened here): it goes when the app archives it.
+    var app_only: Bool?
 
     /// The end of the terminal, for the summary. Not saved.
     var tail: String? = nil
@@ -174,7 +179,7 @@ struct SBEntry: Codable {
              closed_at, closed_reason, opening_at, workspace_id, surface_id, pid, last_seen, resume_cmd, backend,
              screen, working_line, last_message, last_message_at, last_activity, artifacts, summary, summary_key,
              split, state, parked, archived, archived_at, ack_key, was, closing, tab_title, shared_ws,
-             pinned, pin_cmd
+             pinned, pin_cmd, app_only
     }
 
     init(key: String, agent: String?) {
@@ -196,7 +201,7 @@ struct SBEntry: Codable {
         last_activity = v(.last_activity); artifacts = v(.artifacts); summary = v(.summary); summary_key = v(.summary_key)
         split = v(.split); state = v(.state); parked = v(.parked); archived = v(.archived); archived_at = v(.archived_at)
         ack_key = v(.ack_key); was = v(.was); closing = v(.closing); tab_title = v(.tab_title); shared_ws = v(.shared_ws)
-        pinned = v(.pinned); pin_cmd = v(.pin_cmd)
+        pinned = v(.pinned); pin_cmd = v(.pin_cmd); app_only = v(.app_only)
     }
 
     var isOpen: Bool { open == true }

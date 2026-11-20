@@ -42,6 +42,9 @@ final class Switchboard {
     private var switching = Set<String>()
     private var switchOpening = false
     private var elsewhereAt: Double = 0
+    private var claudeAppAt: Double = 0
+    /// Claude app sessions removed from the list here: not listed again while the app keeps them.
+    private var removedFromApp = Set(UserDefaults.standard.stringArray(forKey: "sessions.claudeApp.removed") ?? [])
     /// Sessions that ran in another terminal at the last look (shown as "elsewhere", not as closed).
     private var elsewhereKeys = Set<String>()
     /// Pages each open session gave you (docs, artifacts, dev pages), by conversation id.
@@ -63,6 +66,8 @@ final class Switchboard {
     static let scanEvery = 1.5
     /// How often to look for sessions in other terminals (cmux, Terminal…).
     static let elsewhereEvery = 5.0
+    /// How often to read the Claude app's session list.
+    static let claudeAppEvery = 30.0
     static let defaultFolder = "~/Simplero"
     private let summariesOn = ProcessInfo.processInfo.environment["SWITCHBOARD_NO_SUMMARIES"] == nil
 
@@ -239,13 +244,21 @@ final class Switchboard {
         // The spares' Claude runs here too: not "elsewhere", though not a session yet.
         let ours = ttys + SBSpares.shared.ttys
         let agents = await Task.detached(priority: .utility) { SBBackground.agents(onTTYs: ttys) }.value
+        var app: SBClaudeApp.Index?
+        if t0 - claudeAppAt >= Self.claudeAppEvery {
+            claudeAppAt = t0
+            app = await Task.detached(priority: .utility) { SBClaudeApp.index() }.value
+        }
         var outside: [SBBackground.Agent]?
         if t0 - elsewhereAt >= Self.elsewhereEvery {
             elsewhereAt = t0
-            outside = await Task.detached(priority: .utility) { SBBackground.agentsElsewhere(notOn: ours) }.value
+            outside = await Task.detached(priority: .utility) {
+                SBBackground.agentsElsewhere(notOn: ours) + SBClaudeApp.agents()
+            }.value
         }
         merge(t0: t0, agents: agents)
         if let outside { mergeElsewhere(outside) }
+        if let app { mergeClaudeApp(app) }
         SBSpares.shared.tick()
         publish()
         if t0 - linksAt >= Self.linksEvery { linksAt = t0; refreshLinks() }
@@ -344,10 +357,11 @@ final class Switchboard {
                 n.open = false
                 // Sorted with the other closed sessions by when it last did something.
                 n.closed_at = a.transcriptMtime ?? now
+                n.app_only = a.inClaudeApp ? true : nil
                 return n
             }()
-            e.backend = "cmux"
-            e.closed_reason = "cmux"
+            e.backend = a.inClaudeApp ? "claude-app" : "cmux"
+            e.closed_reason = e.backend
             e.pid = a.pid
             e.login_dir = a.loginDir
             if let mt = a.transcriptMtime { e.last_activity = mt }
@@ -365,6 +379,73 @@ final class Switchboard {
             seenElsewhere.insert(key)
         }
         if !agents.isEmpty { save() }
+    }
+
+    /// The Claude app's Code sessions that do not run there now: listed as closed ("Claude
+    /// app"), so the sidebar and search show them, with the app's names. Opening one resumes
+    /// it here. One archived in the app (or gone from it) goes here too, unless it was opened
+    /// here since: then it is a Switchboard session like any other.
+    private func mergeClaudeApp(_ app: SBClaudeApp.Index) {
+        let now = self.now
+        var listed = Set<String>()
+        var changed = false
+        for s in app.sessions {
+            let key = "claude:\(s.sid)"
+            listed.insert(key)
+            let known = reg.sessions[key]
+            if known == nil && removedFromApp.contains(s.sid) { continue }
+            // Running here, opening here, in a login switch, running in the app (mergeElsewhere
+            // has it), or a Switchboard session that has not been in the app since.
+            if let x = known, x.isOpen || now - (x.opening_at ?? 0) < 25 || switching.contains(key)
+                || elsewhereKeys.contains(key) || x.backend != "claude-app" { continue }
+            var e = known ?? {
+                var n = SBEntry(key: key, agent: "claude")
+                n.session_id = s.sid
+                n.cls = defaultClass(s.cwd)
+                n.labels = []
+                n.first_seen = now
+                n.custom_name = false
+                n.open = false
+                n.app_only = true
+                n.backend = "claude-app"
+                n.closed_reason = "claude-app"
+                return n
+            }()
+            let before = [e.name, e.cwd, e.login_dir, e.last_message, e.closed_at.map { "\($0)" }]
+            if e.custom_name != true, !s.title.isEmpty { e.name = s.title }
+            if e.name == nil || e.name!.isEmpty {
+                e.name = SBBackground.lookupConversation(s.sid)?.firstAsk ?? sessionName(e, transcriptTitle: nil, terminalTitle: "")
+            }
+            e.cwd = s.cwd ?? e.cwd
+            if let l = s.loginDir { e.login_dir = l }
+            e.last_message = s.wrapUp ?? e.last_message
+            e.closed_at = max(e.closed_at ?? 0, s.lastActivity)
+            e.last_activity = max(e.last_activity ?? 0, s.lastActivity)
+            e.state = stateOf(e)
+            if known == nil || before != [e.name, e.cwd, e.login_dir, e.last_message, e.closed_at.map { "\($0)" }] {
+                reg.sessions[key] = e
+                changed = true
+            }
+        }
+        if app.complete {
+            let gone = reg.sessions.filter { k, e in
+                e.app_only == true && e.backend == "claude-app" && !e.isOpen && e.pinned == nil && !listed.contains(k)
+                    && !elsewhereKeys.contains(k) && now - (e.opening_at ?? 0) >= 25 && !switching.contains(k)
+            }.keys
+            for k in gone { reg.sessions.removeValue(forKey: k) }
+            if !gone.isEmpty { changed = true }
+            let inApp = Set(app.sessions.map(\.sid))
+            if !removedFromApp.isSubset(of: inApp) {
+                removedFromApp.formIntersection(inApp)
+                UserDefaults.standard.set(Array(removedFromApp), forKey: "sessions.claudeApp.removed")
+            }
+        }
+        if changed { save() }
+    }
+
+    /// Where a session that runs outside Switchboard runs, for messages.
+    private func elsewhereName(_ e: SBEntry?) -> String {
+        e?.backend == "claude-app" ? "the Claude app" : "cmux or another terminal"
     }
 
     private func merge(t0: Double, agents: [SBBackground.Agent]) {
@@ -417,7 +498,13 @@ final class Switchboard {
             }
             if e.custom_name != true {
                 e.cwd = e.cwd ?? cwd
-                e.name = sessionName(e, transcriptTitle: a.transcriptTitle, terminalTitle: title)
+                if e.backend == "claude-app", a.transcriptTitle == nil, let n = e.name, !n.isEmpty {
+                    // Moved here from the Claude app: it keeps the app's name (most of the app's
+                    // conversation files do not have it), not the terminal's title.
+                    e.custom_name = true
+                } else {
+                    e.name = sessionName(e, transcriptTitle: a.transcriptTitle, terminalTitle: title)
+                }
             }
             e.shared_ws = (perTab[wid] ?? 0) > 1
             e.tab_title = nil
@@ -432,6 +519,7 @@ final class Switchboard {
             e.branch = a.branch
             e.last_seen = now
             e.backend = "ghostty"
+            e.app_only = nil
             // You switch logins on purpose (quota), so the running login is the truth.
             // Reopen always uses the login a session last ran with.
             e.login_dir = a.loginDir
@@ -835,7 +923,7 @@ final class Switchboard {
         switch op {
         case "open", "unpark":
             if msg["end_elsewhere"] as? Bool == true, !(await endElsewhere(k)) {
-                return (false, "It still runs outside Switchboard (cmux or another terminal) and did not stop. Close it there, then reopen it here.")
+                return (false, "It still runs outside Switchboard (\(elsewhereName(reg.sessions[k]))) and did not stop. Close it there, then reopen it here.")
             }
             let r = openEntry(k, focus: focus)
             return (r.ok, r.message)
@@ -905,7 +993,7 @@ final class Switchboard {
         if switching.contains(k) && !switchOpening { return (true, "Switching login…", nil) }
         // The same conversation must never run in two places.
         if runningElsewhere(k) != nil {
-            return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (cmux or another terminal). Click its row in the sidebar to move it here.", nil)
+            return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (\(elsewhereName(e))). Click its row in the sidebar to move it here.", nil)
         }
         guard let cmd = resumeCommand(e) else { return (false, "No way to resume this session.", nil) }
         guard let sf = openAgentTerminal(cwd: e.cwd, command: cmd, loginDir: e.login_dir, focus: focus, split: split, tabOf: tabOf) else {
@@ -1000,7 +1088,7 @@ final class Switchboard {
         if e.isOpen && e.screen == "working" { return (false, "It is working right now. Stop it (Ctrl+C) or wait, then switch.") }
         guard !switching.contains(k) else { return (false, "It is switching login already.") }
         if !e.isOpen, runningElsewhere(k) != nil {
-            return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (cmux or another terminal). Click its row in the sidebar to move it here first.")
+            return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (\(elsewhereName(e))). Click its row in the sidebar to move it here first.")
         }
         switching.insert(k)
         defer { switching.remove(k) }
@@ -1218,6 +1306,11 @@ final class Switchboard {
 
     func forget(_ k: String) -> (Bool, String) {
         if reg.sessions[k]?.isOpen == true { return (false, "Close it first.") }
+        // From the Claude app: the app still has it, so do not list it again.
+        if let e = reg.sessions[k], e.backend == "claude-app", let sid = e.session_id {
+            removedFromApp.insert(sid)
+            UserDefaults.standard.set(Array(removedFromApp), forKey: "sessions.claudeApp.removed")
+        }
         reg.sessions.removeValue(forKey: k)
         save()
         return (true, "Removed from the list.")

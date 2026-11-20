@@ -162,6 +162,7 @@ final class SBSpares {
         if login != "~/.claude" { config.environmentVariables = ["CLAUDE_CONFIG_DIR": SBPaths.expand(login)] }
         let c = TerminalController(app, withBaseConfig: config)
         c.sessionsSpare = true   // before the window exists: nothing may take it for a session
+        SessionSwitchLog.did("a spare Claude was made")
         guard let w = c.window, let view = c.surfaceTree.root?.leaves().first else {
             Self.close(c)
             failedAt[login] = now

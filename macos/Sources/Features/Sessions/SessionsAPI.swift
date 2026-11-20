@@ -313,6 +313,23 @@ final class SessionsAPI {
         case ("POST", "/sb/phonelink/report"):
             Task { @MainActor in await SBAccount.shared.report() }
             return (200, ["ok": true])
+        case ("POST", "/sb/docpane"):
+            // For checks: open a page next to the session of a terminal (?id), as a Doc link does.
+            guard let view = surface(req.json["id"] as? String),
+                  let controller = BaseTerminalController.controller(owning: view) as? TerminalController,
+                  let url = URL(string: req.json["url"] as? String ?? "") else { return (404, ["error": "no such terminal"]) }
+            if req.json["close"] as? Bool == true { SessionsDocPanes.shared.close(session: controller.sessionsWorkspace) }
+            else { SessionsDocPanes.shared.open(url, session: controller.sessionsWorkspace) }
+            return (200, ["session": controller.sessionsWorkspace])
+        case ("GET", "/sb/docpane"):
+            // For checks: the page next to a terminal's session, its size, and the terminal's grid.
+            guard let view = surface(req.query["id"]),
+                  let controller = BaseTerminalController.controller(owning: view) as? TerminalController else { return (404, ["error": "no such terminal"]) }
+            let page = SessionsDocPanes.shared.pages[controller.sessionsWorkspace]
+            return (200, ["open": page != nil, "title": page?.title ?? "", "url": page?.webView.url?.absoluteString ?? "",
+                          "in_window": page?.webView.window === controller.window,
+                          "pane_width": page?.webView.frame.width ?? 0,
+                          "grid": SessionsAPI.gridSize(view).map { [$0.cols, $0.rows] } ?? []])
         case ("GET", "/sb/spares"):
             // For checks: the spares (Claude started ahead of time, one per login).
             return (200, ["spares": SBSpares.shared.checkInfo()])

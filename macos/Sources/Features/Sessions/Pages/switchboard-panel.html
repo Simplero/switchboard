@@ -141,9 +141,9 @@ function usageHTML(s){
   return `<span class="use">${meter(u.h5, '5h', 'Usage in the current 5-hour window')}${meter(u.wk, 'Week', 'Usage this week')}${spark}</span>`;
 }
 
-// Links: [kind, url, title, login]. Dev pages open in Chrome; Docs and artifacts in Arc
-// (an artifact in the Space of the login that published it).
-const LINK = {dev: ['globe', 'Opens in Chrome'], doc: ['doc', 'Opens in Arc'], artifact: ['spark', 'Opens in Arc']};
+// Links: [kind, url, title, login]. Dev pages open in Chrome; Docs next to the session (a pane
+// on the right); artifacts in Arc (in the Space of the login that published them).
+const LINK = {dev: ['globe', 'Opens in Chrome'], doc: ['doc', 'Opens next to this session'], artifact: ['spark', 'Opens in Arc']};
 function linkHTML(l){
   const [kind, url, title, login] = l, look = LINK[kind] || LINK.dev;
   let port = '';

@@ -60,6 +60,8 @@ final class SBAccount: NSObject, ObservableObject {
     }()
 
     var signedIn: Bool { apiKey != nil }
+    /// The mobile key, for Simplero calls made for you (the page pane's sign-in link).
+    var mobileKey: String? { apiKey }
 
     // MARK: Start
 

@@ -586,7 +586,17 @@ struct SessionsWebSidebar: NSViewRepresentable {
 enum SessionsLinkOpener {
     static let routerID = "com.simplero.link-router"
 
-    static func open(_ url: URL) {
+    /// A Simplero Doc opens next to the session in front (SessionsDocPanes); `nextToSession:
+    /// false` (the pane's "Open in your browser") sends it to the browser.
+    static func open(_ url: URL, nextToSession: Bool = true) {
+        if nextToSession, SessionsDocPanes.isDoc(url), Thread.isMainThread {
+            let shown: Bool = MainActor.assumeIsolated {
+                guard let ws = SessionsDocPanes.frontSession else { return false }
+                SessionsDocPanes.shared.open(url, session: ws)
+                return true
+            }
+            if shown { return }
+        }
         let web = ["http", "https"].contains(url.scheme?.lowercased() ?? "")
         if web, let router = NSWorkspace.shared.urlForApplication(withBundleIdentifier: routerID) {
             NSWorkspace.shared.open([url], withApplicationAt: router, configuration: NSWorkspace.OpenConfiguration()) { _, error in

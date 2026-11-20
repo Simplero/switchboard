@@ -279,7 +279,10 @@ final class SessionsStore: ObservableObject {
 struct SessionsSidebarContainer<Content: View>: View {
     @AppStorage("sessions.sidebar.visible") private var visible = true
     @AppStorage("sessions.sidebar.width") private var width: Double = 460
+    @AppStorage("sessions.docpane.width") private var paneWidth: Double = 560
     @State private var dragStart: Double?
+    @State private var paneDragStart: Double?
+    @ObservedObject private var panes = SessionsDocPanes.shared
     let surfaceIDs: [String]
     /// Off for the quick terminal: the sidebar and panel belong to the session window.
     let enabled: Bool
@@ -336,7 +339,41 @@ struct SessionsSidebarContainer<Content: View>: View {
                 WebBanner()
                 content
             }
+            // The terminal keeps room for its work; the page gives way first.
+            .frame(minWidth: panes.pages.isEmpty ? nil : 420)
+            .layoutPriority(1)
+            // A Doc opened from the panel: on the right, next to the session it belongs to.
+            if let ws = sessionID, let page = panes.pages[ws] {
+                Rectangle()
+                    .fill(Color.gray.opacity(0.25))
+                    .frame(width: 1)
+                    .overlay(
+                        Color.clear.frame(width: 7).contentShape(Rectangle())
+                            .onHover { inside in
+                                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                            }
+                            .gesture(DragGesture(minimumDistance: 1)
+                                .onChanged { v in
+                                    if paneDragStart == nil { paneDragStart = paneWidth }
+                                    paneWidth = min(1400, max(320, (paneDragStart ?? paneWidth) - v.translation.width))
+                                }
+                                .onEnded { _ in paneDragStart = nil })
+                    )
+                DocPaneView(page: page) { panes.close(session: ws) }
+                    .frame(minWidth: 320, idealWidth: paneWidth, maxWidth: paneWidth)
+            }
         }
+    }
+
+    /// The session this window belongs to.
+    private var sessionID: String? {
+        for id in surfaceIDs {
+            if let view = SessionsAPI.surface(id: id),
+               let controller = BaseTerminalController.controller(owning: view) as? TerminalController {
+                return controller.sessionsWorkspace
+            }
+        }
+        return nil
     }
 }
 

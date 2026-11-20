@@ -143,6 +143,12 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
 
     // MARK: App → page
 
+    func setColFolder(_ col: Int, _ path: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [path]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.Sessions && Sessions.setColFolder(\(col), \(json)[0])")
+    }
+
     func setFolder(_ path: String) {
         guard let data = try? JSONSerialization.data(withJSONObject: [path]),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -219,6 +225,30 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         case "open":
             guard let k = body["k"] as? String else { return }
             store.open(key: k, via: body["via"] as? String ?? "a click on the sidebar")
+        case "colFolderMenu":
+            // A column shows the sessions of one folder, or of all folders.
+            let col = body["col"] as? Int ?? 0
+            let folders = (body["folders"] as? [[Any]] ?? []).compactMap { f -> (String, Int)? in
+                guard f.count == 2, let p = f[0] as? String else { return nil }
+                return (p, (f[1] as? Int) ?? 0)
+            }
+            let current = body["current"] as? String ?? ""
+            menuActions = []
+            let menu = NSMenu()
+            let head = NSMenuItem(title: "Show the sessions in:", action: nil, keyEquivalent: "")
+            head.isEnabled = false
+            menu.addItem(head)
+            menu.addItem(item("All folders", checked: current.isEmpty) { [weak self] in self?.setColFolder(col, "") })
+            menu.addItem(.separator())
+            if !current.isEmpty && !folders.contains(where: { $0.0 == current }) {
+                menu.addItem(item("\(current)  (0)", checked: true) {})
+            }
+            for (f, n) in folders {
+                menu.addItem(item("\(f)  (\(n))", checked: f == current) { [weak self] in self?.setColFolder(col, f) })
+            }
+            let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
+            let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
+            menu.popUp(positioning: nil, at: point, in: webView)
         case "folderMenu":
             // Where new sessions start: your usual folders, or any folder.
             let folders = body["folders"] as? [String] ?? []

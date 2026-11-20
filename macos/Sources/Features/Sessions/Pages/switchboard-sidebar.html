@@ -71,6 +71,12 @@ button{font:inherit;color:inherit;cursor:default}
 .dirbtn{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:transparent;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600;color:var(--ink2);max-width:240px}
 .dirbtn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dirbtn:hover{border-color:var(--accent)}
+/* A column's folder filter: "All folders", or the one folder it shows (then it stands out). */
+.colfolder{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line2);background:transparent;border-radius:6px;padding:1px 7px;font-size:10.5px;font-weight:500;color:var(--muted2);max-width:100%;min-width:0}
+.colfolder span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.colfolder:hover{color:var(--ink);border-color:var(--accent)}
+.colfolder.on{color:var(--ink);font-weight:650;border-color:var(--ink)}
+.colfolder .x{margin-left:2px;font-weight:600}
 .idhit{margin:6px 10px 10px;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
 .idhit .t{font-weight:700;font-size:13.5px}
 .idhit .m{font-size:12px;color:var(--muted)}
@@ -363,6 +369,8 @@ window.Sessions = {
     if (moved) document.querySelectorAll('#cols .item.sel, #cols .item.sel-ring').forEach(reveal);
   },
   // The folder menu (native) picked a folder for new sessions.
+  // A column's folder filter, from its menu ("" = all folders).
+  setColFolder(ci, p){ const c = colState[ci]; if (!c) return; if (p) c.dir = p; else delete c.dir; store.set('col' + ci, c); render(); },
   setFolder(p){ if (p){ newCwd = p; store.set('newCwd', p); bridge('newFolder', {cwd: p}); render(); } },
   // Files dropped on the page (the app knows their paths; the page only their names).
   droppedFiles(paths){ $('#newform').classList.remove('drop'); if (nf.open) addFiles(paths); },
@@ -569,7 +577,7 @@ function cmp(c){
 function rowsFor(ci){
   ensureOrders();
   const c = colState[ci];
-  const all = data.s.filter(s => !isPin(s));
+  const all = data.s.filter(s => !isPin(s) && inDir(c, s));
   const whereOk = s => c.where === 'any' || (c.where === 'here' ? (s.o && s.be === 'ghostty') : c.where === 'cmux' ? (s.o && s.be !== 'ghostty') : !s.o);
   if (c.where === 'off'){
     // Not running anywhere: parked and closed sessions only.
@@ -654,16 +662,27 @@ function seg(id, options, value, onPick){
   el.onclick = e => { const b = e.target.closest('button'); if (b) onPick(isNaN(+b.dataset.v) ? b.dataset.v : +b.dataset.v); };
 }
 
+// A column can show the sessions of one folder (and its subfolders): c.dir, "~/Brain".
+const inDir = (c, s) => !c.dir || s.cwd === c.dir || (s.cwd || '').startsWith(c.dir + '/');
+
+// The folders sessions run in, the most used first: [[folder, sessions], ...].
+function colFolders(){
+  const n = new Map();
+  for (const s of data.s) if (!isPin(s) && s.cwd) n.set(s.cwd, (n.get(s.cwd) || 0) + 1);
+  return [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
 function colControls(ci){
-  const c = colState[ci], count = f => data.s.filter(s => s.o && !isPin(s) && f(s)).length;
+  const c = colState[ci], count = f => data.s.filter(s => s.o && !isPin(s) && inDir(c, s) && f(s)).length;
   const fchip = (v, label, n, tip) => `<button class="fchip" data-f="${v}" aria-pressed="${c.filter===v}"${tip ? ` title="${tip}"` : ''}>${label} ${n}</button>`;
   const pills = (key, opts) => `<span class="seg">${opts.map(([v,l]) => `<button data-${key}="${v}" aria-pressed="${c[key]===v}">${l}</button>`).join('')}</span>`;
-  const wcount = w => data.s.filter(s => !isPin(s)).filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el) : true).length;
+  const wcount = w => data.s.filter(s => !isPin(s) && inDir(c, s)).filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el) : true).length;
   const wchip = (v, label) => `<button class="fchip" data-w="${v}" aria-pressed="${c.where===v}">${label} ${v === 'any' ? '' : wcount(v)}</button>`;
   return `<div class="ctrl">
     <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
     <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('done','Done',count(isFinished),'The agent finished what you asked: Done, Answered, or marked as handled')}${fchip('all','All',count(()=>true))}</div>
     <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir']])}</div>
+    <div class="row"><button class="colfolder${c.dir ? ' on' : ''}" data-colfolder="${ci}" title="${c.dir ? 'Only sessions in ' + esc(c.dir) + '. Click to pick another folder or all of them.' : 'Only sessions in one folder: click to pick it.'}">${ic('folder',10,2.2)}<span>${esc(c.dir || 'All folders')}</span>${ic('chev',8,2.6)}</button></div>
     <div class="row" title="Sort. Manual: drag rows to put them in your order.">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>
   </div>`;
 }
@@ -1016,6 +1035,12 @@ document.addEventListener('click', e => {
   }
   if (t.closest('#newform')) return;
   const nb = t.closest('[data-new]'); if (nb){ openNew(nb.dataset.new); return; }
+  const cf = t.closest('[data-colfolder]');
+  if (cf){
+    const ci = +cf.dataset.colfolder, r = cf.getBoundingClientRect();
+    bridge('colFolderMenu', {col: ci, folders: colFolders(), current: colState[ci].dir || '', x: r.left, y: r.bottom + 4});
+    return;
+  }
   if (t.closest('#dirbtn')){
     const r = $('#dirbtn').getBoundingClientRect();
     bridge('folderMenu', {folders: folderChoices(), current: newCwd, x: r.left, y: r.bottom + 4});

@@ -1,10 +1,14 @@
 #!/bin/sh
 # Ask Switchboard to close this Claude session (move it to the Archive) once you leave it.
 # merge-pr runs it when nothing is left to do. Without Switchboard it does nothing.
+#   switchboard-close-when-away --park [branch]   park it instead, now (Switchboard's Park asks
+#   for this after the session saved its work on that branch).
 # SWITCHBOARD_API_INFO points a test copy's API file (default: the app's own).
 I="${SWITCHBOARD_API_INFO:-$HOME/.config/session-inbox/ghostty-api.json}"
 if [ -z "$CLAUDE_CODE_SESSION_ID" ] || [ ! -f "$I" ]; then echo "Not a Claude session in Switchboard: nothing to close."; exit 0; fi
 T=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['token'])" "$I")
 P=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['port'])" "$I")
-B=$(python3 -c "import json,sys,os;print(json.dumps({'op':'close_when_away','k':'claude:'+sys.argv[1],'pid':int(os.environ.get('CLAUDE_PID') or 0) or None,'focus':False}))" "$CLAUDE_CODE_SESSION_ID")
+PARK=false; BRANCH=""
+if [ "$1" = "--park" ]; then PARK=true; BRANCH="$2"; fi
+B=$(python3 -c "import json,sys,os;print(json.dumps({'op':'close_when_away','k':'claude:'+sys.argv[1],'pid':int(os.environ.get('CLAUDE_PID') or 0) or None,'focus':False,'park':sys.argv[2]=='true','branch':sys.argv[3]}))" "$CLAUDE_CODE_SESSION_ID" "$PARK" "$BRANCH")
 curl -s -m 5 -H "x-token: $T" -H "Content-Type: application/json" -d "$B" "http://127.0.0.1:$P/sb/op" | python3 -c "import json,sys;print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "Switchboard did not answer."

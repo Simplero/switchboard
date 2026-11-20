@@ -439,7 +439,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         }
         if s.isOpen && s.a != "shell" && !s.isPinned {
             // A shell has nothing to resume, so it cannot be parked or closed "for later".
-            menu.addItem(item("Park (close it, keep it here)") {
+            menu.addItem(item("Park for later (saves its work, frees the room)") {
                 guard store.confirmClose(s.k, action: "Park") else { return }
                 store.send(["op": "park", "k": s.k])
             })

@@ -928,7 +928,7 @@ final class Switchboard {
             }
             let r = openEntry(k, focus: focus)
             return (r.ok, r.message)
-        case "park": return close(k, park: true)
+        case "park": return await park(k)
         case "close": return close(k, park: false)
         case "done": return done(k)
         case "switch": return await switchLogin(k, msg["login"] as? String ?? "", focus: focus)
@@ -948,7 +948,8 @@ final class Switchboard {
         case "rename": return edit(k, name: msg["name"] as? String ?? "")
         case "ack": return ack(k)
         case "forget": return forget(k)
-        case "close_when_away": return closeWhenAway(k, pid: msg["pid"] as? Int)
+        case "close_when_away":
+            return closeWhenAway(k, pid: msg["pid"] as? Int, park: msg["park"] as? Bool == true, branch: msg["branch"] as? String)
         case "send": return send(k, msg["text"] as? String ?? "")
         case "remember_open": return rememberOpen()
         case "pin": return pin(k)
@@ -1006,7 +1007,12 @@ final class Switchboard {
             x.open = false
             x.parked = false
             x.archived = false
+            x.park_branch = nil
             x.surface_id = sf      // the scan ties the agent in this terminal to this session
+        }
+        // Parked after it saved its work: its work tree was freed, so tell it where the work is.
+        if let b = e.park_branch, e.agent == "claude" {
+            typeWhenReady(sf, "You were parked. Your work is on the branch \(b) (a draft PR). Get it back with simplero-slot --branch \(b), work in that slot from now on, and continue where you left off.", since: now, seenAt: nil, quiet: true)
         }
         return (true, "Reopened.", sf)
     }
@@ -1188,7 +1194,7 @@ final class Switchboard {
 
     /// Type the first message into a spare once Claude shows its prompt (it may still be
     /// starting when you press Enter), then Enter.
-    private func typeWhenReady(_ sf: String, _ text: String, since: Double, seenAt: Double?) {
+    private func typeWhenReady(_ sf: String, _ text: String, since: Double, seenAt: Double?, quiet: Bool = false) {
         guard let view = SessionsAPI.surface(id: sf) else { return }   // closed meanwhile
         var seen = seenAt
         if SBSpares.atPrompt(view) {
@@ -1199,12 +1205,13 @@ final class Switchboard {
             seen = nil
         }
         if now - since > 45 {
+            if quiet { return }
             SessionsWeb.shared.webView.evaluateJavaScript("window.Sessions && Sessions.newFailed && Sessions.newFailed()")
             SessionsStore.shared.showFailure("Claude did not get to its prompt within 45 seconds, so your first message was not sent. It is back in the new-session form.")
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            MainActor.assumeIsolated { self.typeWhenReady(sf, text, since: since, seenAt: seen) }
+            MainActor.assumeIsolated { self.typeWhenReady(sf, text, since: since, seenAt: seen, quiet: quiet) }
         }
     }
 
@@ -1306,22 +1313,69 @@ final class Switchboard {
         return (true, handled ? "Marked as handled." : "Back in Needs you.")
     }
 
+    // MARK: Park
+
+    /// Park: close the session to free the room and keep it under Parked. A Claude session in a
+    /// Simplero checkout with work that is not on GitHub yet saves it first: Switchboard asks it
+    /// to put its work on a parked/… branch with a draft PR, free its work tree, and park itself
+    /// (`switchboard-close-when-away --park <branch>`). Other sessions park at once.
+    func park(_ k: String) async -> (Bool, String) {
+        guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
+        guard e.pinned == nil, e.isOpen, e.agent == "claude", let sf = e.surface_id,
+              let cwd = e.cwd.map(SBPaths.expand), Self.isSimpleroCheckout(cwd) else { return close(k, park: true) }
+        let unsaved = await Task.detached(priority: .userInitiated) { SBProcesses.hasUnsavedWork(cwd) }.value
+        guard unsaved, SessionsAPI.sendInput(sf, text: Self.parkMessage(e), enter: true) else { return close(k, park: true) }
+        return (true, "“\(e.name ?? "This session")” saves its work first (a parked/… branch with a draft PR), then parks itself.")
+    }
+
+    /// ~/Simplero or a slot (~/Simplero-3), or a folder in one.
+    static func isSimpleroCheckout(_ path: String) -> Bool {
+        path.range(of: "^" + NSRegularExpression.escapedPattern(for: SBPaths.home) + "/Simplero(-[0-9]+)?(/|$)", options: .regularExpression) != nil
+    }
+
+    /// "Email builder spacing" → "email-builder-spacing".
+    static func parkSlug(_ name: String) -> String {
+        var out = ""
+        for ch in name.lowercased().unicodeScalars {
+            if ch.isASCII && CharacterSet.alphanumerics.contains(ch) { out.unicodeScalars.append(ch) }
+            else if !out.isEmpty && !out.hasSuffix("-") { out += "-" }
+        }
+        let s = String(out.prefix(40)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return s.isEmpty ? "session" : s
+    }
+
+    /// What Switchboard types into a session it parks (one line: Enter sends it).
+    static func parkMessage(_ e: SBEntry) -> String {
+        let name = (e.name ?? "this session").replacingOccurrences(of: "\"", with: "'")
+        let branch = "parked/" + parkSlug(e.name ?? "")
+        return "Park this session for later (from Switchboard). Save your work in progress so your work tree is free: "
+            + "(1) put only the changes this session made, never other sessions' files, on a new branch \(branch) "
+            + "(in ~/Simplero itself: the create-pr way, in a throwaway worktree, then take your hunks out of ~/Simplero); "
+            + "(2) push it; (3) open a draft PR titled \"Parked: \(name)\" whose description says in two lines what is done and what is left, "
+            + "and that it is parked work in progress, not ready for review or merge (no Linear issue, no labels, no changelog); "
+            + "(4) in a slot, run simplero-slot release; (5) as your last step run: switchboard-close-when-away --park \(branch). "
+            + "If nothing of yours needs saving, only run: switchboard-close-when-away --park. "
+            + "Do not ask me anything; if something blocks you, say what and stop."
+    }
+
     // MARK: Close when you leave it
 
     /// Sessions that asked to be closed once you leave them: when they asked, and when their
     /// conversation file last changed 20 s later (after their last answer).
-    private var pendingClose: [String: (at: Double, mtime: Double?)] = [:]
+    private var pendingClose: [String: (at: Double, mtime: Double?, park: Bool, branch: String?)] = [:]
 
     /// A session that has nothing left to do asks to go (merge-pr runs
     /// `switchboard-close-when-away`): it moves to the Archive (Done) once it is not the session
     /// in front, and not before 30 s, so you can read its last answer. The Claude session is
     /// found by its key, else by its process id (after /clear the key may be another one).
-    func closeWhenAway(_ k: String, pid: Int?) -> (Bool, String) {
+    func closeWhenAway(_ k: String, pid: Int?, park: Bool = false, branch: String? = nil) -> (Bool, String) {
         let key = reg.sessions[k]?.isOpen == true ? k
             : pid.flatMap { p in reg.sessions.first(where: { $0.value.isOpen && $0.value.pid == p })?.key }
         guard let key, let e = reg.sessions[key] else { return (false, "This session is not open in Switchboard.") }
         if e.pinned != nil { return (false, "“\(e.name ?? "This session")” is pinned, so it stays.") }
-        pendingClose[key] = (now, nil)
+        let b = branch.flatMap { $0.isEmpty ? nil : $0 }
+        pendingClose[key] = (now, nil, park, b)
+        if park { return (true, "“\(e.name ?? "This session")” parks in a few seconds\(b.map { ": its work is on \($0)" } ?? "").") }
         return (true, "“\(e.name ?? "This session")” moves to the Archive once you leave it.")
     }
 
@@ -1341,10 +1395,11 @@ final class Switchboard {
             }
             if waited >= 20 {
                 let mt = SBBackground.transcript(e.session_id).mtime
-                if p.mtime == nil { pendingClose[k] = (p.at, mt ?? 0) }
+                if p.mtime == nil { pendingClose[k] = (p.at, mt ?? 0, p.park, p.branch) }
                 else if let mt, let was = p.mtime, mt > was { pendingClose[k] = nil; continue }
             }
-            guard waited >= 30, sf != front else { continue }
+            // Park: you asked for it, so it goes while you look at it (after its last answer).
+            guard p.park ? waited >= 10 : (waited >= 30 && sf != front) else { continue }
             // Another tab of the session runs something (a server, an editor): it stays.
             if let view = SessionsAPI.surface(id: sf),
                let c = BaseTerminalController.controller(owning: view) as? TerminalController {
@@ -1355,6 +1410,12 @@ final class Switchboard {
                 if busy { pendingClose[k] = nil; continue }
             }
             pendingClose[k] = nil
+            if p.park {
+                update(k) { $0.park_branch = p.branch }
+                SessionSwitchLog.did("“\(e.name ?? k)” parked itself after saving its work")
+                _ = close(k, park: true)
+                continue
+            }
             SessionSwitchLog.did("“\(e.name ?? k)” asked to close when you left it")
             _ = done(k)
         }

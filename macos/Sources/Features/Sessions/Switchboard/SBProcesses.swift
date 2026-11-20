@@ -106,6 +106,26 @@ enum SBProcesses {
 
     /// The branch checked out in a folder (what `git rev-parse --abbrev-ref HEAD` says:
     /// "HEAD" when detached), read from the files; nil outside a git repository.
+    /// Work in a git checkout that is not on GitHub yet: uncommitted changes, or commits that
+    /// were not pushed (to the branch's upstream, else to origin/master).
+    static func hasUnsavedWork(_ dir: String) -> Bool {
+        func git(_ args: [String]) -> String? {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = ["-C", dir] + args
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return nil }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return p.terminationStatus == 0 ? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        }
+        if let s = git(["status", "--porcelain"]), !s.isEmpty { return true }
+        let ahead = git(["rev-list", "--count", "@{u}..HEAD"]) ?? git(["rev-list", "--count", "origin/master..HEAD"]) ?? "0"
+        return (Int(ahead) ?? 0) > 0
+    }
+
     static func gitBranch(_ cwd: String?) -> String? {
         guard var dir = cwd, !dir.isEmpty else { return nil }
         let fm = FileManager.default

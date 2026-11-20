@@ -579,6 +579,11 @@ function rowsFor(ci){
   const c = colState[ci];
   const all = data.s.filter(s => !isPin(s) && inDir(c, s));
   const whereOk = s => c.where === 'any' || (c.where === 'here' ? (s.o && s.be === 'ghostty') : c.where === 'cmux' ? (s.o && s.be !== 'ghostty') : !s.o);
+  if (c.filter === 'parked'){
+    // Parked for later: closed to free the room, kept here with what each needs from you.
+    const parked = all.filter(s => s.pk && !s.o && !s.el).sort((a,b) => (b.la||0) - (a.la||0));
+    return parked.length ? parked.map(s => ({s, card: true})) : [{empty:'Nothing parked. Right-click a session and choose Park to keep it here for later.'}];
+  }
   if (c.where === 'off'){
     // Not running anywhere: parked and closed sessions only.
     const off = all.filter(s => !s.o && !s.el).sort((a,b) => (b.ca||b.la||0) - (a.ca||a.la||0)).slice(0, 80);
@@ -621,6 +626,18 @@ function rowsFor(ci){
   return out;
 }
 
+// A parked session under the Parked chip: a full card, so you see what it needs from you.
+function parkedHTML(s){
+  const line = s.ns || s.t || s.sd || '';
+  return `<div class="item" data-k="${esc(s.k)}" title="Parked for later. Click to resume it here.">
+    <span class="ico" style="color:var(--muted)">${ic('pause',14,2.2)}</span>
+    <span class="body">
+      <span class="top"><span class="name">${esc(s.n)}</span><span class="age">${ago(s.ca || s.la)}</span></span>
+      <span class="line"><span class="word" style="color:var(--muted)">Parked</span>${line ? ' · ' + esc(line) : ''}</span>
+      <span class="meta"><span>${ic('folder',10,2.2)} ${esc(s.cwd || '~')}</span>${s.br && s.br !== 'master' ? '<span>· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
+    </span></div>`;
+}
+
 function itemHTML(s, ci){
   if ((s.o && s.be !== 'ghostty') || s.el){
     // Running in another terminal (cmux) or the Claude app: one line. A click asks, then moves it here.
@@ -634,7 +651,7 @@ function itemHTML(s, ci){
     const L = LOOK[stateOf(s)] || LOOK.closed;
     // A session from the Claude app that was never opened here: its last wrap-up from the app.
     const app = s.be === 'claude-app';
-    return `<div class="old" data-k="${esc(s.k)}" title="${s.ar ? 'In the Archive. Click to resume it here (it leaves the Archive).' : app ? 'From the Claude app, not running. Click to resume it here.' : 'Not running. Click to reopen it here.'}">
+    return `<div class="old" data-k="${esc(s.k)}" title="${s.ar ? 'In the Archive. Click to resume it here (it leaves the Archive).' : app ? 'From the Claude app, not running. Click to resume it here.' : s.pk ? 'Parked for later. Click to resume it here.' : 'Not running. Click to reopen it here.'}">
       <span style="color:var(--faint)">${ic(L[0],11,2)}</span>
       <span class="nm">${esc(s.n)}</span>${app ? '<span class="tag">Claude app</span>' : ''}<span class="tt">${esc(s.t || s.ns || (app ? s.lm : '') || '')}</span>
       <span class="age">${ago(s.ca || s.la)}</span></div>`;
@@ -680,7 +697,7 @@ function colControls(ci){
   const wchip = (v, label) => `<button class="fchip" data-w="${v}" aria-pressed="${c.where===v}">${label} ${v === 'any' ? '' : wcount(v)}</button>`;
   return `<div class="ctrl">
     <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
-    <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('done','Done',count(isFinished),'The agent finished what you asked: Done, Answered, or marked as handled')}${fchip('all','All',count(()=>true))}</div>
+    <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('done','Done',count(isFinished),'The agent finished what you asked: Done, Answered, or marked as handled')}${fchip('all','All',count(()=>true))}${fchip('parked','Parked',data.s.filter(s => s.pk && !s.o && !s.el && !isPin(s) && inDir(c, s)).length,'Parked for later: closed to free the room, kept here with what each needs from you')}</div>
     <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir']])}</div>
     <div class="row"><button class="colfolder${c.dir ? ' on' : ''}" data-colfolder="${ci}" title="${c.dir ? 'Only sessions in ' + esc(c.dir) + '. Click to pick another folder or all of them.' : 'Only sessions in one folder: click to pick it.'}">${ic('folder',10,2.2)}<span>${esc(c.dir || 'All folders')}</span>${ic('chev',8,2.6)}</button></div>
     <div class="row" title="Sort. Manual: drag rows to put them in your order.">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>
@@ -837,7 +854,7 @@ function renderNow(){
     if (ci === navColOf()) rows.forEach(r => r.s && r.s.o && nav.push(r.s.k));
     html += `<div class="col${colState[ci].sort === 'manual' ? ' manual' : ''}" data-col="${ci}">${colControls(ci)}<div class="list">` + rows.map(r =>
       r.h ? `<div class="group${folded[r.h] ? ' folded' : ''}" data-fold="${esc(r.h)}"><span class="chev">${ic('chev',10,2.6)}</span>${esc(r.h)} <span class="n">${r.n}</span></div>`
-      : r.empty ? `<div class="empty">${esc(r.empty)}</div>` : itemHTML(r.s, ci)).join('') + `</div></div>`;
+      : r.empty ? `<div class="empty">${esc(r.empty)}</div>` : r.card ? parkedHTML(r.s) : itemHTML(r.s, ci)).join('') + `</div></div>`;
   }
   host.innerHTML = html;
   [...host.querySelectorAll('.list')].forEach((l, i) => { if (scroll[i]) l.scrollTop = scroll[i]; });

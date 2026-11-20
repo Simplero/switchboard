@@ -85,8 +85,10 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
     override init() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()   // stays signed in between runs
-        webView = DocWebView(frame: .zero, configuration: config)
+        let web = DocWebView(frame: .zero, configuration: config)
+        webView = web
         super.init()
+        web.owner = self
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
@@ -114,6 +116,61 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
         needsPhoneLink = false
         lastSignIn = .distantPast
         load(wanted)
+    }
+
+    // MARK: Find on the page (⌘F)
+
+    /// The find bar shows under the buttons.
+    @Published var finding = false
+    @Published var findText = ""
+    /// "4 found", "Not found", or nothing while the field is empty.
+    @Published var findResult = ""
+    /// Goes up each time ⌘F asks for the find field (it takes the keyboard again).
+    @Published var findFocus = 0
+    private var lastFind = ""
+
+    func openFind() {
+        finding = true
+        findFocus += 1
+        if !findText.isEmpty { find() }
+    }
+
+    func closeFind() {
+        finding = false
+        findResult = ""
+        webView.window?.makeFirstResponder(webView)
+    }
+
+    /// The next (or previous) place the text is on the page: WebKit selects it and scrolls to it.
+    func find(backwards: Bool = false) {
+        let q = findText
+        guard !q.isEmpty else { findResult = ""; return }
+        if q != lastFind { findResult = "" }   // no count of the text before while this one is found
+        lastFind = q
+        let c = WKFindConfiguration()
+        c.backwards = backwards
+        c.caseSensitive = false
+        c.wraps = true
+        webView.find(q, configuration: c) { [weak self] r in
+            MainActor.assumeIsolated {
+                guard let self, q == self.findText else { return }
+                if r.matchFound { self.countMatches(q) } else { self.findResult = "Not found" }
+            }
+        }
+    }
+
+    /// How many times the text is on the page (the page's visible text, any case).
+    private func countMatches(_ q: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [q]), let arg = String(data: data, encoding: .utf8) else { return }
+        let js = "(function(q){q=q.toLowerCase();var t=(document.body?document.body.innerText:'').toLowerCase(),n=0,i=0;"
+            + "while((i=t.indexOf(q,i))!==-1){n++;i+=q.length;}return n;})(\(arg)[0])"
+        webView.evaluateJavaScript(js) { [weak self] v, _ in
+            MainActor.assumeIsolated {
+                guard let self, q == self.findText else { return }
+                let n = (v as? NSNumber)?.intValue ?? 0
+                self.findResult = n == 1 ? "1 found" : n > 1 ? "\(n) found" : "Found"
+            }
+        }
     }
 
     /// Simplero pages stay here; a link to anywhere else opens in your browser. Simplero's login
@@ -159,33 +216,40 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
     }
 }
 
-/// The pane: a small bar (back, forward, reload, title, open in browser, close) over the page.
+/// The pane: a bar (back, forward, reload, title, find, open in browser, close) over the page,
+/// and the find bar under it while you search the page (⌘F).
 struct DocPaneView: View {
     @ObservedObject var page: DocPage
     let close: () -> Void
+    @FocusState private var findFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 2) {
+            HStack(spacing: 4) {
                 bar("chevron.left", "Back") { page.webView.goBack() }.disabled(!page.canGoBack)
                 bar("chevron.right", "Forward") { page.webView.goForward() }.disabled(!page.canGoForward)
-                bar(page.loading ? "xmark" : "arrow.clockwise", page.loading ? "Stop" : "Reload") {
+                bar(page.loading ? "xmark" : "arrow.clockwise", page.loading ? "Stop loading" : "Reload") {
                     if page.loading { page.webView.stopLoading() } else { page.webView.reload() }
                 }
                 Text(page.title.isEmpty ? (page.webView.url?.host ?? "") : page.title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 6)
                     .help(page.webView.url?.absoluteString ?? "")
-                bar("arrow.up.right.square", "Open in your browser") {
+                bar("magnifyingglass", "Find on this page (⌘F)") { page.openFind() }
+                bar("arrow.up.right.square", "Open this page in your browser", word: "Browser") {
                     if let u = page.webView.url { SessionsLinkOpener.open(u, nextToSession: false) }
                 }
-                bar("xmark.circle", "Close this page", action: close)
+                bar("xmark", "Close this page", word: "Close", action: close)
             }
-            .padding(.horizontal, 6)
-            .frame(height: 32)
+            .padding(.horizontal, 8)
+            .frame(height: 44)
             Divider()
+            if page.finding {
+                findBar
+                Divider()
+            }
             if page.needsPhoneLink {
                 HStack(spacing: 8) {
                     Image(systemName: "key").font(.system(size: 11))
@@ -203,22 +267,85 @@ struct DocPaneView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private func bar(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 12, weight: .medium)).frame(width: 24, height: 24)
+    /// Find on the page: ↩ next, ⇧↩ previous, esc closes it.
+    private var findBar: some View {
+        HStack(spacing: 6) {
+            TextField("Find on this page", text: $page.findText)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13))
+                .focused($findFocused)
+                .onSubmit { page.find(backwards: NSApp.currentEvent?.modifierFlags.contains(.shift) == true) }
+                .onExitCommand { page.closeFind() }
+                .onChange(of: page.findText) { _ in page.find() }
+            Text(page.findResult)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            bar("chevron.up", "Previous (⇧↩)") { page.find(backwards: true) }.disabled(page.findText.isEmpty)
+            bar("chevron.down", "Next (↩)") { page.find() }.disabled(page.findText.isEmpty)
+            bar(nil, "Stop finding (esc)", word: "Done") { page.closeFind() }
         }
-        .buttonStyle(.borderless)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .onAppear { findFocused = true }
+        .onChange(of: page.findFocus) { _ in findFocused = true }
+    }
+
+    /// A button of the bar: a big symbol (and a word for the ones a symbol does not make clear)
+    /// on a soft background, so it reads as a button.
+    private func bar(_ symbol: String?, _ help: String, word: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if let symbol { Image(systemName: symbol).font(.system(size: 15, weight: .semibold)) }
+                if let word { Text(word).font(.system(size: 13, weight: .semibold)) }
+            }
+            .padding(.horizontal, word == nil ? 0 : 9)
+            .frame(minWidth: 34, minHeight: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PaneButtonStyle())
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+/// The pane's buttons: a soft rounded background that gets darker on hover and on a press.
+private struct PaneButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { PaneButton(configuration: configuration) }
+
+    private struct PaneButton: View {
+        let configuration: ButtonStyle.Configuration
+        @Environment(\.isEnabled) private var enabled
+        @State private var hover = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(Color.primary)
+                .background(RoundedRectangle(cornerRadius: 7)
+                    .fill(Color.primary.opacity(configuration.isPressed ? 0.2 : hover ? 0.12 : 0.06)))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary.opacity(0.14)))
+                .opacity(enabled ? 1 : 0.35)
+                .onHover { hover = $0 }
+        }
     }
 }
 
 /// The pane's web view. ⌘V, ⌘C, ⌘X, ⌘A, ⌘Z go straight to the page when it has the keyboard
 /// (through the menu they did not arrive, as in the sidebar).
 final class DocWebView: WKWebView {
+    weak var owner: DocPage?
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let r = window?.firstResponder as? NSView
         guard event.type == .keyDown, let r, r === self || r.isDescendant(of: self) else { return super.performKeyEquivalent(with: event) }
+        // ⌘F finds on the page; ⌘G and ⇧⌘G go to the next and previous place.
+        let findMods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        switch (findMods, event.charactersIgnoringModifiers?.lowercased()) {
+        case (.command, "f"): owner?.openFind(); return true
+        case (.command, "g"): if owner?.findText.isEmpty == false { owner?.find(); return true }
+        case ([.command, .shift], "g"): if owner?.findText.isEmpty == false { owner?.find(backwards: true); return true }
+        default: break
+        }
         // ⌘ arrows (⇧ to select) move in the page's text or scroll it.
         if event.modifierFlags.contains(.command), (123...126).contains(event.keyCode) {
             keyDown(with: event)

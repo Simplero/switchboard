@@ -348,8 +348,14 @@ final class SessionsAPI {
             // For checks: open a page next to the session of a terminal (?id), as a Doc link does.
             guard let view = surface(req.json["id"] as? String),
                   let controller = BaseTerminalController.controller(owning: view) as? TerminalController,
-                  let url = URL(string: req.json["url"] as? String ?? "") else { return (404, ["error": "no such terminal"]) }
+                  let url = URL(string: req.json["url"] as? String ?? "about:blank") else { return (404, ["error": "no such terminal"]) }
             if req.json["close"] as? Bool == true { SessionsDocPanes.shared.close(session: controller.sessionsWorkspace) }
+            else if let q = req.json["find"] as? String, let page = SessionsDocPanes.shared.pages[controller.sessionsWorkspace] {
+                // Find on the page as the find bar does: {"find": text, "back": true} (no url needed).
+                page.openFind()
+                page.findText = q
+                page.find(backwards: req.json["back"] as? Bool == true)
+            } else if req.json["endfind"] as? Bool == true { SessionsDocPanes.shared.pages[controller.sessionsWorkspace]?.closeFind() }
             else { SessionsDocPanes.shared.open(url, session: controller.sessionsWorkspace) }
             return (200, ["session": controller.sessionsWorkspace])
         case ("POST", "/sb/dragcheck"):
@@ -385,6 +391,7 @@ final class SessionsAPI {
                   let controller = BaseTerminalController.controller(owning: view) as? TerminalController else { return (404, ["error": "no such terminal"]) }
             let page = SessionsDocPanes.shared.pages[controller.sessionsWorkspace]
             return (200, ["open": page != nil, "title": page?.title ?? "", "url": page?.webView.url?.absoluteString ?? "",
+                          "finding": page?.finding ?? false, "find_text": page?.findText ?? "", "find_result": page?.findResult ?? "",
                           "in_window": page?.webView.window === controller.window,
                           "pane_width": page?.webView.frame.width ?? 0,
                           "grid": SessionsAPI.gridSize(view).map { [$0.cols, $0.rows] } ?? []])
@@ -443,6 +450,10 @@ final class SessionsAPI {
                 front.setFrame(NSRect(x: f[0], y: f[1], width: f[2], height: f[3]), display: true)
             }
             if let l = req.json["want"] as? String { SBSpares.shared.want(l.isEmpty ? nil : l) }
+            if let a = req.json["appearance"] as? String {   // "dark", "light", "" (the system's)
+                NSApp.appearance = a == "dark" ? NSAppearance(named: .darkAqua) : a == "light" ? NSAppearance(named: .aqua) : nil
+                front.appearance = NSApp.appearance   // Ghostty gives the window its theme's look
+            }
             func r(_ w: NSWindow) -> [Int] { [Int(w.frame.minX), Int(w.frame.minY), Int(w.frame.width), Int(w.frame.height)] }
             return (200, ["front": r(front), "tabs": (front.tabGroup?.windows ?? [front]).map(r),
                           "spares": SBSpares.shared.spares.values.compactMap { $0.controller.window }.map(r)])

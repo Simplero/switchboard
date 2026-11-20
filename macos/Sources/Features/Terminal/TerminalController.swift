@@ -524,6 +524,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         controller.showWindowSafely(self)
         if !select, previousSelected !== window {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                // You clicked another session meanwhile: stay there.
+                guard (window.tabGroup?.selectedWindow ?? window) === window else { return }
                 previousSelected.tabGroup?.selectedWindow = previousSelected
                 previousSelected.makeKeyAndOrderFront(nil)
             }
@@ -1217,25 +1219,30 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     override func showWindow(_ sender: Any?) {
         guard let terminalWindow = window as? TerminalWindow else { return }
 
-        // Set the initial window position. This must happen after the window
-        // is fully set up (content view, toolbar, default size) so that
-        // decorations added by subclass awakeFromNib (e.g. toolbar for tabs
-        // style) don't change the frame after the position is restored.
-        let originChanged = terminalWindow.setInitialWindowPosition(
-            x: derivedConfig.windowPositionX,
-            y: derivedConfig.windowPositionY,
-        )
-        let restored = LastWindowPosition.shared.restore(
-            terminalWindow,
-            origin: !originChanged,
-            size: defaultSize == nil,
-        )
+        // Switchboard: a new tab (every new session is one) keeps the frame of the window it
+        // joins. Setting the saved position on it moved and resized the whole window.
+        let joinsTabs = (terminalWindow.tabGroup?.windows.count ?? 1) > 1
+        if !joinsTabs {
+            // Set the initial window position. This must happen after the window
+            // is fully set up (content view, toolbar, default size) so that
+            // decorations added by subclass awakeFromNib (e.g. toolbar for tabs
+            // style) don't change the frame after the position is restored.
+            let originChanged = terminalWindow.setInitialWindowPosition(
+                x: derivedConfig.windowPositionX,
+                y: derivedConfig.windowPositionY,
+            )
+            let restored = LastWindowPosition.shared.restore(
+                terminalWindow,
+                origin: !originChanged,
+                size: defaultSize == nil,
+            )
 
-        // If nothing is changed for the frame,
-        // we should center the window
-        if !originChanged, !restored {
-            // This doesn't work in `windowDidLoad` somehow
-            terminalWindow.center()
+            // If nothing is changed for the frame,
+            // we should center the window
+            if !originChanged, !restored {
+                // This doesn't work in `windowDidLoad` somehow
+                terminalWindow.center()
+            }
         }
 
         super.showWindow(sender)

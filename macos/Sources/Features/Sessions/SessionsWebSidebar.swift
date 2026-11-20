@@ -460,6 +460,10 @@ final class SessionsWebView: WKWebView {
     /// keyboard leaves (a click in the terminal), and after it moves to another window
     /// (⌘↑ ⌘↓), where the terminal has the keyboard. Its focused field stays focused in the
     /// page otherwise, with a blinking caret.
+    /// The first click on a window in the background also clicks the row (WebKit refuses it
+    /// by default, so a click from another app only brought the window forward).
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
         if ok { keyboardLeft() }

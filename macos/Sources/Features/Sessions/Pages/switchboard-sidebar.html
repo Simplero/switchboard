@@ -36,6 +36,8 @@ button{font:inherit;color:inherit;cursor:default}
 .newbtn:hover{background:var(--line2)}
 .newbtn .plus{color:var(--done);font-weight:800}
 .newbtn[aria-pressed=true]{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent)}
+.newbtn.big{padding:6px 12px;font-size:13px;border-radius:8px}
+.newbtn.big .plus{font-size:15px;line-height:1}
 
 /* new-session form: drops down under the + buttons, over the list (nothing below moves) */
 #scrim{position:absolute;left:0;right:0;bottom:0;z-index:20;background:rgba(20,20,26,.08)}
@@ -44,6 +46,11 @@ button{font:inherit;color:inherit;cursor:default}
 #newform .hd{display:flex;align-items:center;gap:6px;font-weight:700;font-size:13px}
 #newform .hd .x{margin-left:auto;border:0;background:transparent;color:var(--muted2);font-size:17px;line-height:1;padding:1px 5px;border-radius:5px}
 #newform .hd .x:hover{background:var(--sunk);color:var(--ink)}
+#newform .pick{display:flex;align-items:center;gap:8px;min-width:0}
+#newform .pick .lbl{width:44px;flex:none;font-size:11.5px;font-weight:600;color:var(--muted)}
+#newform .pick .dirbtn{max-width:none;min-width:0;padding:4px 9px;font-size:12.5px}
+#newform .logins{display:flex;flex-wrap:wrap;gap:5px;min-width:0}
+#newform .logins .newbtn{padding:4px 9px}
 #newform .sub{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted);flex-wrap:wrap}
 #newform .sub .mono{color:var(--ink2)}
 #newform .rd{display:inline-flex;align-items:center;gap:4px}
@@ -206,10 +213,6 @@ svg{flex-shrink:0}
 <body>
 <div id="app">
   <div id="top">
-    <div class="row">
-      <span class="cap">New Claude in</span>
-      <button id="dirbtn" class="dirbtn" data-act="folder" title="Folder new sessions start in. Click to pick another one."></button>
-    </div>
     <div id="newbtns" class="row"></div>
     <div class="navrow">
     <span class="navbtns">
@@ -230,6 +233,8 @@ svg{flex-shrink:0}
   <div id="scrim" hidden></div>
   <div id="newform" hidden role="dialog" aria-label="New Claude session">
     <div class="hd"><span id="nfhead"></span><button class="x" data-nf="cancel" title="Close (esc). What you wrote stays for next time.">×</button></div>
+    <div class="pick"><span class="lbl">Folder</span><button id="dirbtn" class="dirbtn" data-nf="folder" title="The folder this session starts in. Click to pick another one. The next session starts in ~/Simplero again."></button></div>
+    <div class="pick"><span class="lbl">Login</span><span class="logins" id="nflogins"></span></div>
     <div class="sub" id="nfsub"></div>
     <textarea id="nfmsg" rows="4" placeholder="First message (optional)" spellcheck="true"></textarea>
     <div class="files" id="nffiles"></div>
@@ -257,6 +262,7 @@ const ICON = {
   hand:'<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
   spin:'<path d="M21 12a9 9 0 1 1-6.2-8.56"/>',
   check:'<polyline points="20 6 9 17 4 12"/>',
+  plus:'<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
   dots:'<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
   pause:'<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
   moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>',
@@ -311,7 +317,9 @@ const FINISHED = new Set(['done', 'info', 'handled']);
 const isFinished = s => s.a !== 'shell' && FINISHED.has(stateOf(s));
 
 let data = null, focusSf = null, query = '', results = [], idHit = null;
-let newCwd = store.get('newCwd', '~/Simplero');
+// The folder a new session starts in: ~/Simplero, unless you pick another one for this session.
+const HOME_FOLDER = '~/Simplero';
+let newCwd = HOME_FOLDER;
 let visits = store.get('visits', {});
 // Orders that never shift under the mouse:
 //  manual: the order sessions first showed up in; new ones go at the end, a new name does not move a row.
@@ -371,7 +379,7 @@ window.Sessions = {
   // The folder menu (native) picked a folder for new sessions.
   // A column's folder filter, from its menu ("" = all folders).
   setColFolder(ci, p){ const c = colState[ci]; if (!c) return; if (p) c.dir = p; else delete c.dir; store.set('col' + ci, c); render(); },
-  setFolder(p){ if (p){ newCwd = p; store.set('newCwd', p); bridge('newFolder', {cwd: p}); render(); } },
+  setFolder(p){ if (p){ newCwd = p; bridge('newFolder', {cwd: p}); render(); } },
   // Files dropped on the page (the app knows their paths; the page only their names).
   droppedFiles(paths){ $('#newform').classList.remove('drop'); if (nf.open) addFiles(paths); },
   // The session did not start (the app said why): the message, name and files come back.
@@ -826,9 +834,7 @@ function renderNow(){
   if (!data) return;
   // Not while the mouse button is down: a row rebuilt under the mouse loses the click.
   if (drag || pressing){ renderLater = true; return; }
-  $('#dirbtn').innerHTML = `${ic('folder',12,2.2)}<span>${esc(newCwd)}</span>${ic('chev',9,2.6)}`;
-  $('#newbtns').innerHTML = ['~/.claude','~/.claude-ccl','~/.claude-ccm'].map(d =>
-    `<button class="newbtn" data-new="${d}" aria-pressed="${nf.open && nf.login === d}" title="New Claude session with this login: a first message, files and a name, all optional"><span class="plus">+</span>${esc(data.spares?.[d]?.lg || d)}</button>`).join('');
+  $('#newbtns').innerHTML = `<button class="newbtn big" data-new="" aria-pressed="${nf.open}" title="New Claude session: pick the folder and the login. A first message, files and a name are optional."><span class="plus">+</span>New session</button>`;
   if (nf.open) nfStatus();
   seg('#colseg', [[1,'1'],[2,'2']], cols, v => { cols = v; store.set('cols', v); render(); });
   renderPins();
@@ -867,7 +873,10 @@ function renderNow(){
 // "+ login" opens this form under the buttons. Enter starts the session (with the login's
 // spare Claude it is there at once) and puts the keyboard in it. Empty is fine: Enter alone
 // just starts Claude. Esc closes; what you wrote stays for next time.
+const LOGINS = ['~/.claude','~/.claude-ccl','~/.claude-ccm'];
+// The login is remembered: you often use up one subscription before the next.
 const nf = {open: false, login: null, files: [], sent: null};
+const lastLogin = () => { const l = store.get('newLogin', '~/.claude'); return LOGINS.includes(l) ? l : '~/.claude'; };
 const nfMsg = $('#nfmsg'), nfName = $('#nfname');
 const LOGIN_NAMES = {'~/.claude':'simplero.com','~/.claude-ccl':'corre.li','~/.claude-ccm':'correli.me'};
 const loginName = d => data?.spares?.[d]?.lg || LOGIN_NAMES[d] || d;
@@ -875,11 +884,14 @@ const baseName = p => p.split('/').filter(Boolean).pop() || p;
 
 function nfStatus(){
   const lg = loginName(nf.login);
-  $('#nfhead').innerHTML = `${ic(LOGIN_ICON[lg] || 'person', 13, 2.2)} New Claude · ${esc(lg)}`;
+  $('#nfhead').innerHTML = `${ic('plus', 13, 2.4)} New Claude session`;
+  $('#dirbtn').innerHTML = `${ic('folder',12,2.2)}<span class="mono">${esc(newCwd)}</span>${ic('chev',9,2.6)}`;
+  $('#nflogins').innerHTML = LOGINS.map(d => { const n = loginName(d);
+    return `<button class="newbtn" data-nf="login" data-login="${d}" aria-pressed="${nf.login === d}" title="Start it with the ${esc(n)} login">${ic(LOGIN_ICON[n] || 'person', 11, 2.2)}${esc(n)}${nf.login === d ? ' ' + ic('check', 10, 2.8) : ''}</button>`; }).join('');
   const sp = data?.spares?.[nf.login];
   const rd = sp?.ready ? `<span class="rd on">${ic('bolt', 11, 2.4)} Claude is ready</span>`
     : `<span class="rd">${ic('dots', 11, 2.4)} Starting Claude…</span>`;
-  $('#nfsub').innerHTML = `${ic('folder', 11, 2.2)} <span class="mono">${esc(newCwd)}</span> · ${rd}`;
+  $('#nfsub').innerHTML = rd;
 }
 function nfFiles(){
   $('#nffiles').innerHTML = nf.files.map(p => `<span class="file" title="${esc(p)}">${ic('clip', 11, 2.2)}<span>${esc(baseName(p))}</span>` +
@@ -893,7 +905,8 @@ function addFiles(paths){
 function nfGrow(){ nfMsg.style.height = 'auto'; nfMsg.style.height = Math.min(nfMsg.scrollHeight + 2, 240) + 'px'; }
 function openNew(login){
   const was = nf.open;
-  nf.open = true; nf.login = login;
+  nf.open = true; nf.login = login || nf.login || lastLogin();
+  login = nf.login;
   const r = $('#newbtns').getBoundingClientRect();
   $('#newform').style.top = (r.bottom + 6) + 'px';
   $('#scrim').style.top = (r.bottom + 2) + 'px';
@@ -916,7 +929,10 @@ function submitNew(){
   if (!nf.open) return;
   nf.sent = {text: nfMsg.value, name: nfName.value, files: nf.files.slice()};
   op({op:'new', login: nf.login, cwd: newCwd, prompt: nfMsg.value, name: nfName.value.trim(), files: nf.files.slice()});
+  store.set('newLogin', nf.login);
   nfMsg.value = ''; nfName.value = ''; nf.files = [];
+  // The next session starts in ~/Simplero again.
+  if (newCwd !== HOME_FOLDER){ newCwd = HOME_FOLDER; bridge('newFolder', {cwd: newCwd}); }
   nfFiles(); nfGrow();
   closeNew(false);   // the app puts the keyboard in the new session
 }
@@ -1047,6 +1063,12 @@ document.addEventListener('click', e => {
   if (nfb){
     if (nfb.dataset.nf === 'go') submitNew();
     else if (nfb.dataset.nf === 'cancel') closeNew(true);
+    else if (nfb.dataset.nf === 'folder'){ const r = nfb.getBoundingClientRect(); bridge('folderMenu', {folders: folderChoices(), current: newCwd, x: r.left, y: r.bottom + 4}); }
+    else if (nfb.dataset.nf === 'login' && nfb.dataset.login !== nf.login){
+      nf.login = nfb.dataset.login; store.set('newLogin', nf.login);
+      bridge('newWarm', {login: nf.login});   // that login's Claude starts now
+      nfStatus(); render(); nfMsg.focus();
+    }
     else if (nfb.dataset.nf === 'rm'){ nf.files = nf.files.filter(f => f !== nfb.dataset.path); nfFiles(); $('#nfmsg').focus(); }
     return;
   }
@@ -1056,11 +1078,6 @@ document.addEventListener('click', e => {
   if (cf){
     const ci = +cf.dataset.colfolder, r = cf.getBoundingClientRect();
     bridge('colFolderMenu', {col: ci, folders: colFolders(), current: colState[ci].dir || '', x: r.left, y: r.bottom + 4});
-    return;
-  }
-  if (t.closest('#dirbtn')){
-    const r = $('#dirbtn').getBoundingClientRect();
-    bridge('folderMenu', {folders: folderChoices(), current: newCwd, x: r.left, y: r.bottom + 4});
     return;
   }
   const rs = t.closest('[data-resume]');

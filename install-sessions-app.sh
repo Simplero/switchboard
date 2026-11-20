@@ -27,6 +27,8 @@ COMMIT=$(git -C "$(dirname "$0")" rev-parse --short HEAD)
 # kept showing the old app icon after the icon changed (b36 and b37 both said "1").
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$P"
 echo "Build b$BUILD ($COMMIT)"
+# Helpers sessions run (merge-pr: switchboard-close-when-away).
+mkdir -p "$HOME/.local/bin" && install -m 755 "$(dirname "$0")/scripts/switchboard-close-when-away" "$HOME/.local/bin/"
 # Sign with the Apple Development certificate, not ad hoc. An ad-hoc signature is a new
 # identity on every build, so macOS forgot every privacy grant (Documents, Desktop, Full
 # Disk Access…) after each install and asked again. A certificate keeps one identity.

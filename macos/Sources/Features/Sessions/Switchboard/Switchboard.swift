@@ -257,6 +257,7 @@ final class Switchboard {
             }.value
         }
         merge(t0: t0, agents: agents)
+        closeAwaySessions()
         if let outside { mergeElsewhere(outside) }
         if let app { mergeClaudeApp(app) }
         SBSpares.shared.tick()
@@ -947,6 +948,7 @@ final class Switchboard {
         case "rename": return edit(k, name: msg["name"] as? String ?? "")
         case "ack": return ack(k)
         case "forget": return forget(k)
+        case "close_when_away": return closeWhenAway(k, pid: msg["pid"] as? Int)
         case "send": return send(k, msg["text"] as? String ?? "")
         case "remember_open": return rememberOpen()
         case "pin": return pin(k)
@@ -1302,6 +1304,60 @@ final class Switchboard {
             e.state = stateOf(e)
         }
         return (true, handled ? "Marked as handled." : "Back in Needs you.")
+    }
+
+    // MARK: Close when you leave it
+
+    /// Sessions that asked to be closed once you leave them: when they asked, and when their
+    /// conversation file last changed 20 s later (after their last answer).
+    private var pendingClose: [String: (at: Double, mtime: Double?)] = [:]
+
+    /// A session that has nothing left to do asks to go (merge-pr runs
+    /// `switchboard-close-when-away`): it moves to the Archive (Done) once it is not the session
+    /// in front, and not before 30 s, so you can read its last answer. The Claude session is
+    /// found by its key, else by its process id (after /clear the key may be another one).
+    func closeWhenAway(_ k: String, pid: Int?) -> (Bool, String) {
+        let key = reg.sessions[k]?.isOpen == true ? k
+            : pid.flatMap { p in reg.sessions.first(where: { $0.value.isOpen && $0.value.pid == p })?.key }
+        guard let key, let e = reg.sessions[key] else { return (false, "This session is not open in Switchboard.") }
+        if e.pinned != nil { return (false, "“\(e.name ?? "This session")” is pinned, so it stays.") }
+        pendingClose[key] = (now, nil)
+        return (true, "“\(e.name ?? "This session")” moves to the Archive once you leave it.")
+    }
+
+    private func closeAwaySessions() {
+        guard !pendingClose.isEmpty else { return }
+        let front = SessionsStore.shared.focusedSurfaceID
+        for (k, p) in pendingClose {
+            guard let e = reg.sessions[k], e.isOpen, let sf = e.surface_id else { pendingClose[k] = nil; continue }
+            let waited = now - p.at
+            let st = stateOf(e)
+            // Still writing its last answer (the first 20 s): wait. Working or asking you
+            // something after that, or a conversation that grew since: you went on with it, so
+            // it stays.
+            if e.screen == "working" || Self.needsStates.contains(st) {
+                if waited > 20 { pendingClose[k] = nil }
+                continue
+            }
+            if waited >= 20 {
+                let mt = SBBackground.transcript(e.session_id).mtime
+                if p.mtime == nil { pendingClose[k] = (p.at, mt ?? 0) }
+                else if let mt, let was = p.mtime, mt > was { pendingClose[k] = nil; continue }
+            }
+            guard waited >= 30, sf != front else { continue }
+            // Another tab of the session runs something (a server, an editor): it stays.
+            if let view = SessionsAPI.surface(id: sf),
+               let c = BaseTerminalController.controller(owning: view) as? TerminalController {
+                let busy = SessionsAPI.windows(ofWorkspace: c.sessionsWorkspace)
+                    .compactMap { ($0.windowController as? BaseTerminalController)?.surfaceTree.root?.leaves() }
+                    .flatMap { $0 }
+                    .contains { $0.id.uuidString != sf && $0.needsConfirmQuit }
+                if busy { pendingClose[k] = nil; continue }
+            }
+            pendingClose[k] = nil
+            SessionSwitchLog.did("“\(e.name ?? k)” asked to close when you left it")
+            _ = done(k)
+        }
     }
 
     func forget(_ k: String) -> (Bool, String) {

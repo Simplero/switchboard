@@ -12,13 +12,11 @@ final class SessionsDocPanes: ObservableObject {
 
     /// Session id (TerminalController.sessionsWorkspace) → its page.
     @Published private(set) var pages: [String: DocPage] = [:]
-    /// The first page of this run signs the pane in with the Mac's Simplero sign-in (Phone Link).
-    private var signedIn = false
 
     /// Simplero Docs: the share host, and Docs in the admin.
     nonisolated static func isDoc(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
-        if host == "doc.simplero.me" { return true }
+        if host == "doc.simplero.me" || host == "doc.simplero.me.test" { return true }   // .test: the development server
         return (host == "simplero.com" || host.hasSuffix(".simplero.com")) && url.path.hasPrefix("/admin/docs")
     }
 
@@ -26,15 +24,13 @@ final class SessionsDocPanes: ObservableObject {
     nonisolated static func staysInPane(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
         return isDoc(url) || host == "simplero.com" || host.hasSuffix(".simplero.com") || host.hasSuffix(".simplero.me")
+            || host == "simplero.test" || host.hasSuffix(".simplero.test")
     }
 
     func open(_ url: URL, session ws: String) {
         let page = pages[ws] ?? DocPage()
         pages[ws] = page
-        Task {
-            let target = await signInURL(for: url)
-            page.load(target)
-        }
+        page.load(url)
     }
 
     func close(session ws: String) {
@@ -47,10 +43,16 @@ final class SessionsDocPanes: ObservableObject {
         (NSApp.keyWindow?.windowController as? TerminalController)?.sessionsWorkspace
     }
 
-    /// Once per run: a one-time sign-in link to the page, made with the Mac's Simplero sign-in
-    /// (the same as the phone's in-app pages). Without a sign-in, the page itself.
-    private func signInURL(for url: URL) async -> URL {
-        guard !signedIn, let key = SBAccount.shared.mobileKey else { return url }
+    /// Simplero's login page (the pane is not signed in, or its sign-in ran out).
+    nonisolated static func isLoginPage(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return (host == "secure.simplero.com" || host == "secure.simplero.test") && url.path == "/login"
+    }
+
+    /// A one-time sign-in link to `url`, made with the Mac's Simplero sign-in (Phone Link), the
+    /// same as the phone's in-app pages. Nil without a sign-in.
+    static func signInURL(for url: URL) async -> URL? {
+        guard let key = SBAccount.shared.mobileKey else { return nil }
         var req = URLRequest(url: URL(string: SBAccount.server + "/api/mobile/v1/users/generate_auto_login_url")!)
         req.httpMethod = "POST"
         req.setValue(key, forHTTPHeaderField: "X-API-Key")
@@ -61,8 +63,7 @@ final class SessionsDocPanes: ObservableObject {
         guard let (data, response) = try? await URLSession.shared.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let s = j["url"] as? String, let signed = URL(string: s) else { return url }
-        signedIn = true
+              let s = j["url"] as? String, let signed = URL(string: s), signed != url else { return nil }
         return signed
     }
 }
@@ -75,12 +76,16 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
     @Published var canGoBack = false
     @Published var canGoForward = false
     @Published var loading = false
+    /// The page is Simplero's login and the Mac is not signed in to Phone Link (so the pane
+    /// cannot sign itself in): the bar offers Phone Link.
+    @Published var needsPhoneLink = false
     private var observers: [NSKeyValueObservation] = []
+    private var lastSignIn: Date = .distantPast
 
     override init() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()   // stays signed in between runs
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = DocWebView(frame: .zero, configuration: config)
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -95,9 +100,26 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
 
     func load(_ url: URL) { webView.load(URLRequest(url: url)) }
 
-    /// Simplero pages stay here; a link to anywhere else opens in your browser.
+    /// Simplero pages stay here; a link to anywhere else opens in your browser. Simplero's login
+    /// page signs in by itself with the Mac's Phone Link sign-in, then shows the page you wanted.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        if action.targetFrame?.isMainFrame != false, let url = action.request.url, SessionsDocPanes.isLoginPage(url) {
+            let wanted = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "return_to" }?.value.flatMap(URL.init(string:))
+            needsPhoneLink = !SBAccount.shared.signedIn
+            // Once a minute at most, so a sign-in Simplero refuses cannot loop.
+            if let wanted, SBAccount.shared.signedIn, Date().timeIntervalSince(lastSignIn) > 60 {
+                lastSignIn = Date()
+                decisionHandler(.cancel)
+                Task {
+                    if let signed = await SessionsDocPanes.signInURL(for: wanted) { self.load(signed) } else { self.load(url) }
+                }
+                return
+            }
+        } else if action.targetFrame?.isMainFrame != false {
+            needsPhoneLink = false
+        }
         if action.navigationType == .linkActivated, let url = action.request.url,
            ["http", "https"].contains(url.scheme ?? ""), !SessionsDocPanes.staysInPane(url) {
             SessionsLinkOpener.open(url, nextToSession: false)
@@ -144,6 +166,18 @@ struct DocPaneView: View {
             .padding(.horizontal, 6)
             .frame(height: 32)
             Divider()
+            if page.needsPhoneLink {
+                HStack(spacing: 8) {
+                    Image(systemName: "key").font(.system(size: 11))
+                    Text("Sign in once with Phone Link, and pages here sign in by themselves.")
+                        .font(.system(size: 12)).lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button("Phone Link…") { PhoneLinkWindow.show() }.controlSize(.small)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Color.accentColor.opacity(0.12))
+                Divider()
+            }
             DocWebHolderView(page: page)
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -156,6 +190,28 @@ struct DocPaneView: View {
         .buttonStyle(.borderless)
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+/// The pane's web view. ⌘V, ⌘C, ⌘X, ⌘A, ⌘Z go straight to the page when it has the keyboard
+/// (through the menu they did not arrive, as in the sidebar).
+final class DocWebView: WKWebView {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.type == .keyDown, window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        let action: Selector?
+        switch (mods, key) {
+        case (.command, "v"): action = #selector(NSText.paste(_:))
+        case (.command, "c"): action = #selector(NSText.copy(_:))
+        case (.command, "x"): action = #selector(NSText.cut(_:))
+        case (.command, "a"): action = #selector(NSText.selectAll(_:))
+        case (.command, "z"): action = Selector(("undo:"))
+        case ([.command, .shift], "z"): action = Selector(("redo:"))
+        default: action = nil
+        }
+        guard let action else { return super.performKeyEquivalent(with: event) }
+        return NSApp.sendAction(action, to: self, from: nil)
     }
 }
 

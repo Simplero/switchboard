@@ -19,6 +19,10 @@ Switchboard is a macOS terminal for people who run many AI coding sessions at th
 - **A panel above each session.** What the session works on and what is still open in it (a
   model reads the conversation when the agent stops), and the pages it gave you by title: dev
   pages, Simplero Docs and claude.ai artifacts, with the login that published each artifact.
+- **Links open in the right place.** Switchboard sets `BROWSER` for its terminals, and Claude
+  Code opens a link you click in it with `$BROWSER`: a Simplero Doc opens in a pane next to the
+  session it came from (signed in with Phone Link), a dev page (.test, .internal) in Chrome, the
+  rest where Link Router sends it.
 - **Updates keep programs running.** For an update, the app hands every terminal to a small holder
   process (`macos/switchboard-holder.c`), and the new app takes them back.
 - **iPhone link.** A WebSocket on port 4480 lets a phone read and drive the sessions. It accepts

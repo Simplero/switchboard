@@ -1,6 +1,6 @@
 // Link Router: the default browser that opens every link in the right place.
 //
-// - Dev and test pages (any *.test host, with or without a port; simplero.internal;
+// - Dev and test pages (any *.test or *.internal host, with or without a port;
 //   localhost) open in Google Chrome. If the page is already open in a Chrome tab, that
 //   tab comes to the front instead of a second copy.
 // - claude.ai artifacts open in the Arc Space of the login that published them (the
@@ -30,8 +30,7 @@ enum Target: Equatable {
 /// Where a link goes.
 func route(_ url: URL) -> Target {
     let host = (url.host ?? "").lowercased()
-    let dev = host.hasSuffix(".test")
-        || host == "simplero.internal" || host.hasSuffix(".simplero.internal")
+    let dev = host.hasSuffix(".test") || host.hasSuffix(".internal")
         || ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"].contains(host)
     if dev { return .chrome }
     if host == "claude.ai", let id = artifactID(url) {

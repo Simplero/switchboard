@@ -433,6 +433,13 @@ final class SessionsWebView: WKWebView {
     /// menu, ⌘V did not reach the new-session form. A paste with files or a picture on the
     /// clipboard attaches them to the open form (by their paths; a picture is saved as a file).
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // ⌘ with an arrow (and ⇧ to select) in the open new-session form: it moves in the text,
+        // not to another session or tab.
+        if Self.newFormOpen, event.type == .keyDown, window?.firstResponder === self,
+           event.modifierFlags.contains(.command), (123...126).contains(event.keyCode) {
+            keyDown(with: event)
+            return true
+        }
         guard event.type == .keyDown, window?.firstResponder === self,
               event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command else {
             return super.performKeyEquivalent(with: event)
@@ -579,6 +586,42 @@ struct SessionsWebSidebar: NSViewRepresentable {
     func updateNSView(_ nsView: SessionsWebHolder, context: Context) {}
 }
 
+
+/// `$BROWSER` for everything that runs in Switchboard's terminals. Claude Code opens a link
+/// you click in it with "$BROWSER <url>" (else `open`), and so do gh and other tools. The
+/// script hands the link to Switchboard with its terminal, so a Simplero Doc opens next to the
+/// session it came from and a dev page (.test, .internal) in Chrome; without Switchboard, the
+/// link opens as usual.
+enum SessionsLinkHelper {
+    static var path: String { SBPaths.data + "/bin/switchboard-open" }
+
+    static let script = #"""
+    #!/bin/sh
+    # Switchboard: BROWSER for the programs in its terminals (written by the app at each start).
+    # Hands each link to Switchboard with this terminal; without Switchboard, opens it as usual.
+    info="${SESSIONS_API_INFO:-$HOME/.config/session-inbox/ghostty-api.json}"
+    tty=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')
+    for url in "$@"; do
+      port=$(sed -n 's/.*"port"[^0-9]*\([0-9][0-9]*\).*/\1/p' "$info" 2>/dev/null)
+      token=$(sed -n 's/.*"token"[^"]*"\([^"]*\)".*/\1/p' "$info" 2>/dev/null)
+      esc=$(printf '%s' "$url" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      if [ -n "$port" ] && curl -sf -m 3 -o /dev/null -H "x-token: $token" -H "Content-Type: application/json" \
+           -d "{\"url\":\"$esc\",\"tty\":\"$tty\"}" "http://127.0.0.1:$port/sb/openlink"; then
+        continue
+      fi
+      open "$url"
+    done
+    """#
+
+    /// Write the script and point BROWSER at it; terminals and their programs inherit it.
+    static func install() {
+        let dir = (path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        guard SBFiles.writeAtomic(Data(script.utf8), path) else { return }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        setenv("BROWSER", path, 1)
+    }
+}
 
 /// Opens web links where Link Router would (dev pages in Chrome, artifacts in the Arc
 /// Space of the login that published them, Docs in the main Space), when Link Router is

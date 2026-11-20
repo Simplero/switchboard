@@ -100,6 +100,13 @@ final class SessionsStore: ObservableObject {
         // ⌘↑ / ⌘↓: previous / next session.  ⌘P: search.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+            // The new-session form is open and has the keyboard: every key is for the form
+            // (⌘↑ ⌘↓ ⌘← ⌘→ move in the text), none switches sessions.
+            let page = SessionsWeb.shared.webView
+            if SessionsWebView.newFormOpen, let r = page.window?.firstResponder as? NSView,
+               r === page || r.isDescendant(of: page) {
+                return event
+            }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
             if mods == .command {
                 // Arrows by key code (the same on every layout). Letters by the

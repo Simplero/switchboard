@@ -265,15 +265,26 @@ final class SessionsAPI {
         case ("POST", "/sb/keycheck"):
             // For checks: press a key with ⌘ on the sidebar page the way AppKit dispatches it
             // (local monitors, the window's views, then the menu). {"key": "v"}
-            let web = SessionsWeb.shared.webView
-            guard let w = web.window else { return (404, ["error": "no sidebar window"]) }
+            // ?pane=<terminal id>: the page next to that terminal's session instead of the sidebar.
+            var web: WKWebView = SessionsWeb.shared.webView
+            if let pid = req.json["pane"] as? String, let view = surface(pid),
+               let controller = BaseTerminalController.controller(owning: view) as? TerminalController,
+               let page = SessionsDocPanes.shared.pages[controller.sessionsWorkspace] { web = page.webView }
+            guard let w = web.window else { return (404, ["error": "no window for that page"]) }
             w.makeFirstResponder(web)
             let ch = req.json["key"] as? String ?? "v"
-            let code: UInt16 = ["v": 9, "c": 8, "x": 7, "a": 0][ch] ?? 9
+            let arrows: [String: (UInt16, String)] = ["up": (126, "\u{F700}"), "down": (125, "\u{F701}"), "left": (123, "\u{F702}"), "right": (124, "\u{F703}")]
+            let code: UInt16 = arrows[ch]?.0 ?? ["v": 9, "c": 8, "x": 7, "a": 0][ch] ?? 9
+            let chars = arrows[ch]?.1 ?? ch
             guard let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
-                                            context: nil, characters: ch, charactersIgnoringModifiers: ch,
+                                            context: nil, characters: chars, charactersIgnoringModifiers: chars,
                                             isARepeat: false, keyCode: code) else { return (500, ["error": "no event"]) }
+            if req.json["send"] as? Bool == true {
+                // Through the app's whole key path (its key monitors first).
+                NSApp.sendEvent(ev)
+                return (200, ["sent": true, "focused": (SessionsStore.shared.focusedSurfaceID as Any?) ?? NSNull()])
+            }
             let before = String(describing: w.firstResponder.map { type(of: $0) })
             if req.json["direct"] as? Bool == true {
                 // What the Paste menu item does once AppKit routes it to the page.
@@ -313,6 +324,21 @@ final class SessionsAPI {
         case ("POST", "/sb/phonelink/report"):
             Task { @MainActor in await SBAccount.shared.report() }
             return (200, ["ok": true])
+        case ("POST", "/sb/openlink"):
+            // A link a program in one of the terminals opened ($BROWSER, see SessionsLinkHelper):
+            // a Simplero Doc opens next to that terminal's session, anything else where Link
+            // Router sends it. {"url", "tty", "dry"?}
+            guard let url = URL(string: (req.json["url"] as? String ?? "").trimmingCharacters(in: .whitespaces)),
+                  url.scheme != nil else { return (400, ["error": "no url"]) }
+            let tty = (req.json["tty"] as? String ?? "").replacingOccurrences(of: "/dev/", with: "")
+            let term = tty.isEmpty ? nil : SessionsAPI.terminalList().first { $0.tty.hasSuffix("/" + tty) || $0.tty == tty }
+            let session = term.flatMap { surface($0.id) }.flatMap { BaseTerminalController.controller(owning: $0) as? TerminalController }?.sessionsWorkspace
+            let ws = session ?? SessionsDocPanes.frontSession
+            let route = SessionsDocPanes.isDoc(url) && ws != nil ? "pane" : "browser"
+            if req.json["dry"] as? Bool != true {
+                if route == "pane", let ws { SessionsDocPanes.shared.open(url, session: ws) } else { SessionsLinkOpener.open(url, nextToSession: false) }
+            }
+            return (200, ["route": route, "session": (ws as Any?) ?? NSNull(), "terminal": (term?.id as Any?) ?? NSNull()])
         case ("POST", "/sb/docpane"):
             // For checks: open a page next to the session of a terminal (?id), as a Doc link does.
             guard let view = surface(req.json["id"] as? String),

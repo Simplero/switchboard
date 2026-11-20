@@ -2,6 +2,11 @@ import AppKit
 import Cocoa
 import GhosttyKit
 
+// Switchboard: programs in its terminals open links through $BROWSER (Claude Code does, for
+// links you click in it), so a Doc opens next to its session and a dev page in Chrome. Set
+// before ghostty_init: the core keeps the environment it starts with for every terminal.
+SessionsLinkHelper.install()
+
 // Initialize Ghostty global state. We do this once right away because the
 // CLI APIs require it and it lets us ensure it is done immediately for the
 // rest of the app.

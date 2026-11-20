@@ -823,6 +823,7 @@ final class Switchboard {
         let op = msg["op"] as? String ?? ""
         let k = msg["k"] as? String ?? ""
         let focus = msg["focus"] as? Bool ?? true
+        if focus { SessionSwitchLog.becauseIfNone("Switchboard op “\(op)” (the phone, a check, or a script)") }
         defer { publish() }
         switch op {
         case "open", "unpark":

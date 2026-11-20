@@ -339,6 +339,8 @@ window.Sessions = {
     if (nf.open) closeNew(false);
   },
   newFailed(){ if (nf.sent && !nfMsg.value && !nfName.value && !nf.files.length){ nfMsg.value = nf.sent.text; nfName.value = nf.sent.name; nf.files = nf.sent.files; nfFiles(); nfGrow(); } },
+  // Switchboard went to the background (true) or came back (false).
+  away(on){ awaySig = on ? rowSig() : null; },
   // Back and forward: whether the ‹ and › buttons can go anywhere.
   setHistory(b, f){ $('#navBack').disabled = !b; $('#navFwd').disabled = !f; },
   // ⌘P: start at the session in front.
@@ -451,13 +453,13 @@ q.addEventListener('keydown', e => {
   if (e.key === 'Enter'){
     e.preventDefault();
     const s = sessionOf(cur && cur.k) || results[0];
-    if (s){ if (!query && cur) setNavCol(cur.col); cur = null; openSession(s); }
+    if (s){ if (!query && cur) setNavCol(cur.col); cur = null; openSession(s, query ? 'Enter in the sidebar search (“' + query.slice(0, 40) + '”)' : 'Enter in the sidebar'); }
   }
 });
 
-function openSession(s){
+function openSession(s, via){
   if (query){ setTimeout(() => { clearSearch(); render(); }, 1500); }
-  bridge('open', {k: s.k});
+  bridge('open', {k: s.k, via: via || 'a click on the sidebar'});
 }
 
 // ---------- "Needs you" holds rows ----------
@@ -671,7 +673,15 @@ function folderChoices(){
   return list;
 }
 
+// While you are in another app: did the rows move? (The app then lets a click that brings
+// Switchboard back only bring it back, not open the row now under the pointer.)
+let awaySig = null;
+const rowSig = () => [...document.querySelectorAll('#cols .item[data-k]')].map(r => r.dataset.k + '@' + Math.round(r.getBoundingClientRect().top)).join(',');
 function render(){
+  renderNow();
+  if (awaySig !== null && rowSig() !== awaySig){ awaySig = null; bridge('movedAway'); }
+}
+function renderNow(){
   if (!data) return;
   // Not while the mouse button is down: a row rebuilt under the mouse loses the click.
   if (drag || pressing){ renderLater = true; return; }

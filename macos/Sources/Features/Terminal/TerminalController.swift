@@ -16,6 +16,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// the handoff on update skip it.
     var sessionsSpare = false
 
+    /// Switchboard: tabs opening in the background (`newTab(select: false)`), and the tab to go
+    /// back to after them (two at once must not leave the first one in front).
+    static var backgroundOpening = 0
+    static weak var backgroundReturn: NSWindow?
+
     /// Switchboard: the tabs of this session, in tab order.
     var sessionTabWindows: [NSWindow] {
         guard let window else { return [] }
@@ -460,8 +465,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return nil
         }
 
-        // Switchboard: the tab in front before this one (see `select`).
-        let previousSelected = parent.tabGroup?.selectedWindow ?? parent
+        // Switchboard: the tab in front before this one (see `select`). While another tab
+        // opens in the background, the tab you were on before that one.
+        let previousSelected = (select ? nil : Self.backgroundReturn) ?? parent.tabGroup?.selectedWindow ?? parent
 
         // Create a new window and add it to the parent
         let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
@@ -521,14 +527,25 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Switchboard: `select: false` (sessions reopened after a restart) still shows the tab
         // once, so it lays out and draws (a tab never shown stays blank), then goes back to
         // the tab you were on, and does not bring the app to the front.
+        if !select {
+            // The sidebar does not count this as a switch (nor back/forward history).
+            SessionsStore.quietUntil = Date().addingTimeInterval(0.5)
+            Self.backgroundReturn = previousSelected
+            Self.backgroundOpening += 1
+        }
         controller.showWindowSafely(self)
         if !select, previousSelected !== window {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                Self.backgroundOpening -= 1
+                if Self.backgroundOpening == 0 { Self.backgroundReturn = nil }
                 // You clicked another session meanwhile: stay there.
                 guard (window.tabGroup?.selectedWindow ?? window) === window else { return }
                 previousSelected.tabGroup?.selectedWindow = previousSelected
                 previousSelected.makeKeyAndOrderFront(nil)
             }
+        } else if !select {
+            Self.backgroundOpening -= 1
+            if Self.backgroundOpening == 0 { Self.backgroundReturn = nil }
         }
 
         // Windows with `macos-titlebar-style = hidden` create new windows when the

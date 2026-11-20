@@ -58,34 +58,34 @@ final class SessionHistory {
     var canGoBack: Bool { back.contains { $0 != current && isOpen($0) } }
     var canGoForward: Bool { forward.contains(where: isOpen) }
 
-    func goBack() {
+    func goBack(_ via: String = "back") {
         guard let i = back.lastIndex(where: { $0 != current && isOpen($0) }) else { return }
-        jump(toBack: i)
+        jump(toBack: i, via: via)
     }
 
-    func goForward() {
+    func goForward(_ via: String = "forward") {
         guard let i = forward.firstIndex(where: isOpen) else { return }
-        jump(toForward: i)
+        jump(toForward: i, via: via)
     }
 
     /// Like a browser's history list: the sessions passed over move to the other side.
-    func jump(toBack i: Int) {
+    func jump(toBack i: Int, via: String = "History") {
         guard back.indices.contains(i) else { return }
         let target = back[i]
         forward = Array(back[(i + 1)...]) + (current.map { [$0] } ?? []) + forward
         back = Array(back[..<i])
-        arrive(target)
+        arrive(target, via: via)
     }
 
-    func jump(toForward i: Int) {
+    func jump(toForward i: Int, via: String = "History") {
         guard forward.indices.contains(i) else { return }
         let target = forward[i]
         back = back + (current.map { [$0] } ?? []) + Array(forward[..<i])
         forward = Array(forward[(i + 1)...])
-        arrive(target)
+        arrive(target, via: via)
     }
 
-    private func arrive(_ key: String) {
+    private func arrive(_ key: String, via: String) {
         // A session that stopped running drops out of what you step over (it stays in the
         // list as closed; History reopens it when you pick it).
         back.removeAll { $0 == key }
@@ -94,7 +94,7 @@ final class SessionHistory {
         currentSince = Date()
         arriving = key
         changed()
-        SessionsStore.shared.open(key: key)
+        SessionsStore.shared.open(key: key, via: via)
     }
 
     /// A session's key changes when its conversation id arrives (a new session's first key →
@@ -145,7 +145,7 @@ final class SessionHistory {
         if !fwd.isEmpty {
             header("Forward")
             for (i, k) in fwd.enumerated().reversed() where known.contains(k) {
-                menu.addItem(build(title(k), false) { SessionHistory.shared.jump(toForward: i) })
+                menu.addItem(build(title(k), false) { SessionHistory.shared.jump(toForward: i, via: "the History menu") })
             }
             menu.addItem(.separator())
         }
@@ -159,7 +159,7 @@ final class SessionHistory {
             menu.addItem(.separator())
             header("Back")
             for (i, k) in backs where known.contains(k) && k != current {
-                menu.addItem(build(title(k), false) { SessionHistory.shared.jump(toBack: i) })
+                menu.addItem(build(title(k), false) { SessionHistory.shared.jump(toBack: i, via: "the History menu") })
             }
         }
         if menu.items.isEmpty { header("No sessions visited yet") }

@@ -197,9 +197,11 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         case "ready":
             pageReady()
         case "histBack":
-            SessionHistory.shared.goBack()
+            SessionHistory.shared.goBack("the ‹ button")
         case "histForward":
-            SessionHistory.shared.goForward()
+            SessionHistory.shared.goForward("the › button")
+        case "movedAway":
+            SessionsWebView.listMovedWhileAway = true
         case "histMenu":
             menuActions = []
             let menu = SessionHistory.shared.menu { [unowned self] title, checked, action in self.item(title, checked: checked, action) }
@@ -216,7 +218,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             if let cwd = body["cwd"] as? String, !cwd.isEmpty { SBSpares.shared.folder = SBPaths.expand(cwd); SBSpares.shared.tick() }
         case "open":
             guard let k = body["k"] as? String else { return }
-            store.open(key: k)
+            store.open(key: k, via: body["via"] as? String ?? "a click on the sidebar")
         case "folderMenu":
             // Where new sessions start: your usual folders, or any folder.
             let folders = body["folders"] as? [String] ?? []
@@ -302,6 +304,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             store.send(["op": "switch", "k": k, "login": login])
         case "op":
             if let o = body["o"] as? [String: Any] {
+                SessionSwitchLog.because("the sidebar: \(o["op"] as? String ?? "an action")")
                 if let op = o["op"] as? String, let k = o["k"] as? String,
                    let action = ["done": "Done with", "close": "Close", "park": "Park"][op],
                    !store.confirmClose(k, action: action) { return }
@@ -318,6 +321,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             SessionsVersion.shared.restart()
         case "selectTab":
             guard let id = body["id"] as? Int, let w = NSApp.window(withWindowNumber: id) else { return }
+            SessionSwitchLog.because("a tab in the panel")
             w.tabGroup?.selectedWindow = w
             w.makeKeyAndOrderFront(nil)
             lastContext = ""
@@ -497,9 +501,19 @@ final class SessionsWebView: WKWebView {
     /// keyboard leaves (a click in the terminal), and after it moves to another window
     /// (⌘↑ ⌘↓), where the terminal has the keyboard. Its focused field stays focused in the
     /// page otherwise, with a blinking caret.
+    /// The rows moved while you were in another app (the page says so, see `Sessions.away`).
+    static var listMovedWhileAway = false
+
     /// The first click on a window in the background also clicks the row (WebKit refuses it
-    /// by default, so a click from another app only brought the window forward).
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    /// by default, so a click from another app only brought the window forward). Not when that
+    /// click brings Switchboard back and the rows moved while you were away: another session
+    /// may be where the one you saw was. That click only brings Switchboard forward.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        let comingBack = !NSApp.isActive || Date().timeIntervalSince(SessionSwitchLog.activeSince) < 0.5
+        guard comingBack, Self.listMovedWhileAway else { return true }
+        SessionSwitchLog.line("A click on the sidebar brought Switchboard back and opened nothing: the rows moved while you were away")
+        return false
+    }
 
     override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()

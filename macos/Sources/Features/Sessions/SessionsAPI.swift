@@ -196,6 +196,9 @@ final class SessionsAPI {
     }
 
     private func handle(_ req: Request) -> (Int, Any) {
+        if req.method == "POST", !req.path.hasPrefix("/sb/history") {
+            SessionSwitchLog.because("the API: \(req.path)" + ((req.json["op"] as? String).map { " \($0)" } ?? ""))
+        }
         guard req.headers["x-token"] == token else { return (403, ["error": "bad token"]) }
         switch (req.method, req.path) {
         case ("GET", "/terminals"):
@@ -383,15 +386,46 @@ final class SessionsAPI {
                           "in_window": page?.webView.window === controller.window,
                           "pane_width": page?.webView.frame.width ?? 0,
                           "grid": SessionsAPI.gridSize(view).map { [$0.cols, $0.rows] } ?? []])
+        case ("GET", "/sb/switchlog"):
+            // For checks: the end of the log of session switches, and the sidebar's away state.
+            let text = (try? String(contentsOfFile: SessionSwitchLog.path, encoding: .utf8)) ?? ""
+            return (200, ["lines": Array(text.split(separator: "\n").suffix(20).map(String.init)),
+                          "moved_while_away": SessionsWebView.listMovedWhileAway,
+                          "first_mouse": SessionsWeb.shared.webView.acceptsFirstMouse(for: nil),
+                          "focused": (SessionsStore.shared.focusedSurfaceID as Any?) ?? NSNull()])
+        case ("GET", "/sb/menukeys"):
+            // For checks: the menu items that switch tabs (each session is a tab of the one window).
+            var rows: [String] = []
+            func walk(_ m: NSMenu, _ path: String) {
+                for it in m.items {
+                    let act = it.action.map { NSStringFromSelector($0) } ?? ""
+                    if it.keyEquivalent == "\t" || act.lowercased().contains("tab") {
+                        var mods = ""
+                        if it.keyEquivalentModifierMask.contains(.control) { mods += "⌃" }
+                        if it.keyEquivalentModifierMask.contains(.shift) { mods += "⇧" }
+                        if it.keyEquivalentModifierMask.contains(.command) { mods += "⌘" }
+                        rows.append("\(path) › \(it.title)  [\(mods)\(it.keyEquivalent == "\t" ? "⇥" : it.keyEquivalent)]  \(act)")
+                    }
+                    if let sub = it.submenu { walk(sub, path + " › " + it.title) }
+                }
+            }
+            if let m = NSApp.mainMenu { walk(m, "") }
+            if let wm = NSApp.windowsMenu {
+                wm.update()
+                for it in wm.items where !it.isSeparatorItem {
+                    rows.append("Window › \(it.title) [\(it.keyEquivalentModifierMask.rawValue):\(it.keyEquivalent.unicodeScalars.map { String($0.value) }.joined(separator: ","))] \(it.action.map { NSStringFromSelector($0) } ?? "")")
+                }
+            }
+            return (200, ["items": rows])
         case ("GET", "/sb/history"), ("POST", "/sb/history"):
             // For checks: back and forward between sessions. POST {visit: key} | {go: "back"|"forward"} |
             // {jump_back: i} | {jump_forward: i}; the answer is the state and the History menu's lines.
             let h = SessionHistory.shared
             if req.method == "POST" {
                 if let k = req.json["visit"] as? String { h.visited(k) }
-                switch req.json["go"] as? String { case "back": h.goBack(); case "forward": h.goForward(); default: break }
-                if let i = req.json["jump_back"] as? Int { h.jump(toBack: i) }
-                if let i = req.json["jump_forward"] as? Int { h.jump(toForward: i) }
+                switch req.json["go"] as? String { case "back": h.goBack("check: back"); case "forward": h.goForward("check: forward"); default: break }
+                if let i = req.json["jump_back"] as? Int { h.jump(toBack: i, via: "check: History") }
+                if let i = req.json["jump_forward"] as? Int { h.jump(toForward: i, via: "check: History") }
             }
             let menu = h.menu { title, checked, _ in let m = NSMenuItem(title: title, action: nil, keyEquivalent: ""); m.state = checked ? .on : .off; return m }
             return (200, ["back": h.back, "forward": h.forward, "current": (h.current as Any?) ?? NSNull(),
@@ -660,6 +694,7 @@ final class SessionsAPI {
         let last = host.tabGroup?.windows.last ?? host
         guard last.addTabbedWindowSafely(window, ordered: .above) else { return nil }
         controller.sessionsWorkspace = UUID().uuidString
+        SessionSwitchLog.because("a new session")
         last.tabGroup?.selectedWindow = window
         controller.showWindowSafely(nil)
         controller.focusSurface(view)

@@ -100,7 +100,23 @@ final class SessionsStore: ObservableObject {
         }
         SessionsAPI.trackActiveTabs()
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { SessionSwitchLog.noteEvent() }
             Task { @MainActor in self?.refreshFocus() }
+        }
+        // Away in another app: the sidebar notes whether its rows move meanwhile (a click that
+        // brings Switchboard back then lands on another row than the one you saw).
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                SessionsWebView.listMovedWhileAway = false
+                SessionsWeb.shared.webView.evaluateJavaScript("window.Sessions && Sessions.away && Sessions.away(true)")
+            }
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                SessionSwitchLog.activeSince = Date()
+                SessionSwitchLog.noteEvent("back from another app by ")
+                SessionsWeb.shared.webView.evaluateJavaScript("window.Sessions && Sessions.away && Sessions.away(false)")
+            }
         }
         // ⌘↑ / ⌘↓: previous / next session.  ⌘P: search.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -127,10 +143,10 @@ final class SessionsStore: ObservableObject {
                 switch event.charactersIgnoringModifiers?.lowercased() {
                 case "[":
                     // ⌘[ ⌘]: back and forward between sessions, like a browser.
-                    SessionHistory.shared.goBack()
+                    SessionHistory.shared.goBack("⌘[ (back)")
                     return nil
                 case "]":
-                    SessionHistory.shared.goForward()
+                    SessionHistory.shared.goForward("⌘] (forward)")
                     return nil
                 case "p":
                     UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
@@ -155,8 +171,8 @@ final class SessionsStore: ObservableObject {
         // The mouse's back and forward buttons (button 4 and 5) go back and forward too.
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { event in
             switch event.buttonNumber {
-            case 3: SessionHistory.shared.goBack(); return nil
-            case 4: SessionHistory.shared.goForward(); return nil
+            case 3: SessionHistory.shared.goBack("the mouse's back button"); return nil
+            case 4: SessionHistory.shared.goForward("the mouse's forward button"); return nil
             default: return event
             }
         }
@@ -205,8 +221,16 @@ final class SessionsStore: ObservableObject {
         UserDefaults.standard.set(visits, forKey: "sessions.visits")
     }
 
+    /// A tab shows for a moment while it opens in the background (TerminalController.newTab):
+    /// not a switch.
+    static var quietUntil = Date.distantPast
+
     func refreshFocus() {
-        let controller = NSApp.keyWindow?.windowController as? BaseTerminalController
+        guard Date() >= Self.quietUntil else { return }
+        // In another app no window is key: the session in front is still the one the window
+        // shows (it keeps its place in the list, and a switch meanwhile shows in the log).
+        let shownWindow = NSApp.keyWindow ?? (NSApp.isActive ? nil : SessionsAPI.mainWindow().map { $0.tabGroup?.selectedWindow ?? $0 })
+        let controller = shownWindow?.windowController as? BaseTerminalController
         var id = controller?.focusedSurface?.id.uuidString
         // In another tab of a session (a shell next to Claude) the session in front is still
         // that session: report its own terminal, so the sidebar keeps it selected.
@@ -222,7 +246,10 @@ final class SessionsStore: ObservableObject {
             SessionsWeb.shared.setFocus(id)
             SessionsWeb.banner.pushBannerContext()
             // Back and forward, like a browser.
-            if let id, let s = payload?.s.first(where: { $0.sf == id && $0.isOpen }) { SessionHistory.shared.visited(s.k) }
+            if let id, let s = payload?.s.first(where: { $0.sf == id && $0.isOpen }) {
+                SessionHistory.shared.visited(s.k)
+                SessionSwitchLog.front(s)
+            }
         }
         recordVisit()
         if let p = picked, let s = payload?.s.first(where: { $0.k == p }), s.sf == id { picked = nil }
@@ -268,7 +295,8 @@ final class SessionsStore: ObservableObject {
     func open(_ s: SessionItem) { open(key: s.k, name: s.n, surface: s.isOpen ? s.sf : nil) }
 
     /// Open a session by its key (a search result may not be in the sidebar's data).
-    func open(key k: String) {
+    func open(key k: String, via: String? = nil) {
+        if let via { SessionSwitchLog.because(via) }
         let e = Switchboard.shared.entry(k)
         open(key: k, name: e?.name ?? "This session", surface: e?.isOpen == true ? e?.surface_id : nil)
     }
@@ -305,6 +333,7 @@ final class SessionsStore: ObservableObject {
         guard !order.isEmpty else { return }
         let current = order.firstIndex(where: { $0.sf == focusedSurfaceID }) ?? (delta > 0 ? -1 : order.count)
         let next = (current + delta + order.count) % order.count
+        SessionSwitchLog.because(delta > 0 ? "⌘↓ (next session)" : "⌘↑ (previous session)")
         open(order[next])
     }
 }

@@ -1285,6 +1285,12 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "toggle_split_zoom", menuItem: self.menuZoomSplit)
         syncMenuShortcut(config, action: "goto_split:previous", menuItem: self.menuPreviousSplit)
         syncMenuShortcut(config, action: "goto_split:next", menuItem: self.menuNextSplit)
+        // Switchboard: ⌘[ ⌘] go back and forward between sessions (SessionsStore's key
+        // monitor takes them first), so the split items do not show them.
+        for item in [menuPreviousSplit, menuNextSplit].compactMap({ $0 })
+        where item.keyEquivalentModifierMask == .command && ["[", "]"].contains(item.keyEquivalent) {
+            item.keyEquivalent = ""
+        }
         syncMenuShortcut(config, action: "goto_split:up", menuItem: self.menuSelectSplitAbove)
         syncMenuShortcut(config, action: "goto_split:down", menuItem: self.menuSelectSplitBelow)
         syncMenuShortcut(config, action: "goto_split:left", menuItem: self.menuSelectSplitLeft)

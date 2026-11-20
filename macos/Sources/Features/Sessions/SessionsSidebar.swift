@@ -38,6 +38,10 @@ struct SessionItem: Decodable, Identifiable, Equatable {
     let ar: Bool?
     /// The key this session had before its conversation id arrived.
     let was: String?
+    /// Pinned: its place in the Pinned row (0 first).
+    let pn: Int?
+    /// A pinned shell's command (lazygit).
+    let pc: String?
 
     var id: String { k }
     var isOpen: Bool { o ?? false }
@@ -45,6 +49,7 @@ struct SessionItem: Decodable, Identifiable, Equatable {
     var isArchived: Bool { ar ?? false }
     var labels: [String] { lb ?? [] }
     var login: String { lg ?? "" }
+    var isPinned: Bool { pn != nil }
 }
 
 struct SpareInfo: Decodable, Equatable {
@@ -134,6 +139,12 @@ final class SessionsStore: ObservableObject {
                 return event
             }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            // ⌃1…⌃9: the pins. The same key again goes back to the session you were in.
+            if mods == .control, !event.isARepeat, let c = event.charactersIgnoringModifiers, c.count == 1,
+               let n = Int(c), (1...9).contains(n), n <= self.pins.count {
+                self.openPin(n)
+                return nil
+            }
             if mods == .command {
                 // Arrows by key code (the same on every layout). Letters by the
                 // character the layout types: key code 35 is P only on QWERTY
@@ -203,6 +214,31 @@ final class SessionsStore: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    /// The pinned sessions, in the order of the Pinned row.
+    var pins: [SessionItem] {
+        (payload?.s ?? []).filter(\.isPinned).sorted { ($0.pn ?? 0) < ($1.pn ?? 0) }
+    }
+
+    /// The session you were in before you went to a pin: the pin's key takes you back to it.
+    private var pinReturn: String?
+
+    /// ⌃n: open pin n. When it is in front already, go back to the session you came from.
+    func openPin(_ n: Int) {
+        let all = pins
+        guard all.indices.contains(n - 1) else { return }
+        let p = all[n - 1]
+        let front = payload?.s.first { $0.isOpen && $0.sf != nil && $0.sf == focusedSurfaceID }
+        if let front, front.k == p.k {
+            if let r = pinReturn, r != p.k, payload?.s.first(where: { $0.k == r })?.isOpen == true {
+                open(key: r, via: "⌃\(n) again (back from the pin “\(p.n)”)")
+            } else {
+                SessionHistory.shared.goBack("⌃\(n) again (back from the pin “\(p.n)”)")
+            }
+            return
+        }
+        open(key: p.k, via: "⌃\(n) (the pin “\(p.n)”)")
+    }
+
     /// A new session with a plain shell, in the folder of the terminal you are in.
     func newShellSession() {
         let pwd = (NSApp.keyWindow?.windowController as? BaseTerminalController)?.focusedSurface?.pwd
@@ -242,6 +278,8 @@ final class SessionsStore: ObservableObject {
             if let s = payload?.s.first(where: { $0.isOpen && $0.sf.map { ids.contains($0) } == true }) { id = s.sf }
         }
         if id != focusedSurfaceID {
+            let was = payload?.s.first { $0.isOpen && $0.sf != nil && $0.sf == focusedSurfaceID }
+            if let was, !was.isPinned, let id, payload?.s.first(where: { $0.sf == id && $0.isOpen })?.isPinned == true { pinReturn = was.k }
             focusedSurfaceID = id
             SessionsWeb.shared.setFocus(id)
             SessionsWeb.banner.pushBannerContext()
@@ -305,6 +343,7 @@ final class SessionsStore: ObservableObject {
         picked = k
         if let sf, let view = SessionsAPI.surface(id: sf) {
             SessionsAPI.focus(view)
+            Switchboard.shared.startPinCommandIfIdle(k)
             return
         }
         // Closed, parked or archived: resume it here. A conversation that still runs in cmux
@@ -329,7 +368,7 @@ final class SessionsStore: ObservableObject {
         let byKey = Dictionary(all.map { ($0.k, $0) }, uniquingKeysWith: { a, _ in a })
         let order = (navOrder.isEmpty ? all.map(\.k) : navOrder)
             .compactMap { byKey[$0] }
-            .filter { $0.isOpen }
+            .filter { $0.isOpen && !$0.isPinned }
         guard !order.isEmpty else { return }
         let current = order.firstIndex(where: { $0.sf == focusedSurfaceID }) ?? (delta > 0 ? -1 : order.count)
         let next = (current + delta + order.count) % order.count

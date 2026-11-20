@@ -83,6 +83,23 @@ button{font:inherit;color:inherit;cursor:default}
 .navbtns button{border:0;background:transparent;color:var(--ink2);width:28px;height:30px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center}
 .navbtns button:hover:not(:disabled){background:var(--sunk);color:var(--ink)}
 .navbtns button:disabled{color:var(--faint);opacity:.55}
+/* Pinned: sessions that stay (Chief of staff, lazygit). Not in the lists below. ⌃1…⌃9 open them. */
+.pins{display:flex;flex-direction:column;gap:6px}
+.pinrow{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
+.pin{display:flex;align-items:center;gap:8px;border:1px solid var(--line2);background:var(--surface);border-radius:9px;padding:6px 8px;min-width:0;text-align:left;color:var(--ink);font:inherit}
+.pin:hover{border-color:var(--muted2)}
+.pin .pi{display:inline-flex;flex:none}
+.pin .pt{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.pin b{font-size:12.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pin small{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pin small .w{font-weight:650}
+.pin kbd{margin-left:auto;flex:none;font:600 10.5px ui-monospace,SFMono-Regular,monospace;color:var(--muted2);border:1px solid var(--line2);border-radius:4px;padding:1px 4px}
+.pin.off b{color:var(--muted)}
+.pin.sel{background:var(--sel);border-color:var(--sel);color:var(--sel-ink)}
+.pin.sel small,.pin.sel kbd{color:#E3E8FF}
+.pin.sel kbd{border-color:rgba(255,255,255,.45)}
+.pin.dragging{position:relative;z-index:2;box-shadow:0 8px 22px rgba(0,0,0,.22)}
+body.dragging-pins,body.dragging-pins *{cursor:grabbing!important}
 #search input{flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:inherit;font-size:13px;user-select:text;-webkit-user-select:text}
 #search .key{font-size:10.5px;color:var(--faint);border:1px solid var(--line2);border-radius:4px;padding:0 4px}
 .seg{display:inline-flex;gap:1px}
@@ -200,6 +217,7 @@ svg{flex-shrink:0}
       <span class="key" id="qkey">⌘P</span>
     </label>
     </div>
+    <div id="pins" class="pins" hidden></div>
     <div class="row"><span class="cap">Columns</span><span class="seg" id="colseg"></span></div>
   </div>
   <div id="cols"></div>
@@ -258,7 +276,27 @@ const LOOK = {
   closed:['moon','Closed','b-quiet','--muted'], archived:['archive','Archived','b-quiet','--muted'],
   shell:['term','Terminal','b-quiet','--muted'],
 };
+// What each state means: the tooltip on its icon and word.
+const TIP = {
+  urgent:'Urgent: act soon. Money, customer data, production or a merge is at stake.',
+  permission:'Approve: the agent waits for your OK to run something. Answer the dialog in the terminal.',
+  question:'Answer: the agent asked you a question.',
+  review:'Look at it: the agent wants you to look at or try something.',
+  heads_up:'Read this: the agent warns you about something that needs your decision.',
+  wrong_login:'Wrong login: this session runs with another login than it should.',
+  working:'Working: the agent is busy. Nothing for you yet.',
+  reading:'Reading: Switchboard is reading what the agent said.',
+  done:'Done: the agent finished. Nothing for you.',
+  handled:'Handled: you marked its message as handled.',
+  info:'Answered: the agent answered or reported. Nothing for you.',
+  parked:'Parked: closed, kept in the list. Click to resume it.',
+  closed:'Closed: not running. Click to reopen it.',
+  archived:'Archived: you were done with it. Click to resume it.',
+  shell:'Terminal: a shell, no agent.',
+};
 const NEEDS = new Set(['permission','question','review','heads_up','wrong_login']);
+// Pinned sessions stay in the Pinned row: never in the lists or the counts.
+const isPin = s => s.pn != null;
 const LOGIN_ICON = {'simplero.com':'brief','corre.li':'person','correli.me':'star'};
 const stateOf = s => (s.u && NEEDS.has(s.st)) ? 'urgent' : (s.st || 'info');
 const needsYou = s => { const st = stateOf(s); return st === 'urgent' || NEEDS.has(st); };
@@ -531,7 +569,7 @@ function cmp(c){
 function rowsFor(ci){
   ensureOrders();
   const c = colState[ci];
-  const all = data.s;
+  const all = data.s.filter(s => !isPin(s));
   const whereOk = s => c.where === 'any' || (c.where === 'here' ? (s.o && s.be === 'ghostty') : c.where === 'cmux' ? (s.o && s.be !== 'ghostty') : !s.o);
   if (c.where === 'off'){
     // Not running anywhere: parked and closed sessions only.
@@ -598,12 +636,12 @@ function itemHTML(s, ci){
   const line = st === 'working' ? (s.wl || s.ns) : (s.ns || s.sd || s.t || '');
   const labs = (s.lb || []).map(l => `<span class="lab">#${esc(l)}</span>`).join(' ');
   return `<div class="item${sel ? ' sel' : ''}${ring ? ' sel-ring' : ''}" data-k="${esc(s.k)}">
-    <span class="ico" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
+    <span class="ico" title="${esc(TIP[st] || '')}" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
     <span class="body">
       <span class="top"><span class="name">${esc(s.n)}</span>
         <span class="age">${ago(s.la)}</span>
       </span>
-      <span class="line"><span class="word" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
+      <span class="line"><span class="word" title="${esc(TIP[st] || '')}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
       <span class="meta">${s.a === 'shell' ? `<span>${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span>· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
     </span></div>`;
 }
@@ -615,10 +653,10 @@ function seg(id, options, value, onPick){
 }
 
 function colControls(ci){
-  const c = colState[ci], count = f => data.s.filter(s => s.o && f(s)).length;
+  const c = colState[ci], count = f => data.s.filter(s => s.o && !isPin(s) && f(s)).length;
   const fchip = (v, label, n, tip) => `<button class="fchip" data-f="${v}" aria-pressed="${c.filter===v}"${tip ? ` title="${tip}"` : ''}>${label} ${n}</button>`;
   const pills = (key, opts) => `<span class="seg">${opts.map(([v,l]) => `<button data-${key}="${v}" aria-pressed="${c[key]===v}">${l}</button>`).join('')}</span>`;
-  const wcount = w => data.s.filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el) : true).length;
+  const wcount = w => data.s.filter(s => !isPin(s)).filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el) : true).length;
   const wchip = (v, label) => `<button class="fchip" data-w="${v}" aria-pressed="${c.where===v}">${label} ${v === 'any' ? '' : wcount(v)}</button>`;
   return `<div class="ctrl">
     <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
@@ -636,7 +674,7 @@ function nowCard(){
   const step = st === 'working' ? (s.wl || 'Working…') : (s.ns || (st === 'done' ? 'Nothing left. You can close this session.' : 'Nothing needs you here.'));
   const reps = (s.rp || []).filter(r => r && r[1]).slice(0, 3);
   el.innerHTML = `
-    <div class="head"><span class="name">${esc(s.n)}</span><span class="badge ${L[2]}">${ic(L[0],11,2.4)} ${L[1]}</span></div>
+    <div class="head"><span class="name">${esc(s.n)}</span><span class="badge ${L[2]}" title="${esc(TIP[st] || '')}">${ic(L[0],11,2.4)} ${L[1]}</span></div>
     ${s.t ? `<div class="title">${esc(s.t)}</div>` : ''}
     <div class="next${needs ? '' : ' calm'}"><span class="lbl">Next step for you</span><p>${esc(step)}</p>
       ${reps.length ? `<div class="replies">${reps.map(r => `<button class="reply" data-send="${esc(r[1])}" data-k="${esc(s.k)}">${esc(r[0])}</button>`).join('')}</div>` : ''}</div>
@@ -673,6 +711,70 @@ function folderChoices(){
   return list;
 }
 
+// ---------- Pinned ----------
+function pinTile(s, i){
+  const st = stateOf(s), L = LOOK[st] || LOOK.info;
+  const front = s.o && s.sf && s.sf === focusSf;
+  let icon = L[0], color = L[3], word = L[1], rest = s.ns || s.t || '', tip = TIP[st] || '';
+  if (s.el){ icon = 'dots'; color = '--muted'; word = 'Elsewhere'; rest = 'in another terminal'; tip = 'Runs in another terminal (cmux or another app). Click to move it here.'; }
+  else if (!s.o){ icon = 'moon'; color = '--faint'; word = 'Not running'; rest = s.a === 'shell' ? s.cwd : ''; tip = 'Not running. Click to start it.'; }
+  else if (s.a === 'shell'){ word = ''; rest = s.cwd; }
+  else if (st === 'working'){ rest = s.wl || s.ns || ''; }
+  const key = i < 9 ? `⌃${i + 1}` : '';
+  const title = `${s.n}${tip ? ' · ' + tip : ''}${s.o && s.ns && s.a !== 'shell' ? '\n' + s.ns : ''}${key ? `\n${key} opens it. ${key} again takes you back.` : ''}\nDrag to change the order. Right-click to unpin.`;
+  const small = (word ? `<span class="w" style="color:${front ? 'inherit' : `var(${color === '--faint' ? '--muted' : color})`}">${word}</span>` : '') + (word && rest ? ' · ' : '') + esc(rest);
+  return `<button class="pin${front ? ' sel' : ''}${s.o ? '' : ' off'}" data-k="${esc(s.k)}" title="${esc(title)}">
+    <span class="pi" style="color:${front ? 'inherit' : `var(${color})`}">${ic(icon, 14, 2.2, st === 'working' && s.o ? 'spin' : '')}</span>
+    <span class="pt"><b>${esc(s.n)}</b><small>${small || '&nbsp;'}</small></span>${key ? `<kbd>${key}</kbd>` : ''}</button>`;
+}
+function renderPins(){
+  const el = $('#pins');
+  const pins = data.s.filter(isPin).sort((a, b) => a.pn - b.pn);
+  el.hidden = !pins.length;
+  el.innerHTML = pins.length ? `<span class="cap">Pinned</span><div class="pinrow">${pins.map(pinTile).join('')}</div>` : '';
+}
+
+// Drag a pin to change the order (left and right, and across lines).
+let pinDrag = null;
+function endPinDrag(){
+  const d = pinDrag;
+  pinDrag = null;
+  if (!d || !d.on) return;
+  d.el.classList.remove('dragging');
+  document.body.classList.remove('dragging-pins');
+  const order = [...document.querySelectorAll('#pins .pin[data-k]')].map(t => t.dataset.k);
+  if (order.join(',') !== d.before){
+    justDragged = true;
+    setTimeout(() => { justDragged = false; }, 0);
+    op({op: 'pin_order', keys: order});
+  }
+}
+document.addEventListener('mousedown', e => {
+  const t = e.button === 0 && e.target.closest('#pins .pin[data-k]');
+  if (!t) return;
+  pinDrag = {el: t, x0: e.clientX, y0: e.clientY, on: false, before: [...document.querySelectorAll('#pins .pin[data-k]')].map(x => x.dataset.k).join(',')};
+});
+document.addEventListener('mousemove', e => {
+  const d = pinDrag;
+  if (!d) return;
+  if (!e.buttons){ endPinDrag(); return; }
+  if (!d.on){
+    if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 6) return;
+    d.on = true;
+    d.el.classList.add('dragging');
+    document.body.classList.add('dragging-pins');
+  }
+  e.preventDefault();
+  for (const t of document.querySelectorAll('#pins .pin[data-k]')){
+    if (t === d.el) continue;
+    const b = t.getBoundingClientRect();
+    if (e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom) continue;
+    if (e.clientX < b.left + b.width / 2){ if (t.previousElementSibling !== d.el) t.before(d.el); }
+    else if (t.nextElementSibling !== d.el) t.after(d.el);
+    break;
+  }
+});
+
 // While you are in another app: did the rows move? (The app then lets a click that brings
 // Switchboard back only bring it back, not open the row now under the pointer.)
 let awaySig = null;
@@ -690,6 +792,7 @@ function renderNow(){
     `<button class="newbtn" data-new="${d}" aria-pressed="${nf.open && nf.login === d}" title="New Claude session with this login: a first message, files and a name, all optional"><span class="plus">+</span>${esc(data.spares?.[d]?.lg || d)}</button>`).join('');
   if (nf.open) nfStatus();
   seg('#colseg', [[1,'1'],[2,'2']], cols, v => { cols = v; store.set('cols', v); render(); });
+  renderPins();
 
   const host = $('#cols');
   const scroll = [...host.querySelectorAll('.list')].map(l => l.scrollTop);
@@ -889,8 +992,8 @@ function endPress(){
     if (renderLater && !drag){ renderLater = false; render(); }
   }, 0);
 }
-document.addEventListener('mouseup', () => { if (drag) endDrag(); endPress(); });
-window.addEventListener('blur', () => { if (drag) endDrag(); endPress(); });
+document.addEventListener('mouseup', () => { if (pinDrag) endPinDrag(); if (drag) endDrag(); endPress(); });
+window.addEventListener('blur', () => { if (pinDrag) endPinDrag(); if (drag) endDrag(); endPress(); });
 
 // ---------- events ----------
 document.addEventListener('click', e => {

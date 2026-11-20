@@ -82,6 +82,16 @@ enum SBProcesses {
         return path.isEmpty ? nil : path
     }
 
+    /// The program with this process id is a shell (zsh, bash, fish…).
+    static func isShell(_ pid: Int) -> Bool {
+        guard pid > 0 else { return false }
+        var buf = [CChar](repeating: 0, count: 256)
+        guard proc_name(Int32(pid), &buf, UInt32(buf.count)) > 0 else { return false }
+        var name = String(cString: buf)
+        if name.hasPrefix("-") { name.removeFirst() }
+        return ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "nu"].contains(name)
+    }
+
     static func isAlive(_ pid: Int) -> Bool {
         pid > 0 && (kill(pid_t(pid), 0) == 0 || errno == EPERM)
     }

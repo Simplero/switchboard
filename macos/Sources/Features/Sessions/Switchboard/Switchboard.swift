@@ -118,6 +118,7 @@ final class Switchboard {
         elsewhereAt = now + 15
         briefs = SBLinks.loadBriefs()
         loaded = true
+        seedPins()
         save()
         timer = Timer.scheduledTimer(withTimeInterval: Self.scanEvery, repeats: true) { _ in
             Task { @MainActor in await Switchboard.shared.scan() }
@@ -516,8 +517,9 @@ final class Switchboard {
                 let b = basename(e.cwd)
                 e.name = b.isEmpty ? "~" : b
             }
-            let running = SBScreen.cleanTerminalTitle(!t.programTitle.isEmpty ? t.programTitle : t.title)
-            let line = running.map { $0.hasPrefix("/") || $0.hasPrefix("~") ? "" : $0 } ?? ""
+            // A title that is a path (~/Simplero) is the shell at its prompt: nothing runs.
+            let raw = SBScreen.strip(!t.programTitle.isEmpty ? t.programTitle : t.title)
+            let line = raw.hasPrefix("/") || raw.hasPrefix("~") ? "" : SBScreen.cleanTerminalTitle(raw) ?? ""
             if line != (e.working_line ?? "") || e.cwd != oldCwd { e.last_activity = now }
             e.working_line = line
             e.last_seen = now
@@ -535,11 +537,13 @@ final class Switchboard {
             e.closed_reason = e.closing ?? "vanished"
             e.closing = nil
             e.screen = nil
+            if e.pinned != nil { e.working_line = "" }
             e.state = stateOf(e)
             reg.sessions[k] = e
             closedNow.append(k)
         }
-        for k in closedNow where reg.sessions[k]?.agent == "shell" { reg.sessions.removeValue(forKey: k) }
+        // A shell is gone with its terminal; a pinned one stays (opening it starts it again).
+        for k in closedNow where reg.sessions[k]?.agent == "shell" && reg.sessions[k]?.pinned == nil { reg.sessions.removeValue(forKey: k) }
         save()
     }
 
@@ -687,16 +691,19 @@ final class Switchboard {
             "ar": e.archived == true && !e.isOpen, "aa": Int(e.archived_at ?? 0),
             "was": n(e.was),
             "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
+            "pn": n(e.pinned), "pc": n(e.pin_cmd),
         ]
     }
 
     func payloadObject() -> [String: Any] {
         let sess = reg.sessions.values.sorted { ($0.last_activity ?? 0) > ($1.last_activity ?? 0) }
         let live = sess.filter(\.isOpen)
-        let recent = sess.filter { !$0.isOpen && ($0.parked == true || ($0.archived != true && now - ($0.closed_at ?? 0) < 14 * 86400)) }
-        let archived = sess.filter { $0.archived == true && !$0.isOpen }
+        // Pins are always there, running or not.
+        let pins = sess.filter { !$0.isOpen && $0.pinned != nil }
+        let recent = sess.filter { !$0.isOpen && $0.pinned == nil && ($0.parked == true || ($0.archived != true && now - ($0.closed_at ?? 0) < 14 * 86400)) }
+        let archived = sess.filter { $0.archived == true && !$0.isOpen && $0.pinned == nil }
             .sorted { ($0.archived_at ?? 0) > ($1.archived_at ?? 0) }.prefix(80)
-        let rows = live + recent.prefix(max(0, 150 - live.count)) + archived
+        let rows = live + pins + recent.prefix(max(0, 150 - live.count)) + archived
         var payload: [String: Any] = [
             "v": 1, "at": Int(now), "hub": NSNull(),
             "classes": reg.classes, "labels": reg.labels,
@@ -854,6 +861,12 @@ final class Switchboard {
         case "forget": return forget(k)
         case "send": return send(k, msg["text"] as? String ?? "")
         case "remember_open": return rememberOpen()
+        case "pin": return pin(k)
+        case "unpin": return unpin(k)
+        case "pin_order": return pinOrder(msg["keys"] as? [String] ?? [])
+        case "pin_command":
+            let r = pinCommand(msg["cmd"] as? String ?? "", cwd: msg["cwd"] as? String, name: msg["name"] as? String)
+            return (r.ok, r.message)
         default: return (false, "Unknown action “\(op)”.")
         }
     }
@@ -873,7 +886,14 @@ final class Switchboard {
         guard let e = reg.sessions[k] else { return (false, "Unknown session.", nil) }
         if e.isOpen, let sf = e.surface_id, let view = SessionsAPI.surface(id: sf) {
             if focus { SessionsAPI.focus(view) }
+            startPinCommandIfIdle(k)
             return (true, "Opened.", nil)
+        }
+        // A pinned shell (lazygit) whose terminal is gone: a new one, running its command again.
+        if e.agent == "shell", e.pinned != nil {
+            let r = openShellPin(k, focus: focus)
+            if focus, let sf = r.surface { SessionsAPI.focusTerminal(sf) }
+            return r
         }
         // A second click before the scan sees the first one running: do not start it twice,
         // but show the terminal it is starting in.
@@ -927,6 +947,7 @@ final class Switchboard {
     /// Close a session: every tab of it (whole), or only the agent's terminal (to replace it).
     func close(_ k: String, park: Bool, whole: Bool = true) -> (Bool, String) {
         guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
+        if park && e.pinned != nil { return (false, "“\(e.name ?? "This session")” is pinned, so it is never parked. Right-click it and choose Unpin first.") }
         let park = e.agent == "shell" ? false : park     // a shell has nothing to resume later
         update(k) { x in
             x.parked = park
@@ -946,6 +967,7 @@ final class Switchboard {
     /// from the Archive resumes the conversation and takes it out of the Archive.
     func done(_ k: String) -> (Bool, String) {
         guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
+        if e.pinned != nil { return (false, "“\(e.name ?? "This session")” is pinned, so it never goes to the Archive. Right-click it and choose Unpin first.") }
         update(k) { x in
             if x.agent != "shell" {
                 x.archived = true
@@ -1207,6 +1229,156 @@ final class Switchboard {
         return (ok, ok ? "Sent." : "That terminal is gone.")
     }
 
+    // MARK: Pins
+
+    /// Sessions that stay (Chief of staff, lazygit): in the Pinned row at the top of the
+    /// sidebar, not in the lists or the counts, never parked or archived. ⌃1…⌃9 open them.
+    private var pinKeys: [String] {
+        reg.sessions.values.filter { $0.pinned != nil }.sorted { ($0.pinned ?? 0, $0.key) < ($1.pinned ?? 0, $1.key) }.map(\.key)
+    }
+
+    /// Number the pins 0, 1, 2… in this order (the rest after them, as they were).
+    private func numberPins(_ order: [String]) {
+        let rest = pinKeys.filter { !order.contains($0) }
+        for (i, k) in (order.filter { reg.sessions[$0]?.pinned != nil } + rest).enumerated() { reg.sessions[k]?.pinned = i }
+        save()
+    }
+
+    func pin(_ k: String) -> (Bool, String) {
+        guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
+        if e.pinned != nil { return (true, "Pinned already.") }
+        if e.agent == "shell" && !e.isOpen { return (false, "That terminal is gone.") }
+        update(k) { x in
+            x.pinned = (reg.sessions.values.compactMap(\.pinned).max() ?? -1) + 1
+            x.parked = false
+            x.archived = false
+            if x.agent == "shell", let cmd = x.working_line?.trimmingCharacters(in: .whitespaces), !cmd.isEmpty {
+                // The program that runs in it (lazygit): its name, and what opening the pin starts again.
+                x.pin_cmd = cmd
+                if x.custom_name != true { x.name = cmd; x.custom_name = true }
+            }
+        }
+        numberPins(pinKeys)
+        return (true, "Pinned.")
+    }
+
+    func unpin(_ k: String) -> (Bool, String) {
+        guard let e = reg.sessions[k], e.pinned != nil else { return (true, "Not pinned.") }
+        if e.agent == "shell" && !e.isOpen {
+            reg.sessions.removeValue(forKey: k)      // a shell that is not running is nothing without its pin
+        } else {
+            update(k) { x in x.pinned = nil; x.pin_cmd = nil }
+        }
+        numberPins(pinKeys)
+        return (true, "Unpinned.")
+    }
+
+    func pinOrder(_ keys: [String]) -> (Bool, String) {
+        numberPins(keys)
+        return (true, "Saved.")
+    }
+
+    /// A pin that runs a command in a folder (lazygit in ~/Simplero). It starts when you open it.
+    func pinCommand(_ cmd: String, cwd: String?, name: String?) -> (ok: Bool, message: String, key: String?) {
+        let command = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else { return (false, "No command to pin.", nil) }
+        let folder = SBPaths.expand(cwd ?? "~")
+        let k = "shell:pin-" + UUID().uuidString
+        var e = SBEntry(key: k, agent: "shell")
+        e.name = name.flatMap { $0.isEmpty ? nil : $0 } ?? command
+        e.custom_name = true
+        e.pin_cmd = command
+        e.pinned = (reg.sessions.values.compactMap(\.pinned).max() ?? -1) + 1
+        e.cls = defaultClass(folder)
+        e.labels = []
+        e.first_seen = now
+        e.backend = "ghostty"
+        e.cwd = folder
+        e.open = false
+        e.closed_at = now
+        e.closed_reason = "pin"
+        e.state = stateOf(e)
+        reg.sessions[k] = e
+        save()
+        return (true, "Pinned.", k)
+    }
+
+    /// A pinned shell's terminal: a new one in its folder, running its command. The pin keeps
+    /// its row (its key follows the new terminal, like a session whose conversation id changes).
+    private func openShellPin(_ k: String, focus: Bool) -> (ok: Bool, message: String, surface: String?) {
+        guard var e = reg.sessions[k] else { return (false, "Unknown session.", nil) }
+        var folder = SBPaths.expand(e.cwd ?? "~")
+        var isDir: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: folder, isDirectory: &isDir) || !isDir.boolValue { folder = SBPaths.home }
+        let input = (e.pin_cmd ?? "").isEmpty ? nil : e.pin_cmd! + "\n"
+        guard let made = SessionsAPI.openTab(cwd: folder, input: input, env: [:], focus: focus) else {
+            return (false, "Switchboard could not open a terminal.", nil)
+        }
+        let newKey = "shell:" + made.ws
+        reg.sessions.removeValue(forKey: k)
+        if newKey != k { e.was = k }
+        e.key = newKey
+        e.open = true
+        e.closed_at = nil
+        e.closed_reason = nil
+        e.opening_at = nil
+        e.backend = "ghostty"
+        e.surface_id = made.id
+        e.workspace_id = "g:" + made.tab
+        e.cwd = folder
+        e.working_line = e.pin_cmd ?? ""
+        pinStarted[made.id] = now
+        e.last_activity = now
+        e.last_seen = now
+        e.state = stateOf(e)
+        reg.sessions[newKey] = e
+        save()
+        return (true, "Started.", made.id)
+    }
+
+    /// When a pin's command was last started (not again while it starts).
+    private var pinStarted: [String: Double] = [:]
+
+    /// A pinned shell at its prompt (you quit lazygit): opening the pin starts its command again.
+    func startPinCommandIfIdle(_ k: String) {
+        guard let e = reg.sessions[k], e.isOpen, e.agent == "shell", e.pinned != nil,
+              let cmd = e.pin_cmd, !cmd.isEmpty, let sf = e.surface_id,
+              let view = SessionsAPI.surface(id: sf),
+              // Only at a prompt with nothing running (the shell is the program in front), and not while it starts.
+              SBProcesses.isShell(view.surfaceModel?.foregroundPID ?? 0) || !view.needsConfirmQuit,
+              now - (pinStarted[sf] ?? 0) > 5 else { return }
+        pinStarted[sf] = now
+        update(k) { $0.working_line = cmd }
+        _ = SessionsAPI.sendInput(sf, text: cmd, enter: true)
+    }
+
+    /// The sessions (tab ids) of the pinned sessions that run: their bells do not count in the Dock.
+    func pinnedWorkspaces() -> Set<String> {
+        Set(reg.sessions.values.filter { $0.pinned != nil && $0.isOpen }.compactMap { e in
+            e.surface_id.flatMap { SessionsAPI.surface(id: $0) }
+                .flatMap { BaseTerminalController.controller(owning: $0) as? TerminalController }?.sessionsWorkspace
+        })
+    }
+
+    /// The first pins, once: the Claude session called “Chief of staff”, and lazygit in the
+    /// default folder (when lazygit is installed).
+    private func seedPins() {
+        let flag = "sessions.pins.seeded"
+        guard writable, !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        guard !reg.sessions.values.contains(where: { $0.pinned != nil }) else { return }
+        let plain = { (s: String?) in (s ?? "").lowercased().replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ").trimmingCharacters(in: .whitespaces) }
+        if let chief = reg.sessions.values.filter({ $0.agent == "claude" && plain($0.name) == "chief of staff" })
+            .max(by: { ($0.last_activity ?? 0) < ($1.last_activity ?? 0) }) {
+            update(chief.key) { $0.pinned = 0; $0.parked = false; $0.archived = false }
+        }
+        let folder = SBPaths.expand(Self.defaultFolder)
+        if ["/opt/homebrew/bin/lazygit", "/usr/local/bin/lazygit"].contains(where: { FileManager.default.isExecutableFile(atPath: $0) }),
+           FileManager.default.fileExists(atPath: folder) {
+            _ = pinCommand("lazygit", cwd: folder, name: "lazygit")
+        }
+    }
+
     // MARK: Restart for an update
 
     /// Switchboard is about to restart: remember its sessions, with their other tabs.
@@ -1267,7 +1439,10 @@ final class Switchboard {
             let k = it["k"] as? String ?? ""
             let e = reg.sessions[k]
             var ok = false, msg = "", sf: String?
-            if it["shell"] as? Bool == true || e?.agent == "shell" {
+            if let e, e.agent == "shell", e.pinned != nil {
+                // A pinned shell: its own row again, running its command (lazygit) again.
+                (ok, msg, sf) = openShellPin(e.key, focus: false)
+            } else if it["shell"] as? Bool == true || e?.agent == "shell" {
                 (ok, msg, sf) = newShell(it["cwd"] as? String, focus: false)
                 // The new shell has its own row: it takes the old row's name, class and labels.
                 if ok, let e, let sf, reg.sessions[e.key]?.isOpen != true,

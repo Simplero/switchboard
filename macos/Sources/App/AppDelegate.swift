@@ -828,9 +828,12 @@ class AppDelegate: NSObject,
     }
 
     private func setDockBadge() {
+        // (Always on the main thread: both callers dispatch to it.)
+        let pinned = MainActor.assumeIsolated { Switchboard.shared.pinnedWorkspaces() }
         let bellCount = NSApp.windows
             .compactMap { $0.windowController as? BaseTerminalController }
             .filter { ($0 as? TerminalController)?.sessionsSpare != true }   // Switchboard: not the spares
+            .filter { !pinned.contains(($0 as? TerminalController)?.sessionsWorkspace ?? "") }   // nor the pins
             .reduce(0) { $0 + ($1.bell ? 1 : 0) }
         let wantsBadge = ghostty.config.bellFeatures.contains(.attention) && bellCount > 0
         let label = wantsBadge ? (bellCount > 99 ? "99+" : String(bellCount)) : nil

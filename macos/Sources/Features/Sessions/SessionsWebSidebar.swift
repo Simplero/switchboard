@@ -392,14 +392,22 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         let store = SessionsStore.shared
         menuActions = []
         let menu = NSMenu()
-        menu.addItem(item(s.isOpen ? "Go to session" : "Reopen here") { store.open(s) })
-        if s.isOpen || !s.isArchived {
+        menu.addItem(item(s.isOpen ? "Go to session" : s.isPinned ? "Start it" : "Reopen here") { store.open(s) })
+        // A pin stays: no Done, Park or Close. Unpin it first.
+        if s.isPinned {
+            let n = (store.pins.firstIndex { $0.k == s.k } ?? 99) + 1
+            menu.addItem(item("Unpin" + (n <= 9 ? "  (⌃\(n))" : "")) { store.send(["op": "unpin", "k": s.k]) })
+        } else if s.isOpen || s.a != "shell" {
+            let n = store.pins.count + 1
+            menu.addItem(item("Pin" + (n <= 9 ? "  (⌃\(n) opens it)" : "")) { store.send(["op": "pin", "k": s.k]) })
+        }
+        if !s.isPinned && (s.isOpen || !s.isArchived) {
             menu.addItem(item(s.a == "shell" ? "Done (close it and its tabs)" : "Done (close it, move it to the Archive)") {
                 guard store.confirmClose(s.k, action: "Done with") else { return }
                 store.send(["op": "done", "k": s.k])
             })
         }
-        if s.isOpen && s.a != "shell" {
+        if s.isOpen && s.a != "shell" && !s.isPinned {
             // A shell has nothing to resume, so it cannot be parked or closed "for later".
             menu.addItem(item("Park (close it, keep it here)") {
                 guard store.confirmClose(s.k, action: "Park") else { return }
@@ -442,7 +450,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 if s.ld != d { store.send(["op": "switch", "k": s.k, "login": d]) }
             }
         }))
-        if !s.isOpen {
+        if !s.isOpen && !s.isPinned {
             menu.addItem(.separator())
             menu.addItem(item("Remove from list") { store.send(["op": "forget", "k": s.k]) })
         }

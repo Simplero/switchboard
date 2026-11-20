@@ -266,7 +266,7 @@ final class SessionsAPI {
             guard let png = SessionsAPI.drawnPicture(view) else { return (200, ["png": NSNull(), "note": "nothing drawn yet"]) }
             return (200, ["png": png.base64EncodedString()])
         case ("POST", "/sb/keycheck"):
-            // For checks: press a key with ⌘ on the sidebar page the way AppKit dispatches it
+            // For checks: press a key with ⌘ (or ⌃) on the sidebar page the way AppKit dispatches it
             // (local monitors, the window's views, then the menu). {"key": "v"}
             // ?pane=<terminal id>: the page next to that terminal's session instead of the sidebar.
             var web: WKWebView = SessionsWeb.shared.webView
@@ -277,9 +277,11 @@ final class SessionsAPI {
             w.makeFirstResponder(web)
             let ch = req.json["key"] as? String ?? "v"
             let arrows: [String: (UInt16, String)] = ["up": (126, "\u{F700}"), "down": (125, "\u{F701}"), "left": (123, "\u{F702}"), "right": (124, "\u{F703}")]
-            let code: UInt16 = arrows[ch]?.0 ?? ["v": 9, "c": 8, "x": 7, "a": 0][ch] ?? 9
+            let code: UInt16 = arrows[ch]?.0 ?? ["v": 9, "c": 8, "x": 7, "a": 0, "1": 18, "2": 19, "3": 20][ch] ?? 9
+            // "mods": "control" for ⌃ (the pins' keys) instead of ⌘.
+            let mods: NSEvent.ModifierFlags = req.json["mods"] as? String == "control" ? [.control] : [.command]
             let chars = arrows[ch]?.1 ?? ch
-            guard let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
+            guard let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods,
                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
                                             context: nil, characters: chars, charactersIgnoringModifiers: chars,
                                             isARepeat: false, keyCode: code) else { return (500, ["error": "no event"]) }

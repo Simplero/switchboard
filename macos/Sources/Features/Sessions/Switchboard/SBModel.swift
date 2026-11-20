@@ -160,6 +160,11 @@ struct SBEntry: Codable {
     var closing: String?
     var tab_title: String?
     var shared_ws: Bool?
+    /// Pinned: its place in the Pinned row (0 first). A pin is not a working session: it is
+    /// not in the lists or the counts, and Switchboard never parks or archives it.
+    var pinned: Int?
+    /// A pinned shell: the command it runs (lazygit). Opening the pin starts it again.
+    var pin_cmd: String?
 
     /// The end of the terminal, for the summary. Not saved.
     var tail: String? = nil
@@ -168,7 +173,8 @@ struct SBEntry: Codable {
         case key, agent, session_id, name, cls, labels, login_dir, first_seen, custom_name, cwd, branch, open,
              closed_at, closed_reason, opening_at, workspace_id, surface_id, pid, last_seen, resume_cmd, backend,
              screen, working_line, last_message, last_message_at, last_activity, artifacts, summary, summary_key,
-             split, state, parked, archived, archived_at, ack_key, was, closing, tab_title, shared_ws
+             split, state, parked, archived, archived_at, ack_key, was, closing, tab_title, shared_ws,
+             pinned, pin_cmd
     }
 
     init(key: String, agent: String?) {
@@ -190,6 +196,7 @@ struct SBEntry: Codable {
         last_activity = v(.last_activity); artifacts = v(.artifacts); summary = v(.summary); summary_key = v(.summary_key)
         split = v(.split); state = v(.state); parked = v(.parked); archived = v(.archived); archived_at = v(.archived_at)
         ack_key = v(.ack_key); was = v(.was); closing = v(.closing); tab_title = v(.tab_title); shared_ws = v(.shared_ws)
+        pinned = v(.pinned); pin_cmd = v(.pin_cmd)
     }
 
     var isOpen: Bool { open == true }

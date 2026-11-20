@@ -234,6 +234,9 @@ class AppDelegate: NSObject,
         SessionsStore.shared.start()
         SessionsAPI.shared.start()
         SessionsVersion.shared.start()
+        // Switchboard: the Simplero sign-in for the iPhone app (Switchboard menu › Phone Link…).
+        SBAccount.shared.start()
+        PhoneLinkWindow.installMenuItem()
         // The iPhone app's way in (Tailscale only).
         SBRemote.shared.start()
 

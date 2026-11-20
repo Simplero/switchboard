@@ -5,6 +5,7 @@ import GhosttyKit
 import CoreImage
 import IOSurface
 import WebKit
+import SwiftUI
 
 /// A small local HTTP API for checks and scripts: list the terminals (with tty and
 /// pid), read their text, type into them, focus, close, open tabs, see what the
@@ -297,6 +298,21 @@ final class SessionsAPI {
             return (200, ["handled_by": by, "first_responder_before": before,
                           "first_responder_after": String(describing: w.firstResponder.map { type(of: $0) }),
                           "app_active": NSApp.isActive, "window_is_key": w.isKeyWindow])
+        case ("GET", "/sb/phonelink"):
+            // For checks: the Phone Link window's content as a picture (not shown on screen), and
+            // the account state. ?report=1 reports this Mac to Simplero first.
+            let a = SBAccount.shared
+            let renderer = ImageRenderer(content: PhoneLinkView(account: a).background(Color(nsColor: .windowBackgroundColor)))
+            renderer.scale = 2
+            let png = renderer.nsImage.flatMap { $0.tiffRepresentation }.flatMap { NSBitmapImageRep(data: $0) }
+                .flatMap { $0.representation(using: .png, properties: [:]) }
+            return (200, ["signed_in": a.signedIn, "person": a.person?.name ?? NSNull(), "machine_id": SBAccount.machineID,
+                          "machines": a.machines.map { ["id": $0.id, "name": $0.name, "online": $0.online, "address": $0.address] },
+                          "last_report": a.lastReport.map { $0.timeIntervalSince1970 } ?? NSNull(),
+                          "problem": a.problem ?? NSNull(), "png": png?.base64EncodedString() ?? NSNull()])
+        case ("POST", "/sb/phonelink/report"):
+            Task { @MainActor in await SBAccount.shared.report() }
+            return (200, ["ok": true])
         case ("GET", "/sb/spares"):
             // For checks: the spares (Claude started ahead of time, one per login).
             return (200, ["spares": SBSpares.shared.checkInfo()])

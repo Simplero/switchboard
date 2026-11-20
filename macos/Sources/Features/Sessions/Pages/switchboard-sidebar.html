@@ -782,11 +782,13 @@ document.addEventListener('drop', e => { e.preventDefault(); $('#newform').class
 // ---------- Manual order: drag rows ----------
 // In a column sorted "Manual", press a row and move it up or down; it moves within its
 // group. The order is saved and both columns use it. A short press still opens the session.
-let drag = null, renderLater = false, justDragged = false, pressing = false;
+let drag = null, renderLater = false, justDragged = false, pressing = false, pressTimer;
 const groupOf = el => { for (let p = el.previousElementSibling; p; p = p.previousElementSibling) if (p.classList.contains('group')) return p.dataset.fold || p.textContent; return ''; };
 document.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   pressing = true;
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(endPress, 4000);   // last resort: never hold the list longer
   if (query || !manual) return;
   const row = e.target.closest('.col.manual .item[data-k]');
   if (!row || !manual.includes(row.dataset.k)) return;
@@ -807,6 +809,9 @@ function dragMove(y){
   }
 }
 document.addEventListener('mousemove', e => {
+  // The button went up outside the page (the mouse-up never came): end the press, or the
+  // list would stop updating.
+  if (pressing && !e.buttons && !drag) endPress();
   if (!drag) return;
   if (!e.buttons){ endDrag(); return; }   // released outside the page
   if (!drag.on){
@@ -849,6 +854,7 @@ function endDrag(){
 }
 // The press ends after its click ran; then the list may change again.
 function endPress(){
+  clearTimeout(pressTimer);
   if (!pressing) return;
   setTimeout(() => {
     pressing = false;

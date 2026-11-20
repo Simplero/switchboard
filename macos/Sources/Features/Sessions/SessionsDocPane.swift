@@ -98,7 +98,23 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
         ]
     }
 
-    func load(_ url: URL) { webView.load(URLRequest(url: url)) }
+    /// Counts loads, so a sign-in answer that comes back after you opened another page is dropped.
+    private var generation = 0
+    /// The page that waits for a sign-in (shown again when Phone Link signs in).
+    private(set) var waitingFor: URL?
+
+    func load(_ url: URL) {
+        generation += 1
+        webView.load(URLRequest(url: url))
+    }
+
+    /// Phone Link just signed in: the page that waited on the login page comes now.
+    func signedInNow() {
+        guard needsPhoneLink, let wanted = waitingFor else { return }
+        needsPhoneLink = false
+        lastSignIn = .distantPast
+        load(wanted)
+    }
 
     /// Simplero pages stay here; a link to anywhere else opens in your browser. Simplero's login
     /// page signs in by itself with the Mac's Phone Link sign-in, then shows the page you wanted.
@@ -108,12 +124,16 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
             let wanted = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
                 .first { $0.name == "return_to" }?.value.flatMap(URL.init(string:))
             needsPhoneLink = !SBAccount.shared.signedIn
+            waitingFor = wanted
             // Once a minute at most, so a sign-in Simplero refuses cannot loop.
             if let wanted, SBAccount.shared.signedIn, Date().timeIntervalSince(lastSignIn) > 60 {
                 lastSignIn = Date()
                 decisionHandler(.cancel)
+                let gen = generation
                 Task {
-                    if let signed = await SessionsDocPanes.signInURL(for: wanted) { self.load(signed) } else { self.load(url) }
+                    let signed = await SessionsDocPanes.signInURL(for: wanted)
+                    guard gen == self.generation else { return }   // you opened another page meanwhile
+                    self.load(signed ?? url)
                 }
                 return
             }
@@ -197,7 +217,13 @@ struct DocPaneView: View {
 /// (through the menu they did not arrive, as in the sidebar).
 final class DocWebView: WKWebView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard event.type == .keyDown, window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
+        let r = window?.firstResponder as? NSView
+        guard event.type == .keyDown, let r, r === self || r.isDescendant(of: self) else { return super.performKeyEquivalent(with: event) }
+        // ⌘ arrows (⇧ to select) move in the page's text or scroll it.
+        if event.modifierFlags.contains(.command), (123...126).contains(event.keyCode) {
+            keyDown(with: event)
+            return true
+        }
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = event.charactersIgnoringModifiers?.lowercased()
         let action: Selector?
@@ -212,6 +238,15 @@ final class DocWebView: WKWebView {
         }
         guard let action else { return super.performKeyEquivalent(with: event) }
         return NSApp.sendAction(action, to: self, from: nil)
+    }
+}
+
+extension NSView {
+    /// The pane's web view this view sits in, if any (WebKit can make an inner view first responder).
+    var enclosingDocWebView: DocWebView? {
+        var v: NSView? = superview
+        while let x = v { if let d = x as? DocWebView { return d }; v = x.superview }
+        return nil
     }
 }
 

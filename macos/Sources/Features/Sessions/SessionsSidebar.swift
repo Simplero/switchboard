@@ -107,6 +107,11 @@ final class SessionsStore: ObservableObject {
                r === page || r.isDescendant(of: page) {
                 return event
             }
+            // A page in the pane has the keyboard: ⌘ arrows move in it, not between sessions.
+            if (123...126).contains(event.keyCode), let r = NSApp.keyWindow?.firstResponder as? NSView,
+               r is DocWebView || r.enclosingDocWebView != nil {
+                return event
+            }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
             if mods == .command {
                 // Arrows by key code (the same on every layout). Letters by the
@@ -306,6 +311,17 @@ struct SessionsSidebarContainer<Content: View>: View {
     }
 
     private var withSidebar: some View {
+        GeometryReader { geo in layout(total: geo.size.width) }
+    }
+
+    /// The pane's width: what you dragged it to, but never so wide that the terminal gets
+    /// less than 420 points (nor narrower than 320).
+    private func paneShown(total: CGFloat) -> CGFloat {
+        let left = visible ? CGFloat(width) + 7 : 22
+        return max(320, min(CGFloat(paneWidth), total - left - 7 - 420))
+    }
+
+    private func layout(total: CGFloat) -> some View {
         HStack(spacing: 0) {
             if visible {
                 ZStack(alignment: .topTrailing) {
@@ -319,21 +335,10 @@ struct SessionsSidebarContainer<Content: View>: View {
                 }
                     .frame(width: width)
                     .background(Color(nsColor: .windowBackgroundColor))
-                Rectangle()
-                    .fill(Color.gray.opacity(0.25))
-                    .frame(width: 1)
-                    .overlay(
-                        Color.clear.frame(width: 7).contentShape(Rectangle())
-                            .onHover { inside in
-                                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                            }
-                            .gesture(DragGesture(minimumDistance: 1)
-                                .onChanged { v in
-                                    if dragStart == nil { dragStart = width }
-                                    width = min(1000, max(300, (dragStart ?? width) + v.translation.width))
-                                }
-                                .onEnded { _ in dragStart = nil })
-                    )
+                ResizeHandle { dx in
+                    if dragStart == nil { dragStart = width }
+                    width = min(1000, max(300, (dragStart ?? width) + dx))
+                } ended: { dragStart = nil }
             } else {
                 Button { visible = true } label: {
                     Image(systemName: "sidebar.left").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -346,28 +351,15 @@ struct SessionsSidebarContainer<Content: View>: View {
                 WebBanner()
                 content
             }
-            // The terminal keeps room for its work; the page gives way first.
-            .frame(minWidth: panes.pages.isEmpty ? nil : 420)
-            .layoutPriority(1)
             // A Doc opened from the panel: on the right, next to the session it belongs to.
             if let ws = sessionID, let page = panes.pages[ws] {
-                Rectangle()
-                    .fill(Color.gray.opacity(0.25))
-                    .frame(width: 1)
-                    .overlay(
-                        Color.clear.frame(width: 7).contentShape(Rectangle())
-                            .onHover { inside in
-                                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                            }
-                            .gesture(DragGesture(minimumDistance: 1)
-                                .onChanged { v in
-                                    if paneDragStart == nil { paneDragStart = paneWidth }
-                                    paneWidth = min(1400, max(320, (paneDragStart ?? paneWidth) - v.translation.width))
-                                }
-                                .onEnded { _ in paneDragStart = nil })
-                    )
+                ResizeHandle { dx in
+                    // Start from the width on screen (it can be less than the saved one).
+                    if paneDragStart == nil { paneDragStart = Double(paneShown(total: total)) }
+                    paneWidth = min(1400, max(320, (paneDragStart ?? paneWidth) - dx))
+                } ended: { paneDragStart = nil }
                 DocPaneView(page: page) { panes.close(session: ws) }
-                    .frame(minWidth: 320, idealWidth: paneWidth, maxWidth: paneWidth)
+                    .frame(width: paneShown(total: total))
             }
         }
     }
@@ -381,6 +373,30 @@ struct SessionsSidebarContainer<Content: View>: View {
             }
         }
         return nil
+    }
+}
+
+/// A divider you drag: 7 points wide in the row itself (a 1-point line in the middle), so no
+/// terminal or web view sits on top of it and takes the mouse.
+struct ResizeHandle: View {
+    let changed: (CGFloat) -> Void
+    let ended: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Rectangle().fill(Color.gray.opacity(hovering ? 0.5 : 0.25)).frame(width: 1)
+        }
+        .frame(width: 7)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovering = inside
+            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+        }
+        .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .onChanged { changed($0.translation.width) }
+            .onEnded { _ in ended() })
     }
 }
 

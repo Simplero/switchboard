@@ -347,6 +347,33 @@ final class SessionsAPI {
             if req.json["close"] as? Bool == true { SessionsDocPanes.shared.close(session: controller.sessionsWorkspace) }
             else { SessionsDocPanes.shared.open(url, session: controller.sessionsWorkspace) }
             return (200, ["session": controller.sessionsWorkspace])
+        case ("POST", "/sb/dragcheck"):
+            // For checks: drag the page pane's divider by dx points with real mouse events.
+            guard let view = surface(req.json["id"] as? String),
+                  let controller = BaseTerminalController.controller(owning: view) as? TerminalController,
+                  let page = SessionsDocPanes.shared.pages[controller.sessionsWorkspace],
+                  let w = page.webView.window else { return (404, ["error": "no pane"]) }
+            let dx = CGFloat(req.json["dx"] as? Double ?? -200)
+            let paneFrame = page.webView.convert(page.webView.bounds, to: nil)
+            var start = NSPoint(x: paneFrame.minX - 3.5, y: paneFrame.midY)   // the middle of the 7-point handle
+            if req.json["sidebar"] as? Bool == true {
+                let side = SessionsWeb.shared.webView
+                let f = side.convert(side.bounds, to: nil)
+                start = NSPoint(x: f.maxX + 3.5, y: f.midY)
+            }
+            if let x = req.json["x"] as? Double { start.x = CGFloat(x) }
+            let hit = w.contentView?.superview?.hitTest(start) ?? w.contentView?.hitTest(start)
+            let before = paneFrame.width
+            func mouse(_ type: NSEvent.EventType, _ p: NSPoint) -> NSEvent? {
+                NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)
+            }
+            if let e = mouse(.leftMouseDown, start) { w.sendEvent(e) }
+            for i in 1...10 { if let e = mouse(.leftMouseDragged, NSPoint(x: start.x + dx * CGFloat(i) / 10, y: start.y)) { w.sendEvent(e) } }
+            if let e = mouse(.leftMouseUp, NSPoint(x: start.x + dx, y: start.y)) { w.sendEvent(e) }
+            return (200, ["before": before, "divider_x": start.x, "hit": hit.map { String(describing: type(of: $0)) } ?? "none",
+                          "sidebar_width": UserDefaults.standard.double(forKey: "sessions.sidebar.width"),
+                          "pane_width_saved": UserDefaults.standard.double(forKey: "sessions.docpane.width")])
         case ("GET", "/sb/docpane"):
             // For checks: the page next to a terminal's session, its size, and the terminal's grid.
             guard let view = surface(req.query["id"]),
@@ -468,6 +495,9 @@ final class SessionsAPI {
            (last.windowController as? TerminalController)?.sessionsWorkspace == tc.sessionsWorkspace {
             last.tabGroup?.selectedWindow = last
             last.makeKeyAndOrderFront(nil)
+            // The window may already be key (you clicked the sidebar in it): give the keyboard
+            // back to its terminal, not the sidebar.
+            if let lc = last.windowController as? BaseTerminalController, let sv = lc.focusedSurface { lc.focusSurface(sv) }
             return
         }
         if let window = controller.window {
@@ -597,7 +627,7 @@ final class SessionsAPI {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 MainActor.assumeIsolated {
                     guard let v = surface(id: id), let w = v.window, w.firstResponder !== v,
-                          (w.tabGroup?.selectedWindow ?? w) === w else { return }
+                          (w.tabGroup?.selectedWindow ?? w) === w, !SessionsWebView.newFormOpen else { return }
                     // Only from the sidebar page (or nothing): never from a field you clicked meanwhile.
                     let r = w.firstResponder
                     let page = SessionsWeb.shared.webView

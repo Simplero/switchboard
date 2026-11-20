@@ -145,8 +145,13 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         webView.evaluateJavaScript("window.Sessions && Sessions.setFocus(\(arg))")
     }
 
-    func focusSearch() {
-        webView.window?.makeFirstResponder(webView)
+    func focusSearch(tries: Int = 10) {
+        // Just shown (⌘P with the sidebar hidden): the page joins the window a moment later.
+        guard let w = webView.window, w.isKeyWindow || tries == 0 else {
+            if tries > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.focusSearch(tries: tries - 1) } }
+            return
+        }
+        w.makeFirstResponder(webView)
         webView.evaluateJavaScript("window.Sessions && Sessions.focusSearch()")
     }
 
@@ -429,18 +434,24 @@ final class SessionsWebView: WKWebView {
     /// The new-session form is open (the page says so with `newWarm`).
     static var newFormOpen = false
 
+    /// This page (or a view inside it) has the keyboard.
+    var hasKeyboard: Bool {
+        guard let r = window?.firstResponder as? NSView else { return false }
+        return r === self || r.isDescendant(of: self)
+    }
+
     /// ⌘V, ⌘C, ⌘X, ⌘A go straight to the page when it has the keyboard. Through the
     /// menu, ⌘V did not reach the new-session form. A paste with files or a picture on the
     /// clipboard attaches them to the open form (by their paths; a picture is saved as a file).
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         // ⌘ with an arrow (and ⇧ to select) in the open new-session form: it moves in the text,
         // not to another session or tab.
-        if Self.newFormOpen, event.type == .keyDown, window?.firstResponder === self,
+        if Self.newFormOpen, event.type == .keyDown, hasKeyboard,
            event.modifierFlags.contains(.command), (123...126).contains(event.keyCode) {
             keyDown(with: event)
             return true
         }
-        guard event.type == .keyDown, window?.firstResponder === self,
+        guard event.type == .keyDown, hasKeyboard,
               event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command else {
             return super.performKeyEquivalent(with: event)
         }

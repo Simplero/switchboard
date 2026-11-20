@@ -876,10 +876,11 @@ final class Switchboard {
         }
         // A second click before the scan sees the first one running: do not start it twice,
         // but show the terminal it is starting in.
-        if !e.isOpen, now - (e.opening_at ?? 0) < 25 {
-            if focus, let sf = e.surface_id, let view = SessionsAPI.surface(id: sf) { SessionsAPI.focus(view) }
+        if !e.isOpen, now - (e.opening_at ?? 0) < 25, let sf = e.surface_id, let view = SessionsAPI.surface(id: sf) {
+            if focus { SessionsAPI.focus(view) }
             return (true, "Opening…", nil)
         }
+        // (Its terminal is gone, closed before the scan saw it: start it again below.)
         if switching.contains(k) && !switchOpening { return (true, "Switching login…", nil) }
         // The same conversation must never run in two places.
         if runningElsewhere(k) != nil {

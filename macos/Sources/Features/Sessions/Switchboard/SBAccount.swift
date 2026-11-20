@@ -147,6 +147,8 @@ final class SBAccount: NSObject, ObservableObject {
             person = p
             // The signed-in person owns this Mac's phone link from now on.
             SBRemote.writeOwner(p)
+            // Pages that waited on Simplero's login come now.
+            for page in SessionsDocPanes.shared.pages.values { page.signedInNow() }
             startTimer()
             await report()
         } catch {

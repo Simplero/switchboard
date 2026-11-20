@@ -249,6 +249,9 @@ const NEEDS = new Set(['permission','question','review','heads_up','wrong_login'
 const LOGIN_ICON = {'simplero.com':'brief','corre.li':'person','correli.me':'star'};
 const stateOf = s => (s.u && NEEDS.has(s.st)) ? 'urgent' : (s.st || 'info');
 const needsYou = s => { const st = stateOf(s); return st === 'urgent' || NEEDS.has(st); };
+// The agent finished what you asked: Done, Answered, or a message you marked as handled.
+const FINISHED = new Set(['done', 'info', 'handled']);
+const isFinished = s => s.a !== 'shell' && FINISHED.has(stateOf(s));
 
 let data = null, focusSf = null, query = '', results = [], idHit = null;
 let newCwd = store.get('newCwd', '~/Simplero');
@@ -519,7 +522,7 @@ function rowsFor(ci){
     return off.length ? off.map(s => ({s})) : [{empty:'Nothing here.'}];
   }
   const open = all.filter(s => s.o && whereOk(s));
-  const shown = open.filter(s => c.filter === 'all' || (c.filter === 'needs' ? heldNeeds(s) : stateOf(s) === 'working'));
+  const shown = open.filter(s => c.filter === 'all' || (c.filter === 'needs' ? heldNeeds(s) : c.filter === 'done' ? isFinished(s) : stateOf(s) === 'working'));
   const out = [];
   if (c.group === 'none'){
     shown.sort(cmp(c)).forEach(s => out.push({s}));
@@ -533,7 +536,7 @@ function rowsFor(ci){
       if (!folded[g]) list.forEach(s => out.push({s}));
     });
   }
-  if (!shown.length) out.push({empty: c.filter === 'needs' ? 'Nothing needs you right now.' : 'Nothing here.'});
+  if (!shown.length) out.push({empty: c.filter === 'needs' ? 'Nothing needs you right now.' : c.filter === 'done' ? 'No session has finished yet.' : 'Nothing here.'});
   if (c.filter !== 'all'){
     const inList = new Set(shown.map(s => s.k));
     const byKey = new Map(open.map(s => [s.k, s]));
@@ -596,13 +599,13 @@ function seg(id, options, value, onPick){
 
 function colControls(ci){
   const c = colState[ci], count = f => data.s.filter(s => s.o && f(s)).length;
-  const fchip = (v, label, n) => `<button class="fchip" data-f="${v}" aria-pressed="${c.filter===v}">${label} ${n}</button>`;
+  const fchip = (v, label, n, tip) => `<button class="fchip" data-f="${v}" aria-pressed="${c.filter===v}"${tip ? ` title="${tip}"` : ''}>${label} ${n}</button>`;
   const pills = (key, opts) => `<span class="seg">${opts.map(([v,l]) => `<button data-${key}="${v}" aria-pressed="${c[key]===v}">${l}</button>`).join('')}</span>`;
   const wcount = w => data.s.filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el) : true).length;
   const wchip = (v, label) => `<button class="fchip" data-w="${v}" aria-pressed="${c.where===v}">${label} ${v === 'any' ? '' : wcount(v)}</button>`;
   return `<div class="ctrl">
     <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
-    <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('all','All',count(()=>true))}</div>
+    <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('done','Done',count(isFinished),'The agent finished what you asked: Done, Answered, or marked as handled')}${fchip('all','All',count(()=>true))}</div>
     <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir']])}</div>
     <div class="row" title="Sort. Manual: drag rows to put them in your order.">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>
   </div>`;

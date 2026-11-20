@@ -183,15 +183,14 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         }
         guard body["type"] as? String == "search" else { replyHandler(nil, nil); return }
         let q = (body["q"] as? String ?? "").trimmingCharacters(in: .whitespaces)
-        var reply: [String: Any] = ["s": Switchboard.shared.search(q)]
-        // A pasted session id (or "claude --resume <id>"): offer to resume it.
-        guard let r = q.lowercased().range(of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#, options: .regularExpression) else {
-            replyHandler(reply, nil)
-            return
-        }
-        let sid = String(q.lowercased()[r])
         Task { @MainActor in
-            reply["id"] = await Switchboard.shared.lookupSessionID(sid) ?? ["id": sid, "missing": true]
+            // The sessions in the list, and every conversation on this Mac that says the words.
+            var reply = await Switchboard.shared.searchAll(q)
+            // A pasted session id (or "claude --resume <id>"): offer to resume it.
+            if let r = q.lowercased().range(of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#, options: .regularExpression) {
+                let sid = String(q.lowercased()[r])
+                reply["id"] = await Switchboard.shared.lookupSessionID(sid) ?? ["id": sid, "missing": true]
+            }
             replyHandler(reply, nil)
         }
     }
@@ -338,6 +337,20 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 if let op = o["op"] as? String, let k = o["k"] as? String,
                    let action = ["done": "Done with", "close": "Close", "park": "Park"][op],
                    !store.confirmClose(k, action: action) { return }
+                if o["op"] as? String == "resume_conv", let key = o["key"] as? String,
+                   let d = SBHistory.shared.doc(key), let warning = SBHistory.shared.otherMacWarning(d) {
+                    // Another Mac changed it in the last minutes: it may still run there.
+                    let alert = NSAlert()
+                    alert.messageText = "Resume “\(d.title)” here?"
+                    alert.informativeText = warning
+                    alert.addButton(withTitle: "Resume here")
+                    alert.addButton(withTitle: "Cancel")
+                    guard alert.runModal() == .alertFirstButtonReturn else { return }
+                    var forced = o
+                    forced["force"] = true
+                    store.send(forced)
+                    return
+                }
                 if o["op"] as? String == "new" {
                     // The form cleared itself: give the message back if the session did not start.
                     store.send(o) { [weak self] ok in

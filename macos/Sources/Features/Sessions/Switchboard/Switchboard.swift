@@ -94,6 +94,8 @@ final class Switchboard {
             SessionsAttachments.prune()
             await MainActor.run { Switchboard.shared.finishStart(reg, summaries: summaries, writable: locked) }
         }
+        // Search inside every conversation on this Mac: the index builds in the background.
+        SBHistory.shared.start()
     }
 
     private func finishStart(_ loadedReg: SBRegistry, summaries cache: [String: SBSummary], writable: Bool) {
@@ -851,10 +853,73 @@ final class Switchboard {
         return hits.prefix(limit).map { compact($0.3) }
     }
 
+    /// The search box: sessions in the list (by name, summary, folder…) and every conversation
+    /// on this Mac that says all the words (the index, SBHistory). A session in the list that
+    /// matches only inside its conversation shows with the words around the match.
+    func searchAll(_ q: String) async -> [String: Any] {
+        var list = search(q)
+        var at: [String: Int] = [:]
+        for (i, s) in list.enumerated() { if let k = s["k"] as? String { at[k] = i } }
+        let listed = Set(reg.sessions.keys)
+        SBHistory.shared.kick()
+        let r = await Task.detached(priority: .userInitiated) { SBHistory.shared.search(q, listed: listed) }.value
+        var extra: [[String: Any]] = []
+        for h in r.inList {
+            if let i = at[h.doc.key] {
+                list[i]["sn"] = h.snippet
+            } else if let e = reg.sessions[h.doc.key] {
+                var c = compact(e)
+                c["sn"] = h.snippet
+                extra.append(c)
+            }
+        }
+        list += extra
+        func n(_ x: Any?) -> Any { x ?? NSNull() }
+        let other: [[String: Any]] = r.other.map { h in
+            let d = h.doc
+            return ["k": "conv:" + d.key, "a": d.agent, "id": d.sid, "n": d.title, "cwd": n(d.cwd.map(SBPaths.tilde)),
+                    "br": n(d.branch), "la": d.mtime, "m": n(d.thisMac == false ? d.machine : nil), "sn": h.snippet]
+        }
+        let st = SBHistory.shared.status
+        return ["s": list, "conv": other, "cn": r.otherTotal,
+                "ix": ["busy": st.busy, "done": st.done, "todo": st.todo, "ready": st.lastPassAt > 0]]
+    }
+
+    /// Resume a conversation found in the index, here, in its own folder. One that another Mac
+    /// changed in the last minutes may still run there: without `force`, say so instead.
+    func resumeConversation(_ key: String, force: Bool) async -> (Bool, String) {
+        guard let d = await Task.detached(priority: .userInitiated, operation: { SBHistory.shared.doc(key) }).value else {
+            return (false, "That conversation is not on this Mac any more.")
+        }
+        if !force, let w = SBHistory.shared.otherMacWarning(d) { return (false, w) }
+        if reg.sessions[key]?.isOpen == true { let o = openEntry(key); return (o.ok, o.message) }
+        if d.agent == "claude" { return await resumeID(d.sid, login: nil, path: d.path) }
+        var isDir: ObjCBool = false
+        guard let cwd = d.cwd, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
+            return (false, "The folder of that conversation (\(d.cwd ?? "unknown")) does not exist any more.")
+        }
+        if reg.sessions[key] == nil {
+            var e = SBEntry(key: key, agent: d.agent)
+            e.session_id = d.sid
+            e.name = d.title
+            e.custom_name = true
+            e.cls = "Work"
+            e.labels = []
+            e.first_seen = now
+            reg.sessions[key] = e
+        }
+        update(key) { x in
+            x.cwd = cwd
+            if let b = d.branch { x.branch = b }
+        }
+        let o = openEntry(key)
+        return (o.ok, o.message)
+    }
+
     /// A pasted conversation id: where it is on this Mac, to offer resuming it.
-    func lookupSessionID(_ sid: String) async -> [String: Any]? {
+    func lookupSessionID(_ sid: String, path: String? = nil) async -> [String: Any]? {
         let found = await Task.detached(priority: .userInitiated) { () -> (SBBackground.Conversation, String?)? in
-            guard let info = SBBackground.lookupConversation(sid) else { return nil }
+            guard let info = SBBackground.lookupConversation(sid, path: path) else { return nil }
             return (info, info.account.flatMap { SBLogins.byAccount()[$0] })
         }.value
         guard let (info, owner) = found else { return nil }
@@ -888,10 +953,13 @@ final class Switchboard {
 
     private func resumeCommand(_ e: SBEntry) -> String? {
         if let sid = e.session_id, !sid.isEmpty {
+            // A test copy runs stand-ins for the other agents (SWITCHBOARD_AGENT_BIN).
+            let bin = ProcessInfo.processInfo.environment["SWITCHBOARD_AGENT_BIN"].map { $0 + "/" } ?? ""
             switch e.agent {
             case "claude": return "\(Self.claudeLaunch(e.login_dir)) --resume \(sid) --dangerously-skip-permissions"
-            case "codex": return "codex resume \(sid)"
-            case "opencode": return "opencode --session \(sid)"
+            case "codex": return "\(bin)codex resume \(sid)"
+            case "grok": return "\(bin)grok --resume \(sid)"
+            case "opencode": return "\(bin)opencode --session \(sid)"
             default: break
             }
         }
@@ -942,6 +1010,7 @@ final class Switchboard {
                               prompt: msg["prompt"] as? String, name: msg["name"] as? String, files: msg["files"] as? [String] ?? [])
             return (r.ok, r.message)
         case "resume_id": return await resumeID(msg["id"] as? String ?? "", login: msg["login"] as? String)
+        case "resume_conv": return await resumeConversation(msg["key"] as? String ?? "", force: msg["force"] as? Bool == true)
         case "restore": return await restore(msg["keys"] as? [String])
         case "cls": return edit(k, cls: msg["cls"] as? String)
         case "label": return edit(k, label: msg["label"] as? String ?? "")
@@ -1226,14 +1295,14 @@ final class Switchboard {
     }
 
     /// Resume a Claude conversation by its id, in its own folder, with the login you pick.
-    func resumeID(_ raw: String, login: String?) async -> (Bool, String) {
+    func resumeID(_ raw: String, login: String?, path: String? = nil) async -> (Bool, String) {
         guard let r = raw.lowercased().range(of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#, options: .regularExpression) else {
             return (false, "That is not a session id.")
         }
         let sid = String(raw.lowercased()[r])
         let k = "claude:" + sid
         if reg.sessions[k]?.isOpen == true { let o = openEntry(k); return (o.ok, o.message) }
-        guard let info = await lookupSessionID(sid) else { return (false, "No conversation with id \(sid) on this Mac.") }
+        guard let info = await lookupSessionID(sid, path: path) else { return (false, "No conversation with id \(sid) on this Mac.") }
         let cwd = info["cwd"] as? String
         var isDir: ObjCBool = false
         guard let cwd, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {

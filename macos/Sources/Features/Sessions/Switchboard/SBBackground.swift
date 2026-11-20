@@ -106,6 +106,8 @@ enum SBBackground {
                 }
             case "codex":
                 if a == "resume", let n = next, !n.hasPrefix("-"), n.count >= 8 { found = n }
+            case "grok":
+                if a == "--resume" || a == "-r", let n = next, !n.hasPrefix("-") { found = n }
             case "opencode":
                 if a == "--session" || a == "-s", let n = next, !n.hasPrefix("-") { found = n }
                 if a.hasPrefix("--session=") { found = String(a.dropFirst("--session=".count)) }
@@ -204,8 +206,8 @@ enum SBBackground {
     /// and the account it last ran with.
     typealias Conversation = (cwd: String?, title: String?, firstAsk: String?, account: String?)
 
-    static func lookupConversation(_ sid: String) -> Conversation? {
-        guard let f = transcriptPath(sid), let fh = FileHandle(forReadingAtPath: f) else { return nil }
+    static func lookupConversation(_ sid: String, path: String? = nil) -> Conversation? {
+        guard let f = path ?? transcriptPath(sid), let fh = FileHandle(forReadingAtPath: f) else { return nil }
         defer { try? fh.close() }
         let size = (try? FileManager.default.attributesOfItem(atPath: f)[.size] as? NSNumber)?.uint64Value ?? 0
         let head = String(decoding: fh.readData(ofLength: 400_000), as: UTF8.self)

@@ -97,6 +97,35 @@ final class SessionsAPI {
                         }
                         return
                     }
+                    if req.method == "POST", req.path == "/sb/convsearch", req.headers["x-token"] == self.token {
+                        // For checks: what the sidebar search answers ({"q": "words"}).
+                        Task { @MainActor in
+                            let r = await Switchboard.shared.searchAll(req.json["q"] as? String ?? "")
+                            self.respond(conn, status: 200, body: r)
+                        }
+                        return
+                    }
+                    if req.path == "/sb/convindex", req.headers["x-token"] == self.token {
+                        // For checks: the conversation index. {"pass": true} reads what changed now and
+                        // waits; {"key": "codex:<id>"} gives one conversation and its warning.
+                        let pass = req.json["pass"] as? Bool == true, key = req.json["key"] as? String
+                        Task.detached(priority: .userInitiated) {
+                            let t0 = Date()
+                            if pass { SBHistory.shared.passNow() }
+                            let st = SBHistory.shared.status
+                            var body: [String: Any] = ["home": SBHistory.shared.home ?? NSNull(), "db": SBHistory.shared.dbPath,
+                                                       "busy": st.busy, "done": st.done, "todo": st.todo, "docs": st.docs,
+                                                       "last_pass_seconds": st.lastPassSeconds, "waited": Date().timeIntervalSince(t0),
+                                                       "db_bytes": (try? FileManager.default.attributesOfItem(atPath: SBHistory.shared.dbPath)[.size]) ?? 0]
+                            if let key, let d = SBHistory.shared.doc(key) {
+                                body["doc"] = ["title": d.title, "cwd": d.cwd ?? "", "branch": d.branch ?? "", "mtime": d.mtime,
+                                               "machine": d.machine ?? "", "this_mac": d.thisMac.map { $0 as Any } ?? NSNull(), "path": d.path]
+                                body["warning"] = SBHistory.shared.otherMacWarning(d) ?? NSNull()
+                            }
+                            await MainActor.run { self.respond(conn, status: 200, body: body) }
+                        }
+                        return
+                    }
                     if req.method == "POST", req.path == "/sb/eval", req.headers["x-token"] == self.token {
                         // For checks: run JavaScript in the sidebar or the panel page and return its result.
                         let page = req.json["page"] as? String == "banner" ? SessionsWeb.banner : SessionsWeb.shared

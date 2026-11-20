@@ -63,7 +63,16 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
     private func pageReady() {
         lastContext = ""
         if let json = Switchboard.shared.currentJSON() { setData(json) }
-        if path == "sidebar" { setFocus(SessionsStore.shared.focusedSurfaceID) } else { pushBannerContext() }
+        if path == "sidebar" {
+            setFocus(SessionsStore.shared.focusedSurfaceID)
+            setHistory(back: SessionHistory.shared.canGoBack, forward: SessionHistory.shared.canGoForward)
+        } else { pushBannerContext() }
+    }
+
+    /// Whether the ‹ and › buttons can go anywhere.
+    func setHistory(back: Bool, forward: Bool) {
+        guard path == "sidebar" else { return }
+        webView.evaluateJavaScript("window.Sessions && Sessions.setHistory && Sessions.setHistory(\(back), \(forward))")
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -187,6 +196,16 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         switch type {
         case "ready":
             pageReady()
+        case "histBack":
+            SessionHistory.shared.goBack()
+        case "histForward":
+            SessionHistory.shared.goForward()
+        case "histMenu":
+            menuActions = []
+            let menu = SessionHistory.shared.menu { [unowned self] title, checked, action in self.item(title, checked: checked, action) }
+            let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
+            let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
+            menu.popUp(positioning: nil, at: point, in: webView)
         case "newWarm":
             // The new-session form opened on a login (or closed): start its Claude now, so it
             // is at its prompt by the time you press Enter.

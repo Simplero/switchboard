@@ -36,6 +36,8 @@ struct SessionItem: Decodable, Identifiable, Equatable {
     let lm: String?
     let wl: String?
     let ar: Bool?
+    /// The key this session had before its conversation id arrived.
+    let was: String?
 
     var id: String { k }
     var isOpen: Bool { o ?? false }
@@ -76,7 +78,9 @@ struct SidebarPayload: Decodable, Equatable {
 final class SessionsStore: ObservableObject {
     static let shared = SessionsStore()
 
-    @Published var payload: SidebarPayload?
+    @Published var payload: SidebarPayload? {
+        didSet { if let p = payload { SessionHistory.shared.remap(p.s) } }
+    }
     @Published var focusedSurfaceID: String?
     @Published var now = Int(Date().timeIntervalSince1970)
     /// A clicked row highlights at once; cleared when focus catches up.
@@ -84,6 +88,7 @@ final class SessionsStore: ObservableObject {
 
     private var timer: Timer?
     private var keyMonitor: Any?
+    private var mouseMonitor: Any?
     /// The left column's session order, for ⌘↑ / ⌘↓.
     var navOrder: [String] = []
 
@@ -120,6 +125,13 @@ final class SessionsStore: ObservableObject {
                 if event.keyCode == 126 { self.step(-1); return nil }   // up arrow
                 if event.keyCode == 125 { self.step(1); return nil }    // down arrow
                 switch event.charactersIgnoringModifiers?.lowercased() {
+                case "[":
+                    // ⌘[ ⌘]: back and forward between sessions, like a browser.
+                    SessionHistory.shared.goBack()
+                    return nil
+                case "]":
+                    SessionHistory.shared.goForward()
+                    return nil
                 case "p":
                     UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
                     SessionsWeb.shared.focusSearch()
@@ -139,6 +151,14 @@ final class SessionsStore: ObservableObject {
                 }
             }
             return event
+        }
+        // The mouse's back and forward buttons (button 4 and 5) go back and forward too.
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { event in
+            switch event.buttonNumber {
+            case 3: SessionHistory.shared.goBack(); return nil
+            case 4: SessionHistory.shared.goForward(); return nil
+            default: return event
+            }
         }
         tick()
     }
@@ -201,6 +221,8 @@ final class SessionsStore: ObservableObject {
             focusedSurfaceID = id
             SessionsWeb.shared.setFocus(id)
             SessionsWeb.banner.pushBannerContext()
+            // Back and forward, like a browser.
+            if let id, let s = payload?.s.first(where: { $0.sf == id && $0.isOpen }) { SessionHistory.shared.visited(s.k) }
         }
         recordVisit()
         if let p = picked, let s = payload?.s.first(where: { $0.k == p }), s.sf == id { picked = nil }

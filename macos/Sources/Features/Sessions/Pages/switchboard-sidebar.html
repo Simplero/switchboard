@@ -76,7 +76,13 @@ button{font:inherit;color:inherit;cursor:default}
 .idhit .m{font-size:12px;color:var(--muted)}
 .idhit .btns{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .idhit .btns .lbl{font-size:12px;color:var(--muted)}
-#search{display:flex;align-items:center;gap:6px;background:var(--sunk);border-radius:8px;padding:6px 9px}
+#search{display:flex;align-items:center;gap:6px;background:var(--sunk);border-radius:8px;padding:6px 9px;flex:1;min-width:0}
+/* back, forward, history: like a browser, next to the search box */
+.navrow{display:flex;align-items:center;gap:6px}
+.navbtns{display:inline-flex;gap:2px}
+.navbtns button{border:0;background:transparent;color:var(--ink2);width:28px;height:30px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center}
+.navbtns button:hover:not(:disabled){background:var(--sunk);color:var(--ink)}
+.navbtns button:disabled{color:var(--faint);opacity:.55}
 #search input{flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:inherit;font-size:13px;user-select:text;-webkit-user-select:text}
 #search .key{font-size:10.5px;color:var(--faint);border:1px solid var(--line2);border-radius:4px;padding:0 4px}
 .seg{display:inline-flex;gap:1px}
@@ -182,11 +188,18 @@ svg{flex-shrink:0}
       <button id="dirbtn" class="dirbtn" data-act="folder" title="Folder new sessions start in. Click to pick another one."></button>
     </div>
     <div id="newbtns" class="row"></div>
+    <div class="navrow">
+    <span class="navbtns">
+      <button id="navBack" disabled title="Back to the session before (⌘[)" aria-label="Back"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg></button>
+      <button id="navFwd" disabled title="Forward (⌘])" aria-label="Forward"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg></button>
+      <button id="navHist" title="History: the sessions you visited, back and forward" aria-label="History"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/><polyline points="12 7 12 12 15.5 14"/></svg></button>
+    </span>
     <label id="search">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
       <input id="q" placeholder="Search, or move with the arrow keys…" autocomplete="off" spellcheck="false">
       <span class="key" id="qkey">⌘P</span>
     </label>
+    </div>
     <div class="row"><span class="cap">Columns</span><span class="seg" id="colseg"></span></div>
   </div>
   <div id="cols"></div>
@@ -326,6 +339,8 @@ window.Sessions = {
     if (nf.open) closeNew(false);
   },
   newFailed(){ if (nf.sent && !nfMsg.value && !nfName.value && !nf.files.length){ nfMsg.value = nf.sent.text; nfName.value = nf.sent.name; nf.files = nf.sent.files; nfFiles(); nfGrow(); } },
+  // Back and forward: whether the ‹ and › buttons can go anywhere.
+  setHistory(b, f){ $('#navBack').disabled = !b; $('#navFwd').disabled = !f; },
   // ⌘P: start at the session in front.
   focusSearch(){ cur = null; q.focus(); q.select(); if (!cur) cur = initialCursor(); applyCursor(true); },
   // The app moved the page to the window the cursor just brought to the front.
@@ -872,6 +887,9 @@ document.addEventListener('click', e => {
   const t = e.target;
   const ack = t.closest('[data-ack]'); if (ack){ e.stopPropagation(); op({op:'ack', k: ack.dataset.ack}); return; }
   const send = t.closest('[data-send]'); if (send){ op({op:'send', k: send.dataset.k, text: send.dataset.send}); return; }
+  if (t.closest('#navBack')){ bridge('histBack'); return; }
+  if (t.closest('#navFwd')){ bridge('histForward'); return; }
+  if (t.closest('#navHist')){ const r = $('#navHist').getBoundingClientRect(); bridge('histMenu', {x: r.left, y: r.bottom + 4}); return; }
   if (t.closest('#scrim')){ closeNew(); return; }
   const nfb = t.closest('[data-nf]');
   if (nfb){

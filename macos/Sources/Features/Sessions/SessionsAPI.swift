@@ -383,6 +383,20 @@ final class SessionsAPI {
                           "in_window": page?.webView.window === controller.window,
                           "pane_width": page?.webView.frame.width ?? 0,
                           "grid": SessionsAPI.gridSize(view).map { [$0.cols, $0.rows] } ?? []])
+        case ("GET", "/sb/history"), ("POST", "/sb/history"):
+            // For checks: back and forward between sessions. POST {visit: key} | {go: "back"|"forward"} |
+            // {jump_back: i} | {jump_forward: i}; the answer is the state and the History menu's lines.
+            let h = SessionHistory.shared
+            if req.method == "POST" {
+                if let k = req.json["visit"] as? String { h.visited(k) }
+                switch req.json["go"] as? String { case "back": h.goBack(); case "forward": h.goForward(); default: break }
+                if let i = req.json["jump_back"] as? Int { h.jump(toBack: i) }
+                if let i = req.json["jump_forward"] as? Int { h.jump(toForward: i) }
+            }
+            let menu = h.menu { title, checked, _ in let m = NSMenuItem(title: title, action: nil, keyEquivalent: ""); m.state = checked ? .on : .off; return m }
+            return (200, ["back": h.back, "forward": h.forward, "current": (h.current as Any?) ?? NSNull(),
+                          "can_back": h.canGoBack, "can_forward": h.canGoForward,
+                          "menu": menu.items.map { $0.isSeparatorItem ? "—" : ($0.state == .on ? "✓ " : "") + $0.title }])
         case ("GET", "/sb/spares"):
             // For checks: the spares (Claude started ahead of time, one per login).
             return (200, ["spares": SBSpares.shared.checkInfo()])

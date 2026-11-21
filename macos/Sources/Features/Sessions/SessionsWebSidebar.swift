@@ -414,6 +414,46 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         return i
     }
 
+    /// Move to folder: Claude resumes the conversation in the folder you pick, when its turn is
+    /// over and you are not looking at it (right away when it waits for you).
+    private func moveItems(_ s: SessionItem) -> [NSMenuItem] {
+        let store = SessionsStore.shared
+        var items: [NSMenuItem] = []
+        func disabled(_ t: String) -> NSMenuItem {
+            let i = NSMenuItem(title: t, action: nil, keyEquivalent: "")
+            i.isEnabled = false
+            return i
+        }
+        if let to = s.mv {
+            items.append(disabled("Moves to \(to) when its turn is over"))
+            items.append(item("Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": to, "now": true]) })
+            items.append(item("Don’t move it") { store.send(["op": "move_cancel", "k": s.k]) })
+            items.append(.separator())
+        }
+        let here = s.cwd ?? ""
+        for f in Switchboard.shared.usualFolders() {
+            if f == here {
+                items.append(item("\(f)  (now)", checked: true) {})
+                items.last?.action = nil
+            } else {
+                items.append(item(f, checked: f == s.mv) { store.send(["op": "move", "k": s.k, "cwd": f]) })
+            }
+        }
+        items.append(.separator())
+        items.append(item("Other folder…") {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            panel.prompt = "Move here"
+            panel.message = "Claude resumes “\(s.n)” in this folder."
+            panel.directoryURL = URL(fileURLWithPath: (here as NSString).expandingTildeInPath)
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            store.send(["op": "move", "k": s.k, "cwd": SBPaths.tilde(url.path)])
+        })
+        return items
+    }
+
     private func submenu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let m = NSMenu(title: title)
@@ -500,6 +540,9 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 if s.ld != d { store.send(["op": "switch", "k": s.k, "login": d]) }
             }
         }))
+        if s.a == "claude" && s.k.hasPrefix("claude:") {
+            menu.addItem(submenu("Move to folder", moveItems(s)))
+        }
         if !s.isOpen && !s.isPinned {
             menu.addItem(.separator())
             menu.addItem(item("Remove from list") { store.send(["op": "forget", "k": s.k]) })

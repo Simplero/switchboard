@@ -173,6 +173,9 @@ struct SBEntry: Codable {
     /// Parked after it put its work on this branch (parked/…, with a draft PR) and freed its work
     /// tree: when you resume it, Switchboard tells it where its work is.
     var park_branch: String?
+    /// Moves to this folder when its turn is over (Move to folder): Claude resumes the
+    /// conversation there.
+    var move_to: String?
 
     /// The end of the terminal, for the summary. Not saved.
     var tail: String? = nil
@@ -182,7 +185,7 @@ struct SBEntry: Codable {
              closed_at, closed_reason, opening_at, workspace_id, surface_id, pid, last_seen, resume_cmd, backend,
              screen, working_line, last_message, last_message_at, last_activity, artifacts, summary, summary_key,
              split, state, parked, archived, archived_at, ack_key, was, closing, tab_title, shared_ws,
-             pinned, pin_cmd, app_only, park_branch
+             pinned, pin_cmd, app_only, park_branch, move_to
     }
 
     init(key: String, agent: String?) {
@@ -205,6 +208,7 @@ struct SBEntry: Codable {
         split = v(.split); state = v(.state); parked = v(.parked); archived = v(.archived); archived_at = v(.archived_at)
         ack_key = v(.ack_key); was = v(.was); closing = v(.closing); tab_title = v(.tab_title); shared_ws = v(.shared_ws)
         pinned = v(.pinned); pin_cmd = v(.pin_cmd); app_only = v(.app_only); park_branch = v(.park_branch)
+        move_to = v(.move_to)
     }
 
     var isOpen: Bool { open == true }

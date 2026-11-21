@@ -297,6 +297,16 @@ final class SessionsAPI {
             guard let view else { return (404, ["error": "no such terminal"]) }
             guard let png = SessionsAPI.drawnPicture(view) else { return (200, ["png": NSNull(), "note": "nothing drawn yet"]) }
             return (200, ["png": png.base64EncodedString()])
+        case ("GET", "/sb/promptcheck"):
+            // For checks: what Move to folder reads in a terminal (?id=): its prompt, the cursor,
+            // background work, and (?k=) why that session cannot move yet ("free" when it can).
+            guard let view = surface(req.query["id"]) else { return (404, ["error": "no such terminal"]) }
+            let text = SessionsAPI.activeText(of: view) ?? ""
+            let c = SessionsAPI.cursor(of: view)
+            var out: [String: Any] = ["prompt": SBScreen.promptText(text) ?? NSNull(), "background": SBScreen.backgroundBusy(text),
+                                      "cursor": c.map { [$0.row, $0.col] } ?? [], "row": c.flatMap { SessionsAPI.rowText(of: view, $0.row) } ?? NSNull()]
+            if let k = req.query["k"] { out["blocker"] = Switchboard.shared.moveCheck(k) }
+            return (200, out)
         case ("POST", "/sb/keycheck"):
             // For checks: press a key with ⌘ (or ⌃) on the sidebar page the way AppKit dispatches it
             // (local monitors, the window's views, then the menu). {"key": "v"}
@@ -706,6 +716,38 @@ final class SessionsAPI {
         let sel = ghostty_selection_s(
             top_left: ghostty_point_s(tag: GHOSTTY_POINT_ACTIVE, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
             bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_ACTIVE, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
+            rectangle: false)
+        guard ghostty_surface_read_text(s, sel, &text) else { return nil }
+        defer { ghostty_surface_free_text(s, &text) }
+        return String(cString: text.text)
+    }
+
+    private static let cupRE = try! NSRegularExpression(pattern: "\u{1b}\\[(\\d+);(\\d+)H")
+
+    /// Where the cursor is in the active area (row and column, from 0). The terminal's saved
+    /// state ends with the cursor position (CUP, the last one in it), then modes.
+    static func cursor(of view: Ghostty.SurfaceView) -> (row: Int, col: Int)? {
+        guard let s = view.surface else { return nil }
+        let state = ghostty_surface_dump_vt(s)
+        defer { ghostty_string_free(state) }
+        guard let p = state.ptr, state.len > 0 else { return nil }
+        let n = Int(state.len), from = max(0, n - 65_536)
+        let tail = String(decoding: UnsafeRawBufferPointer(start: UnsafeRawPointer(p + from), count: n - from), as: UTF8.self)
+        guard let m = cupRE.matches(in: tail, range: NSRange(tail.startIndex..., in: tail)).last,
+              let r = Range(m.range(at: 1), in: tail), let c = Range(m.range(at: 2), in: tail),
+              let row = Int(tail[r]), let col = Int(tail[c]), row >= 1, col >= 1 else { return nil }
+        return (row - 1, col - 1)
+    }
+
+    /// One row of the active area, as text.
+    static func rowText(of view: Ghostty.SurfaceView, _ row: Int) -> String? {
+        guard let s = view.surface, row >= 0 else { return nil }
+        let cols = Int(ghostty_surface_size(s).columns)
+        guard cols > 0 else { return nil }
+        var text = ghostty_text_s()
+        let sel = ghostty_selection_s(
+            top_left: ghostty_point_s(tag: GHOSTTY_POINT_ACTIVE, coord: GHOSTTY_POINT_COORD_EXACT, x: 0, y: UInt32(row)),
+            bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_ACTIVE, coord: GHOSTTY_POINT_COORD_EXACT, x: UInt32(cols - 1), y: UInt32(row)),
             rectangle: false)
         guard ghostty_surface_read_text(s, sel, &text) else { return nil }
         defer { ghostty_surface_free_text(s, &text) }

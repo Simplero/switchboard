@@ -39,6 +39,7 @@ button{font:inherit;color:inherit;cursor:default}
 .dir{display:inline-flex;align-items:center;gap:4px;min-width:0;flex:0 2 auto;max-width:320px;font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink2);border:1px solid var(--line2);border-radius:6px;padding:1px 7px;background:var(--surface)}
 .dir span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .dir .br{color:var(--muted);flex:0 2 auto}
+.dir .mv{flex:0 0 auto}
 .r1 .name{flex:0 1 auto;min-width:40px}
 .r1 .acct{flex-shrink:0}
 .r2,.r3{display:flex;gap:6px;align-items:center;min-width:0;height:18px}
@@ -193,7 +194,8 @@ const tabTitle = t => String(t || 'Terminal').replace(/^[^@\s]+@[^:\s]+:\s*/, ''
 function dirHTML(s){
   if (!s.cwd) return '';
   const br = s.br && s.br !== 'master' && s.br !== 'main' ? s.br : '';
-  return `<span class="dir" title="Folder: ${esc(s.cwd)}${br ? '\nBranch: ' + esc(br) : ''}">${ic('folder',10,2.2)}<span>${esc(s.cwd)}</span>${br ? `<span class="br">⎇ ${esc(br)}</span>` : ''}</span>`;
+  const mv = s.mv ? `\nMoves to ${esc(s.mv)} when its turn is over and you are not looking at it. Right-click it in the sidebar › Move to folder to move it now or keep it here.` : '';
+  return `<span class="dir" title="Folder: ${esc(s.cwd)}${br ? '\nBranch: ' + esc(br) : ''}${mv}">${ic('folder',10,2.2)}<span>${esc(s.cwd)}</span>${s.mv ? `<span class="mv">→ ${esc(s.mv)}</span>` : ''}${br ? `<span class="br">⎇ ${esc(br)}</span>` : ''}</span>`;
 }
 
 function render(){

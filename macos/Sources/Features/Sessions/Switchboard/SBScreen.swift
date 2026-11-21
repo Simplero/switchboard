@@ -77,6 +77,27 @@ enum SBScreen {
         return strip(ls.suffix(n).joined(separator: "\n"))
     }
 
+    /// Work that goes on after Claude's turn: its footer counts background shells, monitors
+    /// and agents ("· 2 shells", "· 1 monitor"), and a running agent's row starts with ◯.
+    static let backgroundWork = re(#"·\s*\d+\s+(shells?|background tasks?|monitors?|agents?)\b|^\s*◯ "#)
+
+    static func backgroundBusy(_ screen: String) -> Bool {
+        lines(screen).filter { !strip($0).isEmpty }.suffix(5).contains { matches(backgroundWork, $0) }
+    }
+
+    /// What is in Claude's prompt box: "" when it is empty, else its text (what you typed, or
+    /// Claude's grey suggestion of your next message). Nil when no prompt box shows (a menu
+    /// or a dialog is open).
+    static func promptText(_ screen: String) -> String? {
+        let ls = lines(screen)
+        guard let i = ls.lastIndex(where: { $0.hasPrefix("❯") }), i > 0, matches(rule, ls[i - 1]) else { return nil }
+        var parts = [String(ls[i].dropFirst())]
+        var j = i + 1
+        while j < ls.count, !matches(rule, ls[j]) { parts.append(ls[j]); j += 1 }
+        guard j < ls.count else { return nil }   // no line under it: not the prompt box
+        return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
     /// "permission", "working" or "idle".
     static func state(_ screen: String) -> String {
         let last = Array(lines(screen).filter { !strip($0).isEmpty }.suffix(25))

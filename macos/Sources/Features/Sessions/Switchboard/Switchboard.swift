@@ -41,6 +41,12 @@ final class Switchboard {
     /// Sessions in the middle of a login switch (no second switch or open meanwhile).
     private var switching = Set<String>()
     private var switchOpening = false
+    /// Sessions moving to another folder now (also in `switching`, so nothing opens them meanwhile).
+    private var moving = Set<String>()
+    /// A session waiting to move: since when it looked free (it moves when it still is 3 s later).
+    private var moveFreeSince: [String: Double] = [:]
+    /// Was the text in a terminal's prompt typed (true) or Claude's suggestion (false), by terminal.
+    private var draftMemo: [String: (text: String, draft: Bool)] = [:]
     private var elsewhereAt: Double = 0
     private var claudeAppAt: Double = 0
     /// Claude app sessions removed from the list here: not listed again while the app keeps them.
@@ -260,6 +266,7 @@ final class Switchboard {
         }
         merge(t0: t0, agents: agents)
         closeAwaySessions()
+        moveWhenFree()
         if let outside { mergeElsewhere(outside) }
         if let app { mergeClaudeApp(app) }
         SBSpares.shared.tick()
@@ -783,6 +790,7 @@ final class Switchboard {
             "was": n(e.was),
             "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
+            "mv": e.move_to.map { SBPaths.tilde($0) as Any } ?? NSNull(),
         ]
     }
 
@@ -995,6 +1003,8 @@ final class Switchboard {
         case "close": return close(k, park: false)
         case "done": return done(k)
         case "switch": return await switchLogin(k, msg["login"] as? String ?? "", focus: focus)
+        case "move": return await moveSession(k, to: msg["cwd"] as? String ?? "", now: msg["now"] as? Bool == true)
+        case "move_cancel": return cancelMove(k)
         case "new_shell":
             let r = newShell(msg["cwd"] as? String, focus: focus)
             if focus, let sf = r.surface { SessionsAPI.focusTerminal(sf) }
@@ -1057,7 +1067,7 @@ final class Switchboard {
             return (true, "Opening…", nil)
         }
         // (Its terminal is gone, closed before the scan saw it: start it again below.)
-        if switching.contains(k) && !switchOpening { return (true, "Switching login…", nil) }
+        if switching.contains(k) && !switchOpening { return (true, moving.contains(k) ? "Moving to another folder…" : "Switching login…", nil) }
         // The same conversation must never run in two places.
         if runningElsewhere(k) != nil {
             return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (\(elsewhereName(e))). Click its row in the sidebar to move it here.", nil)
@@ -1184,6 +1194,213 @@ final class Switchboard {
         let r = openEntry(k, focus: focus, tabOf: mate)
         switchOpening = false
         return (r.ok, r.ok ? "Now on \(SBLogins.short(loginDir))." : r.message)
+    }
+
+    // MARK: Move to another folder
+
+    /// Where sessions usually run: ~/Simplero, then the folders of recent Claude sessions, the
+    /// most recent first.
+    func usualFolders(_ limit: Int = 12) -> [String] {
+        var out = [Self.defaultFolder]
+        let recent = reg.sessions.values.filter { $0.agent == "claude" }.sorted { ($0.last_activity ?? 0) > ($1.last_activity ?? 0) }
+        for e in recent {
+            guard let cwd = e.cwd, !cwd.isEmpty else { continue }
+            let t = SBPaths.tilde(cwd)
+            if !out.contains(t) { out.append(t) }
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
+    /// A path with its symlinks resolved, the way Claude Code sees its folder.
+    static func realPath(_ p: String) -> String {
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        return realpath(SBPaths.expand(p), &buf) != nil ? String(cString: buf) : SBPaths.expand(p)
+    }
+
+    /// The name of a folder's project folder in Claude Code (~/.claude/projects/-Users-me-Simplero).
+    static func claudeProjectName(_ folder: String) -> String {
+        String(realPath(folder).unicodeScalars.map { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) ? Character($0) : "-" })
+    }
+
+    /// Move a Claude session to another folder: its conversation moves to that folder's project
+    /// folder in Claude Code and Claude resumes it there, with the same name, login and tab.
+    /// A running session moves when its turn is over and you are not looking at it, so nothing
+    /// it does stops and nothing you type gets lost (`now`: right away, whatever it does).
+    func moveSession(_ k: String, to raw: String, now force: Bool = false) async -> (Bool, String) {
+        guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
+        guard e.agent == "claude", e.session_id != nil else { return (false, "Only Claude sessions can move to another folder.") }
+        let name = e.name ?? "This session"
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = SBPaths.expand(trimmed)
+        var isDir: ObjCBool = false
+        guard !trimmed.isEmpty, FileManager.default.fileExists(atPath: target, isDirectory: &isDir), isDir.boolValue else {
+            return (false, "There is no folder \(trimmed.isEmpty ? "with that name" : SBPaths.tilde(target)).")
+        }
+        let there = SBPaths.tilde(target)
+        if let cwd = e.cwd, Self.realPath(cwd) == Self.realPath(target) {
+            if e.move_to != nil { update(k) { $0.move_to = nil } }
+            return (true, "“\(name)” is in \(there) already.")
+        }
+        guard Self.claudeProjectName(target).count <= 200 else { return (false, "The path of \(there) is too long for Claude Code’s project folders.") }
+        if moving.contains(k) { return (false, "“\(name)” is moving already.") }
+        if switching.contains(k) { return (false, "“\(name)” is switching login. Try again in a moment.") }
+        if !e.isOpen {
+            if runningElsewhere(k) != nil {
+                return (false, "“\(name)” still runs outside Switchboard (\(elsewhereName(e))). Click its row in the sidebar to move it here first.")
+            }
+            if e.backend == "claude-app" {
+                return (false, "“\(name)” is a session of the Claude app, which keeps its folder. Reopen it here first, then move it.")
+            }
+            update(k) { $0.move_to = target }
+            let r = relocate(k)
+            if !r.ok { update(k) { $0.move_to = nil } }
+            return (r.ok, r.ok ? "“\(name)” moved to \(there). It resumes there when you reopen it." : r.message)
+        }
+        update(k) { $0.move_to = target }
+        moveFreeSince[k] = nil
+        // You just asked: when it is free now, it moves now (also when you look at it).
+        if force || moveBlocker(k, asked: true) == nil { return await performMove(k) }
+        return (true, "“\(name)” moves to \(there) when its turn is over and you are not looking at it.")
+    }
+
+    func cancelMove(_ k: String) -> (Bool, String) {
+        guard reg.sessions[k]?.move_to != nil else { return (true, "It was not moving.") }
+        guard !moving.contains(k) else { return (false, "It is moving right now.") }
+        update(k) { $0.move_to = nil }
+        moveFreeSince[k] = nil
+        return (true, "It stays where it is.")
+    }
+
+    /// Why a session that waits to move cannot move yet, or nil when it can: its turn goes on,
+    /// it waits for a permission, background shells or agents of it still run, you look at it
+    /// (unless you just asked), or its prompt has text you typed and did not send.
+    private func moveBlocker(_ k: String, asked: Bool) -> String? {
+        guard let e = reg.sessions[k], e.isOpen, let sf = e.surface_id, let view = SessionsAPI.surface(id: sf) else { return "not open" }
+        if e.screen == "working" { return "working" }
+        if e.screen == "permission" { return "permission" }
+        if !asked && sf == SessionsStore.shared.focusedSurfaceID { return "in front" }
+        guard let text = SessionsAPI.activeText(of: view) else { return "no screen" }
+        if SBScreen.state(text) != "idle" { return "working" }
+        if SBScreen.backgroundBusy(text) { return "background work" }
+        guard let prompt = SBScreen.promptText(text) else { return "no prompt" }   // a menu or a dialog shows
+        if prompt.isEmpty { return nil }
+        if let m = draftMemo[sf], m.text == prompt { return m.draft ? "draft" : nil }
+        // Claude's grey suggestion of your next message is not yours: the cursor stays at its start.
+        var draft = true
+        if let c = SessionsAPI.cursor(of: view), c.col <= 2, let row = SessionsAPI.rowText(of: view, c.row),
+           row.hasPrefix("❯") { draft = false }
+        draftMemo[sf] = (prompt, draft)
+        return draft ? "draft" : nil
+    }
+
+    /// For checks: why the session cannot move yet if it waited to move, or "free".
+    func moveCheck(_ k: String) -> String { moveBlocker(k, asked: false) ?? "free" }
+
+    /// Each scan: the sessions that wait to move and are free now (on two looks 3 s apart) move.
+    private func moveWhenFree() {
+        draftMemo = draftMemo.filter { sf in reg.sessions.values.contains { $0.isOpen && $0.surface_id == sf.key && $0.move_to != nil } }
+        for (k, e) in reg.sessions where e.move_to != nil && !moving.contains(k) && !switching.contains(k) {
+            if !e.isOpen {
+                // Closed meanwhile (and not just now by its own move): nothing runs, so it moves now.
+                moveFreeSince[k] = nil
+                if now - (e.opening_at ?? 0) >= 25, runningElsewhere(k) == nil {
+                    let r = relocate(k)
+                    if !r.ok { update(k) { $0.move_to = nil }; SessionSwitchLog.did("“\(e.name ?? k)” did not move: \(r.message)") }
+                }
+                continue
+            }
+            guard moveBlocker(k, asked: false) == nil else { moveFreeSince[k] = nil; continue }
+            guard let since = moveFreeSince[k] else { moveFreeSince[k] = now; continue }
+            guard now - since >= 3 else { continue }
+            moveFreeSince[k] = nil
+            Task { @MainActor in
+                let (ok, message) = await self.performMove(k)
+                if !ok { SessionsStore.shared.showFailure(message) }
+                self.publish()
+            }
+        }
+    }
+
+    /// Close Claude, move the conversation, resume it in the new folder in the same session
+    /// (as Switch login does). The session in front stays in front.
+    private func performMove(_ k: String) async -> (Bool, String) {
+        guard let e = reg.sessions[k], let target = e.move_to else { return (false, "Unknown session.") }
+        let name = e.name ?? "This session"
+        moving.insert(k)
+        switching.insert(k)
+        defer { moving.remove(k); switching.remove(k) }
+        let front = e.isOpen && e.surface_id != nil && e.surface_id == SessionsStore.shared.focusedSurfaceID
+        let mate = e.isOpen ? sessionTabMate(e) : nil
+        if e.isOpen {
+            let (ok, msg) = close(k, park: false, whole: false)
+            if !ok { update(k) { $0.move_to = nil }; return (false, msg) }
+            // The old Claude must be gone before its conversation file moves.
+            if let pid = e.pid {
+                for _ in 0..<30 where SBProcesses.isAlive(pid) { try? await Task.sleep(nanoseconds: 150_000_000) }
+                if SBProcesses.isAlive(pid) {
+                    update(k) { $0.move_to = nil }
+                    return (false, "The old Claude of “\(name)” did not stop, so it did not move. Reopen it from the sidebar.")
+                }
+            }
+        }
+        let r = relocate(k)
+        if !r.ok { update(k) { $0.move_to = nil } }
+        guard e.isOpen else { return r }
+        // Moved or not: it runs again (in the old folder when the move failed).
+        update(k) { x in
+            x.open = false
+            x.closing = nil
+            x.opening_at = nil
+        }
+        switchOpening = true
+        let o = openEntry(k, focus: front, tabOf: mate)
+        switchOpening = false
+        if !o.ok { return (false, o.message) }
+        if !r.ok { return r }
+        SessionSwitchLog.did("“\(name)” moved to \(SBPaths.tilde(target))")
+        return (true, "“\(name)” moved to \(SBPaths.tilde(target)).")
+    }
+
+    /// Move a closed session's conversation file (and its folder of subagents and tool results)
+    /// to the project folder of `move_to`, and make that its folder.
+    private func relocate(_ k: String) -> (ok: Bool, message: String) {
+        guard let e = reg.sessions[k], let sid = e.session_id, let target = e.move_to else { return (false, "Unknown session.") }
+        guard let src = SBBackground.transcriptPath(sid) else {
+            return (false, "Switchboard did not find the conversation file of “\(e.name ?? sid)”, so it did not move.")
+        }
+        let fm = FileManager.default
+        let srcDir = (src as NSString).deletingLastPathComponent
+        let root = (srcDir as NSString).deletingLastPathComponent
+        let destDir = root + "/" + Self.claudeProjectName(target)
+        if Self.realPath(srcDir) != Self.realPath(destDir) {
+            let side = srcDir + "/" + sid, destFile = destDir + "/" + sid + ".jsonl", destSide = destDir + "/" + sid
+            if fm.fileExists(atPath: destFile) || fm.fileExists(atPath: destSide) {
+                return (false, "\(SBPaths.tilde(destDir)) already has a conversation \(sid), so “\(e.name ?? sid)” did not move.")
+            }
+            do {
+                try fm.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+                try fm.moveItem(atPath: src, toPath: destFile)
+                if fm.fileExists(atPath: side) {
+                    do { try fm.moveItem(atPath: side, toPath: destSide) } catch {
+                        try? fm.moveItem(atPath: destFile, toPath: src)   // all or nothing
+                        throw error
+                    }
+                }
+            } catch {
+                return (false, "Switchboard could not move the conversation file of “\(e.name ?? sid)”: \(error.localizedDescription)")
+            }
+        }
+        let old = e.cwd
+        update(k) { x in
+            // The class that came from the old folder (Brain) follows the folder; one you picked stays.
+            if x.cls == nil || x.cls == defaultClass(old) { x.cls = defaultClass(target) }
+            x.cwd = target
+            x.branch = nil
+            x.move_to = nil
+        }
+        moveFreeSince[k] = nil
+        return (true, "Moved.")
     }
 
     /// ⌘N: a new session with a plain shell, no agent. You run what you want in it.

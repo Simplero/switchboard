@@ -419,19 +419,7 @@ final class SBRemote {
     }
 
     /// Where new sessions usually start: the folders of recent sessions, the most recent first.
-    private func folders() -> [String] {
-        var out = [Switchboard.defaultFolder]
-        let recent = Switchboard.shared.reg.sessions.values
-            .filter { $0.agent == "claude" }
-            .sorted { ($0.last_activity ?? 0) > ($1.last_activity ?? 0) }
-        for e in recent {
-            guard let cwd = e.cwd, !cwd.isEmpty else { continue }
-            let t = SBPaths.tilde(cwd)
-            if !out.contains(t) { out.append(t) }
-            if out.count >= 12 { break }
-        }
-        return out
-    }
+    private func folders() -> [String] { Switchboard.shared.usualFolders() }
 
     /// The sessions for one phone: everything the first time ("full"), then only the rows that
     /// changed and the keys that left the list. Nil when nothing changed.

@@ -142,7 +142,10 @@ enum SBBackground {
     }
 
     /// All logins share one projects folder (~/.claude-ccl/projects links to ~/.claude/projects).
+    /// A test copy can use its own (SWITCHBOARD_CLAUDE_PROJECTS), so moving a session to another
+    /// folder never touches the real conversations.
     static var projectRoots: [String] {
+        if let p = ProcessInfo.processInfo.environment["SWITCHBOARD_CLAUDE_PROJECTS"], !p.isEmpty { return [p] }
         var seen = Set<String>()
         var out: [String] = []
         for d in SBLogins.dirs {

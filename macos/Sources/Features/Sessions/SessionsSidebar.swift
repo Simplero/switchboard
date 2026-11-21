@@ -42,6 +42,8 @@ struct SessionItem: Decodable, Identifiable, Equatable {
     let pn: Int?
     /// A pinned shell's command (lazygit).
     let pc: String?
+    /// The folder it moves to when its turn is over (Move to folder).
+    let mv: String?
 
     var id: String { k }
     var isOpen: Bool { o ?? false }

@@ -441,12 +441,17 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             return i
         }
         if let to = s.mv, s.mvm != true {
-            items.append(disabled("Moves to \(to) when its turn is over"))
-            items.append(item("Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": to, "now": true]) })
+            items.append(disabled(s.mvr == "#slot" ? "Puts its work in a slot when its turn is over" : "Moves to \(to) when its turn is over"))
+            items.append(item(s.mvr == "#slot" ? "Do it now (stops what it does)" : "Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": s.mvr ?? to, "now": true]) })
             items.append(item("Don’t move it") { store.send(["op": "move_cancel", "k": s.k]) })
             items.append(.separator())
         }
         let here = s.cwd ?? ""
+        if here == Switchboard.defaultFolder && s.isOpen && s.mvr != "#slot" {
+            // In the shared checkout: its Claude moves its own changes to a slot of its own.
+            items.append(item("Put its work in a slot (out of ~/Simplero)") { store.send(["op": "move", "k": s.k, "cwd": "#slot"]) })
+            items.append(.separator())
+        }
         for f in Switchboard.shared.usualFolders() {
             if f == here {
                 items.append(item("\(f)  (now)", checked: true) {})
@@ -573,7 +578,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                     let head = NSMenuItem(title: "Moves to \(to) when its turn is over", action: nil, keyEquivalent: "")
                     head.isEnabled = false
                     items.append(head)
-                    items.append(item("Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": "@" + to, "now": true]) })
+                    items.append(item("Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": s.mvr ?? "@" + to, "now": true]) })
                     items.append(item("Don’t move it") { store.send(["op": "move_cancel", "k": s.k]) })
                     items.append(.separator())
                 }

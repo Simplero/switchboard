@@ -48,6 +48,8 @@ struct SessionItem: Decodable, Identifiable, Equatable {
     let m: String?
     /// `mv` is a machine (it moves there with its work tree), not a folder.
     let mvm: Bool?
+    /// Where it moves, as the move action takes it ("@om01", "#slot", or a folder).
+    let mvr: String?
 
     var id: String { k }
     var isOpen: Bool { o ?? false }

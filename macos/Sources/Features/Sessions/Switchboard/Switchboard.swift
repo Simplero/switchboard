@@ -45,6 +45,8 @@ final class Switchboard {
     private var moving = Set<String>()
     /// A session waiting to move: since when it looked free (it moves when it still is 3 s later).
     private var moveFreeSince: [String: Double] = [:]
+    /// A session that was just asked to put its work in a slot: no move before this time.
+    private var moveHoldUntil: [String: Double] = [:]
     /// The model of each open Claude session's last answer and the folder it last worked in, by key.
     private var details: [String: (model: String?, cwd: String?)] = [:]
     /// The work tree of each folder sessions work in ("machine|folder"), looked at once a minute,
@@ -897,8 +899,9 @@ final class Switchboard {
             "was": n(e.was),
             "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
-            "mv": e.move_to.map { ($0.hasPrefix("@") ? String($0.dropFirst()) : SBPaths.tilde($0)) as Any } ?? NSNull(),
+            "mv": e.move_to.map { ($0 == "#slot" ? "a slot" : $0.hasPrefix("@") ? (e.move_stage == "slotting" ? "a slot, then " : "") + String($0.dropFirst()) : SBPaths.tilde($0)) as Any } ?? NSNull(),
             "mvm": e.move_to?.hasPrefix("@") == true,
+            "mvr": e.move_to.map { $0 as Any } ?? NSNull(),
             "m": e.machine.map { $0 as Any } ?? NSNull(),
             "md": (e.isOpen ? SBBackground.modelName(details[e.key]?.model) : nil).map { $0 as Any } ?? NSNull(),
             "wt": worktreeObject(e),
@@ -1385,6 +1388,15 @@ final class Switchboard {
         guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
         guard e.agent == "claude", e.session_id != nil else { return (false, "Only Claude sessions can move to another folder.") }
         let name = e.name ?? "This session"
+        if raw == "#slot" {
+            // Only put its work in a slot (in its own work tree, out of the shared checkout).
+            guard e.isOpen, e.machine == nil else { return (false, "“\(name)” is not running on this Mac.") }
+            if moving.contains(k) { return (false, "“\(name)” is moving already.") }
+            update(k) { $0.move_to = raw }
+            moveFreeSince[k] = nil
+            if force || moveBlocker(k, asked: true) == nil { return await performMove(k) }
+            return (true, "“\(name)” puts its work in a slot when its turn is over.")
+        }
         if raw.hasPrefix("@") {
             // To another machine: its work tree goes there too (see carryToMachine).
             let mname = String(raw.dropFirst())
@@ -1437,7 +1449,7 @@ final class Switchboard {
     func cancelMove(_ k: String) -> (Bool, String) {
         guard reg.sessions[k]?.move_to != nil else { return (true, "It was not moving.") }
         guard !moving.contains(k) else { return (false, "It is moving right now.") }
-        update(k) { $0.move_to = nil }
+        update(k) { $0.move_to = nil; $0.move_stage = nil }
         moveFreeSince[k] = nil
         return (true, "It stays where it is.")
     }
@@ -1490,6 +1502,7 @@ final class Switchboard {
                 }
                 continue
             }
+            if now < (moveHoldUntil[k] ?? 0) { continue }
             guard moveBlocker(k, asked: false) == nil else { moveFreeSince[k] = nil; continue }
             guard let since = moveFreeSince[k] else { moveFreeSince[k] = now; continue }
             guard now - since >= 3 else { continue }
@@ -1510,6 +1523,33 @@ final class Switchboard {
         moving.insert(k)
         switching.insert(k)
         defer { moving.remove(k); switching.remove(k) }
+        // In the shared checkout (~/Simplero on master) its changes are mixed with other sessions'
+        // changes, and only its Claude knows which are its own: it puts them in a slot first.
+        if (target.hasPrefix("@") || target == "#slot"), e.isOpen, e.machine == nil {
+            let folder = workFolder(e).map(SBPaths.expand) ?? ""
+            let shared = await Task.detached(priority: .userInitiated) { SBWorktree.local(folder, commands: "")?.shared ?? false }.value
+            if shared {
+                if target.hasPrefix("@"), e.move_stage == "slotting" {
+                    update(k) { $0.move_to = nil; $0.move_stage = nil }
+                    return (false, "“\(name)” did not put its work in a slot, so it did not move to \(target.dropFirst()). Its last answer says why.")
+                }
+                guard let sf = e.surface_id else { return (false, "“\(name)” has no terminal.") }
+                typeWhenReady(sf, Self.slotMessage, since: now, seenAt: nil, quiet: true)
+                moveHoldUntil[k] = now + 20
+                moveFreeSince[k] = nil
+                if target == "#slot" {
+                    update(k) { $0.move_to = nil }
+                    return (true, "“\(name)” puts its work in a slot now.")
+                }
+                update(k) { $0.move_stage = "slotting" }
+                return (true, "“\(name)” puts its work in a slot first. When it is done, it moves to \(target.dropFirst()).")
+            }
+            if target == "#slot" {
+                update(k) { $0.move_to = nil }
+                return (true, "“\(name)” works in \(SBPaths.tilde(folder)) already, not in the shared checkout.")
+            }
+            if e.move_stage != nil { update(k) { $0.move_stage = nil } }
+        }
         let front = e.isOpen && e.surface_id != nil && e.surface_id == SessionsStore.shared.focusedSurfaceID
         let mate = e.isOpen ? sessionTabMate(e) : nil
         if e.isOpen {
@@ -1553,6 +1593,13 @@ final class Switchboard {
         SessionSwitchLog.did("“\(name)” moved to \(to)")
         return (true, "“\(name)” moved to \(to).")
     }
+
+    /// What Switchboard types into a session that works in the shared checkout, to put its work
+    /// in a slot (one line: Enter sends it).
+    static let slotMessage = "Move your work to your own slot (from Switchboard): run simplero-slot to get a slot; "
+        + "put there only the changes this session made in ~/Simplero, never other sessions' files or hunks; "
+        + "take exactly those changes out of ~/Simplero; from now on work only in the slot (EnterWorktree). "
+        + "Do not commit or push. Do not ask me anything; when you are done, say in one line which slot and branch, then stop."
 
     /// The folder a session works in: the slot its Claude claimed, else where its conversation
     /// last worked, else its folder.

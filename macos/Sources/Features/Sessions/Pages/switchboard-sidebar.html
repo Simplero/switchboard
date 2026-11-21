@@ -881,7 +881,10 @@ function renderNow(){
   renderPins();
 
   const host = $('#cols');
-  const scroll = [...host.querySelectorAll('.list')].map(l => l.scrollTop);
+  // The lists keep their scroll when the sessions update (every few seconds), not when
+  // the search words change: new results start at the top.
+  const scroll = render.lastQuery === query ? [...host.querySelectorAll('.list')].map(l => l.scrollTop) : [];
+  render.lastQuery = query;
   if (query){
     const open = results.filter(s => s.o), away = results.filter(s => !s.o && s.el), older = results.filter(s => !s.o && !s.el);
     host.innerHTML = `<div class="col" data-col="0"><div class="list">
@@ -894,6 +897,7 @@ function renderNow(){
       ${convTotal > convHits.length ? `<div class="ixnote">Showing the newest ${convHits.length} of ${convTotal} other conversations. Add a word to find fewer.</div>` : ''}
       ${ixState && (!ixState.ready || (ixState.busy && ixState.todo > 50)) ? `<div class="ixnote">${ic('dots',11,2.4)}<span>Reading your conversations${ixState.todo ? ` (${ixState.done.toLocaleString()} of ${ixState.todo.toLocaleString()})` : ''}. Some do not show yet.</span></div>` : ''}
     </div></div>`;
+    if (scroll[0]) host.querySelector('.list').scrollTop = scroll[0];
     applyCursor(false);
     return;
   }

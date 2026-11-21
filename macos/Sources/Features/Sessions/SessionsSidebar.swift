@@ -100,6 +100,17 @@ final class SessionsStore: ObservableObject {
     private var timer: Timer?
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
+    private var clickMonitor: Any?
+    /// Your last click in a session's window was in the page next to it (the pane): ⌘↑ ⌘↓ ⌘←
+    /// ⌘→ and the zoom keys go to that page, also when the terminal took the keyboard back
+    /// meanwhile (when its window came forward). A click elsewhere or another session ends it.
+    var pageHasYou = false
+
+    /// The pane's page in this window, if there is one.
+    static func docWebView(in w: NSWindow?) -> DocWebView? {
+        guard let w else { return nil }
+        return SessionsDocPanes.shared.pages.values.first { $0.webView.window === w }?.webView as? DocWebView
+    }
     /// The left column's session order, for ⌘↑ / ⌘↓.
     var navOrder: [String] = []
 
@@ -139,10 +150,17 @@ final class SessionsStore: ObservableObject {
                r === page || r.isDescendant(of: page) {
                 return event
             }
-            // A page in the pane has the keyboard: ⌘ arrows move in it, not between sessions.
-            if (123...126).contains(event.keyCode), let r = NSApp.keyWindow?.firstResponder as? NSView,
-               r is DocWebView || r.enclosingDocWebView != nil {
-                return event
+            // A page in the pane has the keyboard (or you last clicked in it): ⌘ arrows move in it,
+            // not between sessions, and ⌘+ ⌘− ⌘0 zoom it, not the terminal's text.
+            let cmdOnly = event.modifierFlags.intersection([.command, .option, .control]) == .command
+            let pageKey = (123...126).contains(event.keyCode) || (cmdOnly && [24, 27, 29, 69, 78, 82].contains(event.keyCode))
+            if pageKey, let w = event.window ?? NSApp.keyWindow {
+                let r = w.firstResponder as? NSView
+                if r is DocWebView || r?.enclosingDocWebView != nil { return event }
+                if self.pageHasYou, let doc = Self.docWebView(in: w) {
+                    w.makeFirstResponder(doc)
+                    return event
+                }
             }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
             // ⌃1…⌃9: the pins. The same key again goes back to the session you were in.
@@ -182,6 +200,14 @@ final class SessionsStore: ObservableObject {
                     return nil
                 default: break
                 }
+            }
+            return event
+        }
+        // Where you click: in the pane's page or not (see pageHasYou).
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            if let w = event.window, let content = w.contentView {
+                let hit = content.hitTest(content.convert(event.locationInWindow, from: nil))
+                self?.pageHasYou = hit is DocWebView || hit?.enclosingDocWebView != nil
             }
             return event
         }
@@ -347,6 +373,7 @@ final class SessionsStore: ObservableObject {
 
     private func open(key k: String, name: String, surface sf: String?) {
         picked = k
+        pageHasYou = false   // another session: the keys are the terminal's again
         if let sf, let view = SessionsAPI.surface(id: sf) {
             SessionsAPI.focus(view)
             Switchboard.shared.startPinCommandIfIdle(k)
@@ -384,7 +411,9 @@ final class SessionsStore: ObservableObject {
         guard !order.isEmpty else { return }
         let current = order.firstIndex(where: { $0.sf == focusedSurfaceID }) ?? (delta > 0 ? -1 : order.count)
         let next = (current + delta + order.count) % order.count
-        SessionSwitchLog.because(delta > 0 ? "⌘↓ (next session)" : "⌘↑ (previous session)")
+        // Which view had the keyboard, so a switch you did not expect can be traced.
+        let r = (NSApp.keyWindow?.firstResponder).map { String(describing: type(of: $0)) } ?? "nothing"
+        SessionSwitchLog.because((delta > 0 ? "⌘↓ (next session)" : "⌘↑ (previous session)") + " [keyboard in \(r)]")
         open(order[next])
     }
 }

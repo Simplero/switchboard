@@ -335,6 +335,24 @@ private struct PaneButtonStyle: ButtonStyle {
 final class DocWebView: WKWebView {
     weak var owner: DocPage?
 
+    /// A click in the page gives it the keyboard.
+    override func mouseDown(with event: NSEvent) {
+        if window?.firstResponder !== self { window?.makeFirstResponder(self) }
+        super.mouseDown(with: event)
+    }
+
+    /// A pinch zooms a page that zooms itself (a Simplero Doc). In an app WebKit gives the page
+    /// neither Safari's gesture events nor a magnification, so the pinch comes as Chrome sends
+    /// it: wheel events with Ctrl, under the pointer. A page without its own zoom ignores them.
+    override func magnify(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let x = Double(p.x), y = Double(isFlipped ? p.y : bounds.height - p.y)
+        let delta = -Foundation.log(max(0.05, 1 + Double(event.magnification))) * 100
+        let js = "const e = new WheelEvent('wheel', {deltaY: d, deltaMode: 0, ctrlKey: true, clientX: x, clientY: y, bubbles: true, cancelable: true, composed: true});"
+            + " (document.elementFromPoint(x, y) || document.documentElement).dispatchEvent(e); return e.defaultPrevented"
+        callAsyncJavaScript(js, arguments: ["d": delta, "x": x, "y": y], in: nil, in: .page) { _ in }
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let r = window?.firstResponder as? NSView
         guard event.type == .keyDown, let r, r === self || r.isDescendant(of: self) else { return super.performKeyEquivalent(with: event) }

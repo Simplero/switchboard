@@ -130,9 +130,14 @@ final class SessionsAPI {
                         return
                     }
                     if req.method == "POST", req.path == "/sb/eval", req.headers["x-token"] == self.token {
-                        // For checks: run JavaScript in the sidebar or the panel page and return its result.
+                        // For checks: run JavaScript in the sidebar or the panel page (or, with "pane":
+                        // <terminal id>, the page next to that terminal's session) and return its result.
                         let page = req.json["page"] as? String == "banner" ? SessionsWeb.banner : SessionsWeb.shared
-                        page.webView.callAsyncJavaScript(req.json["js"] as? String ?? "", arguments: [:], in: nil, in: .page) { result in
+                        var web: WKWebView = page.webView
+                        if let pid = req.json["pane"] as? String, let view = SessionsAPI.surface(id: pid),
+                           let controller = BaseTerminalController.controller(owning: view) as? TerminalController,
+                           let doc = SessionsDocPanes.shared.pages[controller.sessionsWorkspace] { web = doc.webView }
+                        web.callAsyncJavaScript(req.json["js"] as? String ?? "", arguments: [:], in: nil, in: .page) { result in
                             Task { @MainActor in
                                 switch result {
                                 case .success(let v): self.respond(conn, status: 200, body: ["result": v ?? NSNull()])
@@ -316,10 +321,23 @@ final class SessionsAPI {
                let controller = BaseTerminalController.controller(owning: view) as? TerminalController,
                let page = SessionsDocPanes.shared.pages[controller.sessionsWorkspace] { web = page.webView }
             guard let w = web.window else { return (404, ["error": "no window for that page"]) }
-            w.makeFirstResponder(web)
+            if req.json["click"] as? Bool == true {
+                // A click in the middle of the page, the way AppKit dispatches it (monitors first).
+                let p = web.convert(NSPoint(x: web.bounds.midX, y: web.bounds.midY), to: nil)
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    if let m = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { NSApp.sendEvent(m) }
+                }
+            }
+            if let tid = req.json["responder_terminal"] as? String, let tv = surface(tid) {
+                // As when the terminal takes the keyboard back (its window came forward).
+                w.makeFirstResponder(tv)
+            } else if req.json["click"] as? Bool != true {
+                w.makeFirstResponder(web)
+            }
             let ch = req.json["key"] as? String ?? "v"
             let arrows: [String: (UInt16, String)] = ["up": (126, "\u{F700}"), "down": (125, "\u{F701}"), "left": (123, "\u{F702}"), "right": (124, "\u{F703}")]
-            let code: UInt16 = arrows[ch]?.0 ?? ["v": 9, "c": 8, "x": 7, "a": 0, "1": 18, "2": 19, "3": 20][ch] ?? 9
+            let code: UInt16 = arrows[ch]?.0 ?? ["v": 9, "c": 8, "x": 7, "a": 0, "1": 18, "2": 19, "3": 20, "=": 24, "-": 27, "0": 29][ch] ?? 9
             // "mods": "control" for ⌃ (the pins' keys) instead of ⌘.
             let mods: NSEvent.ModifierFlags = req.json["mods"] as? String == "control" ? [.control] : [.command]
             let chars = arrows[ch]?.1 ?? ch

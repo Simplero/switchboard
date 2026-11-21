@@ -191,6 +191,11 @@ body.dragging-rows,body.dragging-rows *{cursor:grabbing!important}
 .item .word{font-weight:700}
 .item .meta{font-size:11px;line-height:1.45;height:1.45em;color:var(--muted2);display:flex;gap:6px;align-items:center;flex-wrap:nowrap;white-space:nowrap;overflow:hidden}
 .item .meta .lab{color:var(--label)}
+/* The folder and the branch: when the line is too narrow, the branch gets shorter (a long folder too). */
+.item .meta>span{flex:none}
+.item .meta .dir{max-width:62%;overflow:hidden;text-overflow:ellipsis}
+.item .meta .dir:first-child{max-width:100%}
+.item .meta .br{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 
 .else{display:flex;gap:7px;align-items:center;padding:5px 10px;border-radius:7px;color:var(--ink2);font-size:12.5px;font-weight:600}
 .else:hover{background:var(--sunk)}
@@ -698,7 +703,7 @@ function itemHTML(s, ci){
       </span>
       <span class="line"><span class="word" title="${esc(TIP[st] || '')}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
       ${query && s.sn ? `<span class="sn">${snipHTML(s.sn)}</span>` : ''}
-      <span class="meta">${s.a === 'shell' ? `<span>${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span>· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
+      <span class="meta">${s.a === 'shell' ? `<span class="dir">${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>${s.cwd ? `<span class="dir" title="${esc(s.cwd)}">· ${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : ''}`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span class="br" title="' + esc(s.br) + '">· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
     </span></div>`;
 }
 

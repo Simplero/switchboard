@@ -84,9 +84,10 @@ enum SBMachines {
         if !force, installed.contains(m.name), let s = status[m.name], s.ok, Date().timeIntervalSince1970 - s.at < 120 { return s }
         let script = helper.replacingOccurrences(of: "__VERSION__", with: String(helperVersion))
             .replacingOccurrences(of: "__GITINFO__", with: SBWorktree.script)
-        // Install only when the version there differs; print the home folder either way.
+        // Install only when the one there is older or missing: two Switchboards of different builds
+        // must not replace each other's. Print the home folder either way.
         let remote = "v=$(.local/bin/switchboard-remote version 2>/dev/null); "
-            + "if [ \"$v\" != \(helperVersion) ]; then mkdir -p .local/bin && cat > .local/bin/switchboard-remote.new "
+            + "if ! [ \"${v:-0}\" -ge \(helperVersion) ] 2>/dev/null; then mkdir -p .local/bin && cat > .local/bin/switchboard-remote.new "
             + "&& chmod +x .local/bin/switchboard-remote.new && mv .local/bin/switchboard-remote.new .local/bin/switchboard-remote; "
             + "else cat >/dev/null; fi; command -v tmux >/dev/null || echo NO-TMUX; echo \"HOME=$HOME\""
         let r = await run(m, remote, input: Data(script.utf8))
@@ -244,7 +245,7 @@ echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 7
+    static let helperVersion = 8
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -305,14 +306,18 @@ receive)
   # repository here, with the main checkout's dev files (.env, keys). Prints WT= and BRANCH=,
   # or ERR=why.
   main="$(expand "$1")"; br="$2"; head="$3"; url="$4"; in="$(expand "$5")"
-  [ -e "$main/.git" ] || { echo "ERR=There is no git checkout $1 on $(hostname)."; exit 0; }
-  cd "$main" || exit 0
-  [ "$(git remote get-url origin 2>/dev/null)" = "$url" ] || { echo "ERR=$1 on $(hostname) is not the same repository ($url)."; exit 0; }
+  fail() { echo "ERR=$1"; rm -rf "$in"; exit 0; }
+  # The same repository, whatever the address form: git@github.com:o/r.git = https://github.com/o/r
+  repo_id() { local u="${1%/}"; u="${u%.git}"; u="${u#*://}"; u="${u#*@}"; u="${u/://}"; echo "${u,,}"; }
+  [ -e "$main/.git" ] || fail "There is no git checkout $1 on $(hostname)."
+  cd "$main" || fail "Could not open $1 on $(hostname)."
+  there="$(git remote get-url origin 2>/dev/null)"
+  [ "$(repo_id "$there")" = "$(repo_id "$url")" ] || fail "$1 on $(hostname) is another repository ($there, not $url)."
   git fetch -q origin 2>/dev/null
   if [ -f "$in/commits.bundle" ]; then
-    git fetch -q "$in/commits.bundle" "+refs/heads/$br:refs/switchboard/incoming" 2>/dev/null || { echo "ERR=Could not read its commits."; exit 0; }
+    git fetch -q "$in/commits.bundle" "+refs/heads/$br:refs/switchboard/incoming" 2>/dev/null || fail "Could not read its commits."
   fi
-  git cat-file -e "$head^{commit}" 2>/dev/null || { echo "ERR=Its last commit is neither in the bundle nor on origin."; exit 0; }
+  git cat-file -e "$head^{commit}" 2>/dev/null || fail "Its last commit is neither in the bundle nor on origin."
   b="$br"
   if git show-ref -q --verify "refs/heads/$b"; then
     # The branch is here already: take it forward when it is behind and not checked out, else a new name.
@@ -326,9 +331,9 @@ receive)
   fi
   mkdir -p "$HOME/wt"
   wt="$HOME/wt/$b"; n=2; while [ -e "$wt" ]; do wt="$HOME/wt/$b-$n"; n=$((n+1)); done
-  git worktree add -q "$wt" "$b" 2>/dev/null || { echo "ERR=Could not make the work tree $wt."; exit 0; }
-  cd "$wt" || exit 0
-  if [ -s "$in/changes.patch" ]; then git apply --whitespace=nowarn "$in/changes.patch" 2>/dev/null || { echo "ERR=Its uncommitted changes did not apply in $wt."; exit 0; }; fi
+  git worktree add -q "$wt" "$b" 2>/dev/null || fail "Could not make the work tree $wt."
+  cd "$wt" || fail "Could not open $wt."
+  if [ -s "$in/changes.patch" ]; then git apply --whitespace=nowarn "$in/changes.patch" 2>/dev/null || fail "Its uncommitted changes did not apply in $wt."; fi
   [ -f "$in/new.tgz" ] && tar -xzf "$in/new.tgz" -C "$wt"
   for f in .env .env.local config/master.key; do [ -f "$main/$f" ] && [ ! -e "$wt/$f" ] && cp -p "$main/$f" "$wt/$f"; done
   for f in "$main"/config/credentials/*.key; do [ -f "$f" ] || continue; r="${f#$main/}"; [ -e "$wt/$r" ] || { mkdir -p "$(dirname "$wt/$r")"; cp -p "$f" "$wt/$r"; }; done

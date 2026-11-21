@@ -440,7 +440,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             i.isEnabled = false
             return i
         }
-        if let to = s.mv {
+        if let to = s.mv, s.mvm != true {
             items.append(disabled("Moves to \(to) when its turn is over"))
             items.append(item("Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": to, "now": true]) })
             items.append(item("Don’t move it") { store.send(["op": "move_cancel", "k": s.k]) })
@@ -565,6 +565,25 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         }))
         if s.a == "claude" && s.k.hasPrefix("claude:") && s.m == nil {
             menu.addItem(submenu("Move to folder", moveItems(s)))
+            let machines = SBMachines.all
+            if !machines.isEmpty {
+                // With its work tree: the branch, its commits, its uncommitted changes and new files.
+                var items: [NSMenuItem] = []
+                if s.mvm == true, let to = s.mv {
+                    let head = NSMenuItem(title: "Moves to \(to) when its turn is over", action: nil, keyEquivalent: "")
+                    head.isEnabled = false
+                    items.append(head)
+                    items.append(item("Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": "@" + to, "now": true]) })
+                    items.append(item("Don’t move it") { store.send(["op": "move_cancel", "k": s.k]) })
+                    items.append(.separator())
+                }
+                for m in machines {
+                    items.append(item("\(m.name) (with its work tree)", checked: s.mvm == true && s.mv == m.name) {
+                        store.send(["op": "move", "k": s.k, "cwd": "@" + m.name])
+                    })
+                }
+                menu.addItem(submenu("Move to machine", items))
+            }
         }
         if !s.isOpen && !s.isPinned {
             menu.addItem(.separator())

@@ -897,7 +897,8 @@ final class Switchboard {
             "was": n(e.was),
             "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
-            "mv": e.move_to.map { SBPaths.tilde($0) as Any } ?? NSNull(),
+            "mv": e.move_to.map { ($0.hasPrefix("@") ? String($0.dropFirst()) : SBPaths.tilde($0)) as Any } ?? NSNull(),
+            "mvm": e.move_to?.hasPrefix("@") == true,
             "m": e.machine.map { $0 as Any } ?? NSNull(),
             "md": (e.isOpen ? SBBackground.modelName(details[e.key]?.model) : nil).map { $0 as Any } ?? NSNull(),
             "wt": worktreeObject(e),
@@ -1384,6 +1385,21 @@ final class Switchboard {
         guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
         guard e.agent == "claude", e.session_id != nil else { return (false, "Only Claude sessions can move to another folder.") }
         let name = e.name ?? "This session"
+        if raw.hasPrefix("@") {
+            // To another machine: its work tree goes there too (see carryToMachine).
+            let mname = String(raw.dropFirst())
+            guard SBMachines.named(mname) != nil else { return (false, "Switchboard does not know the machine \(mname).") }
+            if e.machine != nil { return (false, "“\(name)” runs on \(e.machine!) already. Moving between other machines is not built yet.") }
+            if moving.contains(k) { return (false, "“\(name)” is moving already.") }
+            if switching.contains(k) { return (false, "“\(name)” is switching login. Try again in a moment.") }
+            if !e.isOpen && runningElsewhere(k) != nil {
+                return (false, "“\(name)” still runs outside Switchboard (\(elsewhereName(e))). Click its row in the sidebar to move it here first.")
+            }
+            update(k) { $0.move_to = raw }
+            moveFreeSince[k] = nil
+            if !e.isOpen || force || moveBlocker(k, asked: true) == nil { return await performMove(k) }
+            return (true, "“\(name)” moves to \(mname) when its turn is over and you are not looking at it.")
+        }
         if let m = e.machine { return (false, "“\(name)” runs on \(m). Moving it to another folder works only for sessions on this Mac for now.") }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let target = SBPaths.expand(trimmed)
@@ -1459,6 +1475,16 @@ final class Switchboard {
                 // Closed meanwhile (and not just now by its own move): nothing runs, so it moves now.
                 moveFreeSince[k] = nil
                 if now - (e.opening_at ?? 0) >= 25, runningElsewhere(k) == nil {
+                    if e.move_to?.hasPrefix("@") == true {
+                        moving.insert(k)   // performMove takes it from here
+                        Task { @MainActor in
+                            self.moving.remove(k)
+                            let (ok, message) = await self.performMove(k)
+                            if !ok { SessionsStore.shared.showFailure(message) }
+                            self.publish()
+                        }
+                        continue
+                    }
                     let r = relocate(k)
                     if !r.ok { update(k) { $0.move_to = nil }; SessionSwitchLog.did("“\(e.name ?? k)” did not move: \(r.message)") }
                 }
@@ -1498,9 +1524,18 @@ final class Switchboard {
                 }
             }
         }
-        let r = relocate(k)
+        let toMachine = target.hasPrefix("@")
+        var tell: String?
+        var r: (ok: Bool, message: String)
+        if toMachine {
+            let c = await carryToMachine(k, String(target.dropFirst()))
+            r = (c.ok, c.message)
+            tell = c.tell
+        } else {
+            r = relocate(k)
+        }
         if !r.ok { update(k) { $0.move_to = nil } }
-        guard e.isOpen else { return r }
+        guard e.isOpen else { return toMachine && r.ok ? (true, "“\(name)” moved to \(target.dropFirst()). It resumes there when you reopen it.") : r }
         // Moved or not: it runs again (in the old folder when the move failed).
         update(k) { x in
             x.open = false
@@ -1512,8 +1547,93 @@ final class Switchboard {
         switchOpening = false
         if !o.ok { return (false, o.message) }
         if !r.ok { return r }
-        SessionSwitchLog.did("“\(name)” moved to \(SBPaths.tilde(target))")
-        return (true, "“\(name)” moved to \(SBPaths.tilde(target)).")
+        // On the other machine: tell Claude where its work is now.
+        if let tell, let sf = o.surface { typeWhenReady(sf, tell, since: now, seenAt: nil, quiet: true) }
+        let to = toMachine ? String(target.dropFirst()) : SBPaths.tilde(target)
+        SessionSwitchLog.did("“\(name)” moved to \(to)")
+        return (true, "“\(name)” moved to \(to).")
+    }
+
+    /// The folder a session works in: the slot its Claude claimed, else where its conversation
+    /// last worked, else its folder.
+    private func workFolder(_ e: SBEntry) -> String? {
+        if e.machine == nil, let pid = e.pid, let slot = SBWorktree.slotsByOwner()[pid] { return slot }
+        return details[e.key]?.cwd ?? e.cwd
+    }
+
+    /// Move a closed session (its Claude has ended) to another machine: its work tree (branch,
+    /// commits no remote has, uncommitted changes and new files) goes to a new work tree there
+    /// (~/wt/<branch>, of the same repository), its conversation goes to that folder's project
+    /// folder there, and it becomes a session of that machine. The work tree here stays as it
+    /// was. `tell`: what to type to Claude once it runs there.
+    private func carryToMachine(_ k: String, _ mname: String) async -> (ok: Bool, message: String, tell: String?) {
+        guard let e = reg.sessions[k], let sid = e.session_id, let m = SBMachines.named(mname) else { return (false, "Unknown session or machine.", nil) }
+        let name = e.name ?? "This session"
+        guard let folder = workFolder(e).map(SBPaths.expand) else { return (false, "Switchboard does not know the folder of “\(name)”.", nil) }
+        let st = await SBMachines.prepare(m)
+        guard st.ok, let home = st.home else { return (false, st.message, nil) }
+        // 1. Here: pack the work.
+        let out = SBPaths.data + "/moving/" + sid
+        try? FileManager.default.removeItem(atPath: out)
+        let prep = await Task.detached(priority: .userInitiated) { () -> String in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
+            p.arguments = ["-c", SBMachines.movePrep, "sb-move", folder, out]
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:" + (env["PATH"] ?? "")
+            p.environment = env
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return "ERR=bash did not start." }
+            let d = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return String(decoding: d, as: UTF8.self)
+        }.value
+        defer { try? FileManager.default.removeItem(atPath: out) }
+        var kv: [String: String] = [:]
+        for l in prep.split(separator: "\n") { if let i = l.firstIndex(of: "=") { kv[String(l[..<i])] = String(l[l.index(after: i)...]) } }
+        if let err = kv["ERR"] { return (false, "“\(name)” did not move: \(err)", nil) }
+        guard let top = kv["top"], let branch = kv["branch"], let head = kv["head"], let url = kv["url"], let main = kv["main"] else {
+            return (false, "“\(name)” did not move: Switchboard could not read its work tree.", nil)
+        }
+        // 2. There: the files, then the new work tree.
+        let incoming = ".cache/switchboard/incoming-" + sid
+        for f in ["commits.bundle", "changes.patch", "new.tgz"] {
+            guard let data = FileManager.default.contents(atPath: out + "/" + f) else { continue }
+            guard await SBMachines.put(m, data, to: incoming + "/" + f) else { return (false, "“\(name)” did not move: Switchboard could not copy its work to \(m.name).", nil) }
+        }
+        let r = await SBMachines.helperRun(m, ["receive", SBPaths.tilde(main), branch, head, url, "~/" + incoming], timeout: 300)
+        var got: [String: String] = [:]
+        for l in r.out.split(separator: "\n") { if let i = l.firstIndex(of: "=") { got[String(l[..<i])] = String(l[l.index(after: i)...]) } }
+        if let err = got["ERR"] { return (false, "“\(name)” did not move: \(err)", nil) }
+        guard let wt = got["WT"], let newBranch = got["BRANCH"] else { return (false, "“\(name)” did not move: \(m.name) did not answer (\(r.out.suffix(200))).", nil) }
+        // 3. Its conversation, in the project folder of the new work tree there.
+        guard let src = SBBackground.transcriptPath(sid), let convo = FileManager.default.contents(atPath: src) else {
+            return (false, "“\(name)” did not move: Switchboard did not find its conversation file.", nil)
+        }
+        let project = String(wt.unicodeScalars.map { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) ? Character($0) : "-" })
+        guard await SBMachines.put(m, convo, to: "\(m.projects ?? ".claude/projects")/\(project)/\(sid).jsonl") else {
+            return (false, "“\(name)” did not move: Switchboard could not copy its conversation to \(m.name).", nil)
+        }
+        // The copy here goes (the synced folder brings the one from there back), so the
+        // conversation never continues in two places.
+        try? FileManager.default.removeItem(atPath: src)
+        let wtTilde = wt.hasPrefix(home) ? "~" + wt.dropFirst(home.count) : wt
+        update(k) { x in
+            x.machine = m.name
+            x.cwd = wtTilde
+            x.branch = newBranch
+            x.move_to = nil
+        }
+        details[k] = nil
+        moveFreeSince[k] = nil
+        let renamed = newBranch == branch ? "" : " (the branch \(branch) was there already, so it is \(newBranch) here)"
+        let tell = "Switchboard moved this session from the Mac to \(m.name). Your work is now in \(wtTilde) on \(m.name): "
+            + "branch \(newBranch)\(renamed), with the same commits and the same uncommitted changes and new files. "
+            + "Work only there from now on. The old copy on the Mac (\(SBPaths.tilde(top))) stays as it was; do not use it. "
+            + "Paths under \(SBPaths.home) on the Mac are under \(home) here. Say in one line that you are ready, then wait for me."
+        return (true, "Moved.", tell)
     }
 
     /// Move a closed session's conversation file (and its folder of subagents and tool results)

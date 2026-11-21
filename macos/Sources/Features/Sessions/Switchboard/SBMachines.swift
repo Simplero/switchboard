@@ -14,13 +14,16 @@ import Foundation
 ///
 /// Switchboard installs a small helper there (~/.local/bin/switchboard-remote) that starts,
 /// attaches to and stops those tmux sessions. Optional keys for checks: "ssh" (the host, if
-/// not the name), "claude" (a stand-in program), "tmux" (the tmux server's name).
+/// not the name), "claude" (a stand-in program), "tmux" (the tmux server's name), "projects"
+/// (Claude's projects folder there, instead of ~/.claude/projects).
 enum SBMachines {
     struct Machine: Codable, Equatable {
         let name: String
         var ssh: String? = nil
         var claude: String? = nil
         var tmux: String? = nil
+        /// Claude's projects folder there, from its home (checks use their own).
+        var projects: String? = nil
         var host: String { ssh ?? name }
     }
 
@@ -138,6 +141,51 @@ enum SBMachines {
         return out
     }
 
+    /// Write a file there (a path relative to its home, or absolute).
+    static func put(_ m: Machine, _ data: Data, to path: String) async -> Bool {
+        let dir = (path as NSString).deletingLastPathComponent
+        let r = await run(m, "mkdir -p \(shq(dir)) && cat > \(shq(path))", input: data, timeout: 120)
+        return r.status == 0
+    }
+
+    /// Run the helper there with these arguments; its output.
+    static func helperRun(_ m: Machine, _ args: [String], timeout: Double = 120) async -> (status: Int32, out: String) {
+        await run(m, envPrefix(m) + ".local/bin/switchboard-remote " + args.map(shq).joined(separator: " "), timeout: timeout)
+    }
+
+    /// Here, before a session moves to another machine: what its work tree is, and in `out` its
+    /// commits that no remote has (a git bundle), its uncommitted changes (a patch) and its new
+    /// files (a tar). $1: its folder, $2: the folder for those files. Prints key=value lines,
+    /// or ERR=why.
+    static let movePrep = #"""
+export GIT_OPTIONAL_LOCKS=0
+cd "$1" 2>/dev/null || { echo "ERR=The folder $1 is gone."; exit 0; }
+top=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "ERR=$1 is not in a git work tree, so there is no work tree to move."; exit 0; }
+cd "$top" || exit 0
+br=$(git rev-parse --abbrev-ref HEAD)
+[ "$br" = HEAD ] && { echo "ERR=$top is not on a branch."; exit 0; }
+url=$(git remote get-url origin 2>/dev/null) || { echo "ERR=$top has no origin, so the other machine cannot get its history."; exit 0; }
+common=$(cd "$(git rev-parse --git-common-dir)" && pwd)
+main=${common%/.git}
+def=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null); [ -n "$def" ] || def=origin/master
+if [ "$top" = "$main" ] && [ "$br" = "${def#origin/}" ]; then
+  echo "ERR=It works in the shared checkout $top on $br, where its changes are mixed with other sessions' changes. Put its work in a slot first (simplero-slot)."; exit 0
+fi
+mkdir -p "$2"
+n=$(git rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)
+b=0
+if [ "$n" -gt 0 ]; then git bundle create "$2/commits.bundle" "refs/heads/$br" --not --remotes >/dev/null 2>&1 && b=1 || { echo "ERR=Could not pack its $n commits."; exit 0; }; fi
+git diff --binary HEAD > "$2/changes.patch" 2>/dev/null
+p=0; [ -s "$2/changes.patch" ] && p=1
+u=0
+if [ -n "$(git ls-files --others --exclude-standard | head -1)" ]; then
+  # No ._ files with the Mac's extended attributes (COPYFILE_DISABLE, --no-xattrs).
+  git ls-files -z --others --exclude-standard | COPYFILE_DISABLE=1 tar --no-xattrs --null -T - -czf "$2/new.tgz" 2>/dev/null && u=1
+fi
+echo "top=$top"; echo "branch=$br"; echo "head=$(git rev-parse HEAD)"; echo "url=$url"; echo "main=$main"
+echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
+"""#
+
     private static func envPrefix(_ m: Machine) -> String {
         var s = ""
         if let c = m.claude { s += "SWITCHBOARD_CLAUDE_BIN=\(shq(c)) " }
@@ -196,7 +244,7 @@ enum SBMachines {
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 6
+    static let helperVersion = 7
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -251,6 +299,42 @@ cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
 version) echo "$VERSION" ;;
 list) t list-sessions -F '#{session_name} #{session_activity}' 2>/dev/null | sed -n 's/^sb-//p' ;;
+receive)
+  # A session moves here from another machine: its branch with the commits from the bundle,
+  # then its uncommitted changes and new files, in a new work tree ~/wt/<branch> of the same
+  # repository here, with the main checkout's dev files (.env, keys). Prints WT= and BRANCH=,
+  # or ERR=why.
+  main="$(expand "$1")"; br="$2"; head="$3"; url="$4"; in="$(expand "$5")"
+  [ -e "$main/.git" ] || { echo "ERR=There is no git checkout $1 on $(hostname)."; exit 0; }
+  cd "$main" || exit 0
+  [ "$(git remote get-url origin 2>/dev/null)" = "$url" ] || { echo "ERR=$1 on $(hostname) is not the same repository ($url)."; exit 0; }
+  git fetch -q origin 2>/dev/null
+  if [ -f "$in/commits.bundle" ]; then
+    git fetch -q "$in/commits.bundle" "+refs/heads/$br:refs/switchboard/incoming" 2>/dev/null || { echo "ERR=Could not read its commits."; exit 0; }
+  fi
+  git cat-file -e "$head^{commit}" 2>/dev/null || { echo "ERR=Its last commit is neither in the bundle nor on origin."; exit 0; }
+  b="$br"
+  if git show-ref -q --verify "refs/heads/$b"; then
+    # The branch is here already: take it forward when it is behind and not checked out, else a new name.
+    if git merge-base --is-ancestor "refs/heads/$b" "$head" && ! git worktree list --porcelain | grep -qx "branch refs/heads/$b"; then
+      git branch -q -f "$b" "$head"
+    else
+      b="$br-moved-$(date +%m%d-%H%M)"; git branch -q "$b" "$head"
+    fi
+  else
+    git branch -q "$b" "$head"
+  fi
+  mkdir -p "$HOME/wt"
+  wt="$HOME/wt/$b"; n=2; while [ -e "$wt" ]; do wt="$HOME/wt/$b-$n"; n=$((n+1)); done
+  git worktree add -q "$wt" "$b" 2>/dev/null || { echo "ERR=Could not make the work tree $wt."; exit 0; }
+  cd "$wt" || exit 0
+  if [ -s "$in/changes.patch" ]; then git apply --whitespace=nowarn "$in/changes.patch" 2>/dev/null || { echo "ERR=Its uncommitted changes did not apply in $wt."; exit 0; }; fi
+  [ -f "$in/new.tgz" ] && tar -xzf "$in/new.tgz" -C "$wt"
+  for f in .env .env.local config/master.key; do [ -f "$main/$f" ] && [ ! -e "$wt/$f" ] && cp -p "$main/$f" "$wt/$f"; done
+  for f in "$main"/config/credentials/*.key; do [ -f "$f" ] || continue; r="${f#$main/}"; [ -e "$wt/$r" ] || { mkdir -p "$(dirname "$wt/$r")"; cp -p "$f" "$wt/$r"; }; done
+  git -C "$main" update-ref -d refs/switchboard/incoming 2>/dev/null
+  rm -rf "$in"
+  echo "WT=$wt"; echo "BRANCH=$b" ;;
 gitinfo)
   # The work tree of each folder given, for the panel: "@<folder>" then its lines.
   for d in "$@"; do echo "@$d"; ( set -- "$(expand "$d")"

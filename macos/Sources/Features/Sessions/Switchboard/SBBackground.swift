@@ -22,6 +22,8 @@ enum SBBackground {
         let transcriptMtime: Double?
         /// A program the Claude app runs (no terminal), not one in a terminal.
         var inClaudeApp = false
+        /// Runs on another machine (SBMachines): this is the ssh that shows it here.
+        var machine: String? = nil
     }
 
     private static let lock = NSLock()
@@ -34,9 +36,17 @@ enum SBBackground {
         for t in ttys { if let d = SBProcesses.deviceOf(ttyPath: t) { devToTTY[d] = t } }
         guard !devToTTY.isEmpty else { return [] }
         var best: [String: (pid: pid_t, kind: String, args: [String], env: [String: String])] = [:]
+        var remote: [String: (pid: pid_t, a: SBMachines.Attached)] = [:]
         for pid in SBProcesses.allPIDs() {
             guard let dev = SBProcesses.ttyDevice(pid), let tty = devToTTY[dev],
-                  let (args, env) = SBProcesses.argsAndEnv(pid), let kind = SBProcesses.agentKind(args) else { continue }
+                  let (args, env) = SBProcesses.argsAndEnv(pid) else { continue }
+            // A session on another machine: the ssh that shows it.
+            if let a = SBMachines.parseAttach(args) {
+                if let cur = remote[tty], cur.pid < pid { continue }
+                remote[tty] = (pid, a)
+                continue
+            }
+            guard let kind = SBProcesses.agentKind(args) else { continue }
             if let cur = best[tty], cur.pid < pid { continue }
             best[tty] = (pid, kind, args, env)
         }
@@ -65,6 +75,14 @@ enum SBBackground {
             let t: (title: String?, mtime: Double?) = p.kind == "claude" ? transcript(sid) : (nil, nil)
             out.append(Agent(pid: pid, kind: p.kind, tty: tty, loginDir: loginDir, sid: sid, cwd: slow?.cwd,
                              branch: slow?.branch, transcriptTitle: t.title, transcriptMtime: t.mtime))
+        }
+        let machines = SBMachines.all
+        for (tty, r) in remote where best[tty] == nil {
+            // Its conversation comes back here through the synced projects folder.
+            let t = transcript(r.a.sid)
+            let name = machines.first(where: { $0.host == r.a.host })?.name ?? r.a.host
+            out.append(Agent(pid: Int(r.pid), kind: "claude", tty: tty, loginDir: SBLogins.norm(r.a.login), sid: r.a.sid,
+                             cwd: r.a.folder, branch: nil, transcriptTitle: t.title, transcriptMtime: t.mtime, machine: name))
         }
         return out
     }

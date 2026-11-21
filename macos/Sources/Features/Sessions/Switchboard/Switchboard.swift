@@ -45,6 +45,11 @@ final class Switchboard {
     private var moving = Set<String>()
     /// A session waiting to move: since when it looked free (it moves when it still is 3 s later).
     private var moveFreeSince: [String: Double] = [:]
+    /// The conversations that run on each other machine (in tmux there), by machine name, so
+    /// one with no terminal here shows as running there. Looked at every 30 s.
+    private var remoteRunning: [String: Set<String>] = [:]
+    private var remoteAt: Double = 0
+    private var remoteLooking = false
     /// Was the text in a terminal's prompt typed (true) or Claude's suggestion (false), by terminal.
     private var draftMemo: [String: (text: String, draft: Bool)] = [:]
     private var elsewhereAt: Double = 0
@@ -224,7 +229,7 @@ final class Switchboard {
     }
 
     private func defaultClass(_ cwd: String?) -> String {
-        (cwd ?? "").hasPrefix(SBPaths.home + "/Brain") ? "Brain" : "Work"
+        SBPaths.expand(cwd ?? "").hasPrefix(SBPaths.home + "/Brain") ? "Brain" : "Work"
     }
 
     private func basename(_ p: String?) -> String {
@@ -267,11 +272,31 @@ final class Switchboard {
         merge(t0: t0, agents: agents)
         closeAwaySessions()
         moveWhenFree()
+        if t0 - remoteAt >= 30, !remoteLooking, !SBMachines.all.isEmpty { remoteAt = t0; lookAtMachines() }
         if let outside { mergeElsewhere(outside) }
         if let app { mergeClaudeApp(app) }
         SBSpares.shared.tick()
         publish()
         if t0 - linksAt >= Self.linksEvery { linksAt = t0; refreshLinks() }
+    }
+
+    /// Each other machine: does it answer (for the new-session form), and which sessions run there.
+    private func lookAtMachines() {
+        remoteLooking = true
+        let machines = SBMachines.all
+        Task { @MainActor in
+            for m in machines {
+                let st = await SBMachines.prepare(m)
+                remoteRunning[m.name] = st.ok ? await SBMachines.running(m) : nil
+            }
+            remoteLooking = false
+            publish()
+        }
+    }
+
+    private func runsOnMachine(_ e: SBEntry) -> Bool {
+        guard let m = e.machine, let sid = e.session_id else { return false }
+        return remoteRunning[m]?.contains(sid) == true
     }
 
     // MARK: Links and briefs
@@ -525,6 +550,7 @@ final class Switchboard {
             e.workspace_id = wid
             e.surface_id = sf
             e.pid = a.pid
+            e.machine = a.machine
             e.cwd = cwd ?? e.cwd
             e.branch = a.branch
             e.last_seen = now
@@ -630,6 +656,10 @@ final class Switchboard {
         var closedNow: [String] = []
         for (k, var e) in reg.sessions where e.isOpen && !seen.contains(k) {
             if (e.first_seen ?? 0) > t0 || (e.opening_at ?? 0) > t0 { continue }   // created or reopened while this scan ran
+            // On another machine, between two tries to connect again: it still runs there.
+            if e.machine != nil, e.closing == nil, let sf = e.surface_id,
+               let last = SessionsAPI.activeText(sf)?.split(separator: "\n").last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+               last.contains("Connecting again in 5 s") { continue }
             e.open = false
             e.closed_at = now
             e.closed_reason = e.closing ?? "vanished"
@@ -785,12 +815,13 @@ final class Switchboard {
             "cr": n(e.closed_reason), "cwd": SBPaths.tilde(e.cwd ?? ""), "br": n(e.branch),
             "rm": NSNull(), "rp": reps, "art": Array((e.artifacts ?? []).suffix(3)),
             "be": e.backend ?? "cmux",
-            "el": !e.isOpen && elsewhereKeys.contains(e.key),
+            "el": !e.isOpen && (elsewhereKeys.contains(e.key) || runsOnMachine(e)),
             "ar": e.archived == true && !e.isOpen, "aa": Int(e.archived_at ?? 0),
             "was": n(e.was),
             "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
             "mv": e.move_to.map { SBPaths.tilde($0) as Any } ?? NSNull(),
+            "m": e.machine.map { $0 as Any } ?? NSNull(),
         ]
     }
 
@@ -807,6 +838,10 @@ final class Switchboard {
             "v": 1, "at": Int(now), "hub": NSNull(),
             "classes": reg.classes, "labels": reg.labels,
             "spares": SBSpares.shared.info(),
+            "machines": SBMachines.all.map { m -> [String: Any] in
+                let st = SBMachines.status[m.name]
+                return ["n": m.name, "ok": st.map { $0.ok as Any } ?? NSNull(), "msg": st?.message ?? ""]
+            },
             "s": rows.map(compact), "ot": [], "grp": [], "use": usage,
         ]
         let vanished = sess.filter { !$0.isOpen && $0.parked != true && $0.closed_reason == "vanished" }
@@ -955,6 +990,11 @@ final class Switchboard {
     }
 
     private func resumeCommand(_ e: SBEntry) -> String? {
+        if let name = e.machine {
+            // On another machine: attach to it there (it may still run), else resume it there.
+            guard e.agent == "claude", let sid = e.session_id, let m = SBMachines.named(name) else { return nil }
+            return SBMachines.attachCommand(m, sid: sid, login: e.login_dir ?? "~/.claude", folder: e.cwd ?? "~", mode: "resume")
+        }
         if let sid = e.session_id, !sid.isEmpty {
             // A test copy runs stand-ins for the other agents (SWITCHBOARD_AGENT_BIN).
             let bin = ProcessInfo.processInfo.environment["SWITCHBOARD_AGENT_BIN"].map { $0 + "/" } ?? ""
@@ -1011,6 +1051,11 @@ final class Switchboard {
             return (r.ok, r.message)
         case "new":
             // From the sidebar's new-session form: a first message, files and a name, all optional.
+            if let m = msg["machine"] as? String, !m.isEmpty {
+                return await newRemoteClaude(m, login: msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true,
+                                             cwd: msg["cwd"] as? String, prompt: msg["prompt"] as? String, name: msg["name"] as? String,
+                                             files: msg["files"] as? [String] ?? [])
+            }
             let r = newClaude(msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true, cwd: msg["cwd"] as? String,
                               prompt: msg["prompt"] as? String, name: msg["name"] as? String, files: msg["files"] as? [String] ?? [])
             return (r.ok, r.message)
@@ -1072,8 +1117,13 @@ final class Switchboard {
         if runningElsewhere(k) != nil {
             return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (\(elsewhereName(e))). Click its row in the sidebar to move it here.", nil)
         }
-        guard let cmd = resumeCommand(e) else { return (false, "No way to resume this session.", nil) }
-        guard let sf = openAgentTerminal(cwd: e.cwd, command: cmd, loginDir: e.login_dir, focus: focus, split: split, tabOf: tabOf) else {
+        guard let cmd = resumeCommand(e) else {
+            if let m = e.machine, SBMachines.named(m) == nil { return (false, "“\(e.name ?? "This session")” ran on \(m), which is no longer in \(SBPaths.tilde(SBMachines.path)).", nil) }
+            return (false, "No way to resume this session.", nil)
+        }
+        // A session on another machine: the terminal here only runs ssh (its folder is there).
+        let here = e.machine == nil ? e.cwd : "~"
+        guard let sf = openAgentTerminal(cwd: here, command: cmd, loginDir: e.machine == nil ? e.login_dir : nil, focus: focus, split: split, tabOf: tabOf) else {
             return (false, "Switchboard could not open a terminal.", nil)
         }
         update(k) { x in
@@ -1115,7 +1165,7 @@ final class Switchboard {
     }
 
     /// Close a session: every tab of it (whole), or only the agent's terminal (to replace it).
-    func close(_ k: String, park: Bool, whole: Bool = true) -> (Bool, String) {
+    func close(_ k: String, park: Bool, whole: Bool = true, keepRemote: Bool = false) -> (Bool, String) {
         guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
         if park && e.pinned != nil { return (false, "“\(e.name ?? "This session")” is pinned, so it is never parked. Right-click it and choose Unpin first.") }
         let park = e.agent == "shell" ? false : park     // a shell has nothing to resume later
@@ -1129,6 +1179,7 @@ final class Switchboard {
                 return (false, "Switchboard could not close it.")
             }
         }
+        if !keepRemote { stopRemote(e) }
         if !e.isOpen { update(k) { $0.state = stateOf($0) } }
         return (true, park ? "Parked." : "Closed.")
     }
@@ -1146,12 +1197,21 @@ final class Switchboard {
             x.parked = false
             if !x.isOpen { x.state = stateOf(x) }
         }
+        stopRemote(e)
         guard e.isOpen, let sf = e.surface_id else { return (true, "Moved to the Archive.") }
         update(k) { $0.closing = "done" }
         if !SessionsAPI.closeSession(sf) && !SessionsAPI.closeTerminal(sf) && SessionsAPI.surface(id: sf) != nil {
             return (false, "Switchboard could not close it.")
         }
         return (true, e.agent == "shell" ? "Closed." : "Closed and moved to the Archive.")
+    }
+
+    /// A session on another machine keeps running there without a terminal here (tmux):
+    /// closing, parking or archiving it also ends its Claude there.
+    private func stopRemote(_ e: SBEntry) {
+        guard let name = e.machine, let m = SBMachines.named(name), let sid = e.session_id else { return }
+        remoteRunning[name]?.remove(sid)
+        Task.detached { await SBMachines.stop(m, sid: sid) }
     }
 
     /// Another terminal of the same session (a shell tab), so a replaced agent comes back
@@ -1176,7 +1236,8 @@ final class Switchboard {
         defer { switching.remove(k) }
         let mate = e.isOpen ? sessionTabMate(e) : nil
         if e.isOpen {
-            let (ok, msg) = close(k, park: false, whole: false)
+            // On another machine the helper there ends the old Claude when the login differs.
+            let (ok, msg) = close(k, park: false, whole: false, keepRemote: e.machine != nil)
             if !ok { return (ok, msg) }
             // The old Claude must be gone before the new one opens the same conversation.
             if let pid = e.pid {
@@ -1231,6 +1292,7 @@ final class Switchboard {
         guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
         guard e.agent == "claude", e.session_id != nil else { return (false, "Only Claude sessions can move to another folder.") }
         let name = e.name ?? "This session"
+        if let m = e.machine { return (false, "“\(name)” runs on \(m). Moving it to another folder works only for sessions on this Mac for now.") }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let target = SBPaths.expand(trimmed)
         var isDir: ObjCBool = false
@@ -1471,6 +1533,43 @@ final class Switchboard {
         if let label { pendingNames[sf] = (label, now) }
         if focus { SessionsAPI.focusTerminal(sf) }
         return (true, "Started.", sf)
+    }
+
+    /// A new Claude session on another machine (a Linux box): Claude runs there in a tmux session, this
+    /// Mac shows it in a terminal over ssh. The first message and the files you added go there first.
+    func newRemoteClaude(_ machine: String, login loginDir: String, focus: Bool = true, cwd: String? = nil, prompt: String? = nil,
+                         name: String? = nil, files: [String] = []) async -> (Bool, String) {
+        guard let m = SBMachines.named(machine) else { return (false, "Switchboard does not know the machine \(machine).") }
+        let st = await SBMachines.prepare(m)
+        guard st.ok, let home = st.home else { return (false, st.message.isEmpty ? "\(m.name) does not answer." : st.message) }
+        let sid = UUID().uuidString.lowercased()
+        // The files you added are on this Mac: copy them there and give Claude their paths there.
+        var there: [String] = []
+        for f in files where !f.isEmpty {
+            guard let data = FileManager.default.contents(atPath: f) else { return (false, "Could not read \(SBPaths.tilde(f)).") }
+            guard let p = await SBMachines.upload(m, data, name: "files/\(sid)/\((f as NSString).lastPathComponent)", home: home) else {
+                return (false, "Could not copy \((f as NSString).lastPathComponent) to \(m.name).")
+            }
+            there.append(p)
+        }
+        let text = Self.firstMessage(prompt, files: there)
+        var first: String?
+        if !text.isEmpty {
+            let body = text.hasPrefix("-") ? " " + text : text     // never read as an option
+            guard let p = await SBMachines.upload(m, Data(body.utf8), name: "first-\(sid).txt", home: home) else {
+                return (false, "Could not send the first message to \(m.name).")
+            }
+            first = p
+        }
+        let folder = (cwd ?? Self.defaultFolder).trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = SBMachines.attachCommand(m, sid: sid, login: loginDir, folder: folder.isEmpty ? Self.defaultFolder : folder, mode: "new", first: first)
+        guard let sf = openAgentTerminal(cwd: "~", command: command, loginDir: nil, focus: focus) else {
+            return (false, "Switchboard could not open a terminal.")
+        }
+        let label = name.map(SBScreen.strip).flatMap { $0.isEmpty ? nil : String($0.prefix(80)) }
+        if let label { pendingNames[sf] = (label, now) }
+        if focus { SessionsAPI.focusTerminal(sf) }
+        return (true, "Started on \(m.name).")
     }
 
     /// Type the first message into a spare once Claude shows its prompt (it may still be

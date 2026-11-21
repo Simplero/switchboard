@@ -44,6 +44,8 @@ struct SessionItem: Decodable, Identifiable, Equatable {
     let pc: String?
     /// The folder it moves to when its turn is over (Move to folder).
     let mv: String?
+    /// The other machine it runs on; nil: this Mac.
+    let m: String?
 
     var id: String { k }
     var isOpen: Bool { o ?? false }

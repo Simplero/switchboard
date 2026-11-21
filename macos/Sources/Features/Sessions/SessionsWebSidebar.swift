@@ -223,8 +223,13 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         case "newWarm":
             // The new-session form opened on a login (or closed): start its Claude now, so it
             // is at its prompt by the time you press Enter.
-            SBSpares.shared.want(body["login"] as? String)
+            // On another machine there is no spare: look whether that machine answers instead.
+            let machine = (body["machine"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            SBSpares.shared.want(machine == nil ? body["login"] as? String : nil)
             SessionsWebView.newFormOpen = (body["login"] as? String) != nil
+            if let m = SBMachines.named(machine) {
+                Task { @MainActor in _ = await SBMachines.prepare(m, force: true); Switchboard.shared.publish() }
+            }
         case "newFolder":
             // The folder new sessions start in: the spares wait there.
             if let cwd = body["cwd"] as? String, !cwd.isEmpty { SBSpares.shared.folder = SBPaths.expand(cwd); SBSpares.shared.tick() }
@@ -259,15 +264,26 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             // Where new sessions start: your usual folders, or any folder.
             let folders = body["folders"] as? [String] ?? []
             let current = body["current"] as? String ?? ""
+            let machine = (body["machine"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             menuActions = []
             let menu = NSMenu()
-            let head = NSMenuItem(title: "Start new sessions in:", action: nil, keyEquivalent: "")
+            let head = NSMenuItem(title: machine.map { "Start it in this folder on \($0):" } ?? "Start new sessions in:", action: nil, keyEquivalent: "")
             head.isEnabled = false
             menu.addItem(head)
             for f in folders {
                 menu.addItem(item(f, checked: f == current) { [weak self] in self?.setFolder(f) })
             }
             menu.addItem(.separator())
+            if let machine {
+                // A folder there: this Mac cannot browse it, so you type it.
+                menu.addItem(item("Other folder on \(machine)…") { [weak self] in
+                    self?.ask("Folder on \(machine)", placeholder: "~/Simplero-2", initial: current) { self?.setFolder($0) }
+                })
+                let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
+                let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
+                menu.popUp(positioning: nil, at: point, in: webView)
+                return
+            }
             menu.addItem(item("Other folder…") { [weak self] in
                 let panel = NSOpenPanel()
                 panel.canChooseDirectories = true
@@ -540,7 +556,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 if s.ld != d { store.send(["op": "switch", "k": s.k, "login": d]) }
             }
         }))
-        if s.a == "claude" && s.k.hasPrefix("claude:") {
+        if s.a == "claude" && s.k.hasPrefix("claude:") && s.m == nil {
             menu.addItem(submenu("Move to folder", moveItems(s)))
         }
         if !s.isOpen && !s.isPinned {

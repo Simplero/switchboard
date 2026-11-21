@@ -183,14 +183,21 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         }
         guard body["type"] as? String == "search" else { replyHandler(nil, nil); return }
         let q = (body["q"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        if body["deep"] as? Bool == true {
+            // "Search inside conversations": only when you ask for it.
+            Task { @MainActor in replyHandler(await Switchboard.shared.searchConversations(q), nil) }
+            return
+        }
+        // As you type: the sessions in the list, by name, summary, folder…
+        var reply: [String: Any] = ["s": Switchboard.shared.search(q)]
+        // A pasted session id (or "claude --resume <id>"): offer to resume it.
+        guard let r = q.lowercased().range(of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#, options: .regularExpression) else {
+            replyHandler(reply, nil)
+            return
+        }
+        let sid = String(q.lowercased()[r])
         Task { @MainActor in
-            // The sessions in the list, and every conversation on this Mac that says the words.
-            var reply = await Switchboard.shared.searchAll(q)
-            // A pasted session id (or "claude --resume <id>"): offer to resume it.
-            if let r = q.lowercased().range(of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#, options: .regularExpression) {
-                let sid = String(q.lowercased()[r])
-                reply["id"] = await Switchboard.shared.lookupSessionID(sid) ?? ["id": sid, "missing": true]
-            }
+            reply["id"] = await Switchboard.shared.lookupSessionID(sid) ?? ["id": sid, "missing": true]
             replyHandler(reply, nil)
         }
     }

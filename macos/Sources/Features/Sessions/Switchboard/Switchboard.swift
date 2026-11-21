@@ -853,27 +853,22 @@ final class Switchboard {
         return hits.prefix(limit).map { compact($0.3) }
     }
 
-    /// The search box: sessions in the list (by name, summary, folder…) and every conversation
-    /// on this Mac that says all the words (the index, SBHistory). A session in the list that
-    /// matches only inside its conversation shows with the words around the match.
-    func searchAll(_ q: String) async -> [String: Any] {
-        var list = search(q)
-        var at: [String: Int] = [:]
-        for (i, s) in list.enumerated() { if let k = s["k"] as? String { at[k] = i } }
+    /// "Search inside conversations", only when you ask for it (a row under the name results):
+    /// every conversation on this Mac that says all the words (the index, SBHistory), apart
+    /// from the sessions the name search already shows. Sessions in the list come first; each
+    /// hit has the words around the match.
+    func searchConversations(_ q: String) async -> [String: Any] {
+        let shown = Set(search(q).compactMap { $0["k"] as? String })
         let listed = Set(reg.sessions.keys)
         SBHistory.shared.kick()
         let r = await Task.detached(priority: .userInitiated) { SBHistory.shared.search(q, listed: listed) }.value
-        var extra: [[String: Any]] = []
-        for h in r.inList {
-            if let i = at[h.doc.key] {
-                list[i]["sn"] = h.snippet
-            } else if let e = reg.sessions[h.doc.key] {
-                var c = compact(e)
-                c["sn"] = h.snippet
-                extra.append(c)
-            }
+        var inList: [[String: Any]] = []
+        for h in r.inList where !shown.contains(h.doc.key) {
+            guard let e = reg.sessions[h.doc.key] else { continue }
+            var c = compact(e)
+            c["sn"] = h.snippet
+            inList.append(c)
         }
-        list += extra
         func n(_ x: Any?) -> Any { x ?? NSNull() }
         let other: [[String: Any]] = r.other.map { h in
             let d = h.doc
@@ -881,7 +876,7 @@ final class Switchboard {
                     "br": n(d.branch), "la": d.mtime, "m": n(d.thisMac == false ? d.machine : nil), "sn": h.snippet]
         }
         let st = SBHistory.shared.status
-        return ["s": list, "conv": other, "cn": r.otherTotal,
+        return ["conv": inList + other, "cn": inList.count + r.otherTotal,
                 "ix": ["busy": st.busy, "done": st.done, "todo": st.todo, "ready": st.lastPassAt > 0]]
     }
 

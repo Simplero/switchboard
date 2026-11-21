@@ -217,12 +217,16 @@ body.dragging-rows,body.dragging-rows *{cursor:grabbing!important}
 .hit .nm{font-weight:600;font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .hit .tag{flex:none;font-size:10px;font-weight:600;color:var(--muted2);border:1px dashed var(--line2);border-radius:4px;padding:0 4px}
 .hit .age{margin-left:auto;flex:none;font-size:10.5px;color:var(--muted2)}
-.hit .sn,.item .sn{font-size:12px;line-height:1.45;color:var(--ink2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.hit .sn{font-size:12px;line-height:1.45;color:var(--ink2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
 .hit .mt{font-size:11px;color:var(--muted2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .sn mark{background:var(--needs-soft);color:var(--ink);font-weight:700;border-radius:3px;padding:0 1px}
-.item.sel .sn{color:#E3E8FF}
-.item.has-sn .line{height:auto;-webkit-line-clamp:1}
-.item.sel .sn mark{background:rgba(255,255,255,.22);color:#fff}
+/* search: under the name results, the row that also looks inside every conversation */
+.deeprow{display:flex;align-items:center;gap:8px;margin:12px 4px 4px;padding:8px 10px;border:1px solid var(--line2);border-radius:10px;color:var(--ink2);font-size:12.5px;cursor:pointer}
+.deeprow:hover{background:var(--sunk)}
+.deeprow .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.deeprow b{color:var(--ink);font-weight:600}
+.deeprow kbd{flex:none;font:600 10.5px ui-monospace,SFMono-Regular,monospace;color:var(--muted2);border:1px solid var(--line2);border-radius:4px;padding:1px 4px}
+.deephead{margin-top:10px;border-top:1px solid var(--line);padding-top:14px}
 .ixnote{margin:6px 10px 10px;font-size:11.5px;color:var(--muted);display:flex;gap:6px;align-items:flex-start}
 svg{flex-shrink:0}
 .spin{animation:spin 1.2s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
@@ -291,6 +295,7 @@ const ICON = {
   person:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   star:'<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"/>',
   chev:'<polyline points="6 9 12 15 18 9"/>',
+  find:'<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   bolt:'<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>',
   clip:'<path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
 };
@@ -336,9 +341,10 @@ const FINISHED = new Set(['done', 'info', 'handled']);
 const isFinished = s => s.a !== 'shell' && FINISHED.has(stateOf(s));
 
 let data = null, focusSf = null, query = '', results = [], idHit = null;
-// Search: other conversations on this Mac that say the words (not in the list), how many in
-// all, and how far the index is.
-let convHits = [], convTotal = 0, ixState = null;
+// "Search inside conversations" (only when you ask for it): on or not, waiting for the answer,
+// the conversations that say the words (not the ones the name search shows), how many in all,
+// and how far the index is.
+let deep = false, deepBusy = false, deepGen = 0, convHits = [], convTotal = 0, ixState = null;
 // The folder a new session starts in: ~/Simplero, unless you pick another one for this session.
 const HOME_FOLDER = '~/Simplero';
 let newCwd = HOME_FOLDER;
@@ -501,24 +507,49 @@ q.addEventListener('focus', () => { clearTimeout(blurTimer); if (!cur) cur = ini
 q.addEventListener('blur', () => { blurTimer = setTimeout(() => { if (document.activeElement !== q) setKbd(false); }, 250); });
 
 let searchTimer, searchGen = 0;
-function clearSearch(){ clearTimeout(searchTimer); searchGen++; q.value = ''; query = ''; results = []; idHit = null; convHits = []; convTotal = 0; }
+function clearSearch(){ clearTimeout(searchTimer); searchGen++; q.value = ''; query = ''; results = []; idHit = null; clearDeep(); }
+function clearDeep(){ deep = false; deepBusy = false; deepGen++; convHits = []; convTotal = 0; }
 q.addEventListener('input', e => {
   query = e.target.value.trim();
   clearTimeout(searchTimer);
   const gen = ++searchGen;
-  if (!query){ results = []; idHit = null; convHits = []; convTotal = 0; render(); cur = initialCursor(); applyCursor(true); return; }
+  if (!query){ results = []; idHit = null; clearDeep(); render(); cur = initialCursor(); applyCursor(true); return; }
   searchTimer = setTimeout(async () => {
     let j = null;
     j = await ask('search', {q: query});
     if (gen !== searchGen) return;   // a newer search, or Esc, came after this one
     results = (j && j.s) || []; idHit = (j && j.id) || null;
-    convHits = (j && j.conv) || []; convTotal = (j && j.cn) || 0; ixState = (j && j.ix) || null;
     cur = null;
-    render();
+    if (deep) runDeep(false); else render();
     const first = colRows(0)[0];
     if (first){ cur = {col: 0, k: first.dataset.k}; applyCursor(true); }
   }, 120);
 });
+// "Search inside conversations": only when you ask for it (the row under the results, or ⌘↩).
+// It stays on while you change the words, until you clear the search. `jump`: you asked for it
+// now, so the list scrolls to the results and the cursor goes to the first one.
+function runDeep(jump){
+  if (!query) return;
+  const gen = ++deepGen, words = query;
+  deep = true; deepBusy = true; convHits = []; convTotal = 0;
+  if (jump) cur = null;   // the row you pressed goes away; the cursor waits for the first result
+  render();
+  if (jump) showDeep(false);
+  ask('search', {q: words, deep: true}).then(j => {
+    if (gen !== deepGen || words !== query) return;   // newer words, or Esc, came after this
+    convHits = (j && j.conv) || []; convTotal = (j && j.cn) || 0; ixState = (j && j.ix) || null; deepBusy = false;
+    render();
+    if (jump) showDeep(true);
+  });
+}
+function showDeep(toFirst){
+  const head = $('#cols .deephead'), list = head && head.closest('.list');
+  if (!list) return;
+  const off = head.getBoundingClientRect().top - list.getBoundingClientRect().top - 4;
+  if (off > 0) list.scrollTop += off;
+  const first = toFirst && $('#cols .deephead ~ [data-k]');
+  if (first){ cur = {col: 0, k: first.dataset.k}; applyCursor(false); }
+}
 q.addEventListener('keydown', e => {
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){ e.preventDefault(); step(e.key === 'ArrowDown' ? 1 : -1); return; }
   if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !query){ e.preventDefault(); otherColumn(); return; }
@@ -529,6 +560,7 @@ q.addEventListener('keydown', e => {
   }
   if (e.key === 'Enter'){
     e.preventDefault();
+    if (query && (e.metaKey || (cur && cur.k === '__deep'))){ runDeep(true); return; }
     const s = sessionOf(cur && cur.k) || results[0];
     if (s){ if (!query && cur) setNavCol(cur.col); cur = null; openSession(s, query ? 'Enter in the sidebar search (“' + query.slice(0, 40) + '”)' : 'Enter in the sidebar'); }
   }
@@ -695,14 +727,13 @@ function itemHTML(s, ci){
   const sel = front && (ci == null || ci === navColOf()), ring = front && !sel;
   const line = st === 'working' ? (s.wl || s.ns) : (s.ns || s.sd || s.t || '');
   const labs = (s.lb || []).map(l => `<span class="lab">#${esc(l)}</span>`).join(' ');
-  return `<div class="item${sel ? ' sel' : ''}${ring ? ' sel-ring' : ''}${query && s.sn ? ' has-sn' : ''}" data-k="${esc(s.k)}">
+  return `<div class="item${sel ? ' sel' : ''}${ring ? ' sel-ring' : ''}" data-k="${esc(s.k)}">
     <span class="ico" title="${esc(TIP[st] || '')}" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
     <span class="body">
       <span class="top"><span class="name">${esc(s.n)}</span>
         <span class="age">${ago(s.la)}</span>
       </span>
       <span class="line"><span class="word" title="${esc(TIP[st] || '')}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
-      ${query && s.sn ? `<span class="sn">${snipHTML(s.sn)}</span>` : ''}
       <span class="meta">${s.a === 'shell' ? `<span class="dir">${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>${s.cwd ? `<span class="dir" title="${esc(s.cwd)}">· ${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : ''}`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span class="br" title="' + esc(s.br) + '">· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
     </span></div>`;
 }
@@ -715,11 +746,25 @@ function hitHTML(s, tag){
   const br = s.br && s.br !== 'master' && s.br !== 'main' ? s.br : '';
   // Another Mac (synced) first: it may still run there.
   const where = [s.m ? 'changed on ' + esc(s.m) : '', s.cwd ? esc(s.cwd) : '', br ? '⎇ ' + esc(br) : ''].filter(Boolean).join(' · ');
-  const tip = s.k.startsWith('conv:') ? 'Click to resume this conversation here, in its own folder.' : 'Not running. Click to reopen it here.';
+  const tip = s.k.startsWith('conv:') ? 'Click to resume this conversation here, in its own folder.' : s.o ? 'Click to go to it.' : 'Not running. Click to reopen it here.';
   return `<div class="hit" data-k="${esc(s.k)}" title="${tip}">
     <span class="r1"><span class="nm">${esc(s.n)}</span>${tag ? `<span class="tag">${esc(tag)}</span>` : ''}<span class="age">${ago(s.ca || s.la)}</span></span>
     ${s.sn ? `<span class="sn">${snipHTML(s.sn)}</span>` : ''}
     ${where ? `<span class="mt">${where}</span>` : ''}</div>`;
+}
+
+// Under the name results: the row that also searches inside every conversation, or (after you
+// asked) the conversations that say the words.
+function deepHTML(){
+  if (!deep) return `<div class="deeprow" data-k="__deep" title="Also look for these words inside every conversation on this Mac: Claude Code, Codex, Grok and OpenCode, also old ones and ones from other Macs (synced)">${ic('find', 13, 2.3)}<span class="t">Search inside all conversations for <b>“${esc(query)}”</b></span><kbd>⌘↩</kbd></div>`;
+  const tagOf = s => s.k.startsWith('conv:') ? AGENT_NAMES[s.a] || s.a : s.o ? 'Open now' : s.be === 'claude-app' ? 'Claude app' : s.ar ? 'Archive' : AGENT_NAMES[s.a] || '';
+  const ix = ixState && (!ixState.ready || (ixState.busy && ixState.todo > 50));
+  return `<div class="group deephead" title="Conversations on this Mac that say the words, apart from the sessions above">Inside conversations ${deepBusy ? '' : `<span class="n">${convTotal}</span>`}</div>
+    ${deepBusy ? `<div class="ixnote">${ic('spin', 11, 2.4, 'spin')}<span>Searching inside your conversations…</span></div>` : ''}
+    ${!deepBusy && !convHits.length ? `<div class="empty">No ${results.length ? 'other ' : ''}conversation says “${esc(query)}”.</div>` : ''}
+    ${convHits.map(s => hitHTML(s, tagOf(s))).join('')}
+    ${convTotal > convHits.length ? `<div class="ixnote">Showing the newest ${convHits.length} of ${convTotal}. Add a word to find fewer.</div>` : ''}
+    ${!deepBusy && ix ? `<div class="ixnote">${ic('dots',11,2.4)}<span>Reading your conversations${ixState.todo ? ` (${ixState.done.toLocaleString()} of ${ixState.todo.toLocaleString()})` : ''}. Some do not show yet.</span></div>` : ''}`;
 }
 
 function seg(id, options, value, onPick){
@@ -889,13 +934,11 @@ function renderNow(){
     const open = results.filter(s => s.o), away = results.filter(s => !s.o && s.el), older = results.filter(s => !s.o && !s.el);
     host.innerHTML = `<div class="col" data-col="0"><div class="list">
       ${idHitHTML()}
-      ${!results.length && !idHit && !convHits.length ? `<div class="empty">No session or conversation says “${esc(query)}”.</div>` : ''}
+      ${!results.length && !idHit ? `<div class="empty">No session matches “${esc(query)}”.</div>` : ''}
       ${open.length ? `<div class="group">Open now <span class="n">${open.length}</span></div>` + open.map(s => itemHTML(s)).join('') : ''}
       ${away.length ? `<div class="group">Running elsewhere <span class="n">${away.length}</span></div>` + away.map(s => itemHTML(s)).join('') : ''}
-      ${older.length ? `<div class="group">Older <span class="n">${older.length}</span></div>` + older.map(s => s.sn ? hitHTML(s, s.be === 'claude-app' ? 'Claude app' : s.ar ? 'Archive' : AGENT_NAMES[s.a] || '') : itemHTML(s)).join('') : ''}
-      ${convHits.length ? `<div class="group" title="Conversations on this Mac that are not in your list: older ones, other agents, other Macs (synced)">Other conversations <span class="n">${convTotal}</span></div>` + convHits.map(s => hitHTML(s, AGENT_NAMES[s.a] || s.a)).join('') : ''}
-      ${convTotal > convHits.length ? `<div class="ixnote">Showing the newest ${convHits.length} of ${convTotal} other conversations. Add a word to find fewer.</div>` : ''}
-      ${ixState && (!ixState.ready || (ixState.busy && ixState.todo > 50)) ? `<div class="ixnote">${ic('dots',11,2.4)}<span>Reading your conversations${ixState.todo ? ` (${ixState.done.toLocaleString()} of ${ixState.todo.toLocaleString()})` : ''}. Some do not show yet.</span></div>` : ''}
+      ${older.length ? `<div class="group">Older <span class="n">${older.length}</span></div>` + older.map(s => itemHTML(s)).join('') : ''}
+      ${deepHTML()}
     </div></div>`;
     if (scroll[0]) host.querySelector('.list').scrollTop = scroll[0];
     applyCursor(false);
@@ -1146,6 +1189,7 @@ document.addEventListener('click', e => {
   }
   const row = t.closest('[data-k]');
   if (justDragged) return;
+  if (row && row.dataset.k === '__deep'){ runDeep(true); return; }
   if (row && data){
     // A session whose key changed while the row was pressed (its conversation id arrived) has the old key as `was`.
     const k = row.dataset.k;
@@ -1155,7 +1199,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('contextmenu', e => {
   const row = e.target.closest('[data-k]');
-  if (row && row.dataset.k.startsWith('conv:')){ e.preventDefault(); return; }
+  if (row && (row.dataset.k.startsWith('conv:') || row.dataset.k === '__deep')){ e.preventDefault(); return; }
   if (row){ e.preventDefault(); bridge('menu', {k: row.dataset.k}); }
 });
 setInterval(() => render(), 30000);   // keep "5m ago" fresh

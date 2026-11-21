@@ -98,9 +98,12 @@ final class SessionsAPI {
                         return
                     }
                     if req.method == "POST", req.path == "/sb/convsearch", req.headers["x-token"] == self.token {
-                        // For checks: what the sidebar search answers ({"q": "words"}).
+                        // For checks: what the sidebar search answers ({"q": "words"}): the name
+                        // results ("s") and "Search inside conversations" ("conv").
                         Task { @MainActor in
-                            let r = await Switchboard.shared.searchAll(req.json["q"] as? String ?? "")
+                            let q = req.json["q"] as? String ?? ""
+                            var r = await Switchboard.shared.searchConversations(q)
+                            r["s"] = Switchboard.shared.search(q)
                             self.respond(conn, status: 200, body: r)
                         }
                         return

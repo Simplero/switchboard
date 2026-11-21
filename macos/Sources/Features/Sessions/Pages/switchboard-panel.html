@@ -304,7 +304,8 @@ function render(){
   const u = ctx.update && ctx.update.running < 24 ? ctx.update : null;
   // A pin stays (Chief of staff, lazygit): no Done. Unpin it first (right-click it in the sidebar).
   const done = s && s.pn != null ? `<span class="pinned" title="Pinned: it stays in the Pinned row at the top of the sidebar. Right-click it there to unpin it.">${ic('pin',11,2.4)} Pinned</span>`
-    : s ? `<button class="donebtn" data-act="done" data-k="${esc(s.k)}" title="${s.a === 'shell' ? 'Close this window and its tabs.' : 'We are done with it: close this session (Claude and every tab in this window) and move it to the Archive. It is under Archive in the sidebar; click it there to resume it.'}">${ic('check',11,2.6)} ${s.a === 'shell' ? 'Close' : 'Archive'}</button>` : '';
+    : s ? (s.a === 'shell' ? '' : `<button class="donebtn" data-act="close" data-k="${esc(s.k)}" title="Close it: Claude stops, and the session waits under Not running in the sidebar until you archive it. Click it there to resume it.">${ic('moon',11,2.6)} Close</button>`)
+      + `<button class="donebtn" data-act="done" data-k="${esc(s.k)}" title="${s.a === 'shell' ? 'Close this window and its tabs.' : 'We are done with it: close this session (Claude and every tab in this window) and move it to the Archive. It is under Archive in the sidebar; click it there to resume it.'}">${ic('check',11,2.6)} ${s.a === 'shell' ? 'Close' : 'Archive'}</button>` : '';
   $('#tabs').innerHTML = tabs.map(x => `<button class="tab" data-tab="${x.id}" aria-selected="${!!x.selected}"><span>${esc(tabTitle(x.title))}</span>${tabs.length > 1 ? `<span class="x" data-close="${x.id}" title="Close tab">✕</span>` : ''}</button>`).join('')
     + `<button class="addtab" data-act="newtab" title="New tab in this window (⌘T)">+</button>`
     + `<span class="right">${u ? `<button class="updbtn" data-act="restart" title="Switchboard b${u.installed} is installed. You run b${u.running}.">${ic('down',11,2.6)} Restart to update to b${u.installed}</button>` : ''}${done}</span>`;
@@ -330,6 +331,7 @@ document.addEventListener('click', async e => {
   const lnk = t.closest('[data-url]'); if (lnk){ bridge('openLink', {url: lnk.dataset.url}); return; }
   if (act === 'newtab'){ bridge('newTab'); return; }
   if (act === 'done'){ bridge('op', {o: {op: 'done', k: t.closest('[data-act]').dataset.k}}); return; }
+  if (act === 'close'){ bridge('op', {o: {op: 'close', k: t.closest('[data-act]').dataset.k}}); return; }
   if (act === 'login'){
     const btn = t.closest('[data-act]'), r = btn.getBoundingClientRect();
     bridge('loginMenu', {k: btn.dataset.k, ld: btn.dataset.ld, x: r.left, y: r.bottom + 4});

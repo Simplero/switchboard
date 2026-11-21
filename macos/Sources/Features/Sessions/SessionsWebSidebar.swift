@@ -22,7 +22,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
     private var loaded = false
     /// The panel above the terminal has one fixed height, so nothing ever jumps.
     /// banner.html lays itself out for exactly this height.
-    static let bannerHeight: CGFloat = 136
+    static let bannerHeight: CGFloat = 158
 
     init(path: String) {
         self.path = path

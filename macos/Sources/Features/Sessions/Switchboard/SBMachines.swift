@@ -80,6 +80,7 @@ enum SBMachines {
     static func prepare(_ m: Machine, force: Bool = false) async -> Status {
         if !force, installed.contains(m.name), let s = status[m.name], s.ok, Date().timeIntervalSince1970 - s.at < 120 { return s }
         let script = helper.replacingOccurrences(of: "__VERSION__", with: String(helperVersion))
+            .replacingOccurrences(of: "__GITINFO__", with: SBWorktree.script)
         // Install only when the version there differs; print the home folder either way.
         let remote = "v=$(.local/bin/switchboard-remote version 2>/dev/null); "
             + "if [ \"$v\" != \(helperVersion) ]; then mkdir -p .local/bin && cat > .local/bin/switchboard-remote.new "
@@ -121,6 +122,20 @@ enum SBMachines {
             let id = l.split(separator: " ").first.map(String.init) ?? ""
             return SBBackground.isUUID(id) ? id : nil
         })
+    }
+
+    /// The work trees of these folders there (see SBWorktree.script), by folder as given.
+    static func worktrees(_ m: Machine, folders: [String]) async -> [String: SBWorktree.Info] {
+        guard !folders.isEmpty else { return [:] }
+        let r = await run(m, envPrefix(m) + ".local/bin/switchboard-remote gitinfo " + folders.map(shq).joined(separator: " "), timeout: 30)
+        guard r.status == 0 else { return [:] }
+        var out: [String: SBWorktree.Info] = [:]
+        for chunk in r.out.components(separatedBy: "\n@").map({ $0.hasPrefix("@") ? String($0.dropFirst()) : $0 }) {
+            guard let nl = chunk.firstIndex(of: "\n") else { continue }
+            let folder = String(chunk[..<nl])
+            if let info = SBWorktree.parse(String(chunk[chunk.index(after: nl)...])) { out[folder] = info }
+        }
+        return out
     }
 
     private static func envPrefix(_ m: Machine) -> String {
@@ -181,7 +196,7 @@ enum SBMachines {
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 5
+    static let helperVersion = 6
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -236,6 +251,11 @@ cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
 version) echo "$VERSION" ;;
 list) t list-sessions -F '#{session_name} #{session_activity}' 2>/dev/null | sed -n 's/^sb-//p' ;;
+gitinfo)
+  # The work tree of each folder given, for the panel: "@<folder>" then its lines.
+  for d in "$@"; do echo "@$d"; ( set -- "$(expand "$d")"
+__GITINFO__
+  ); done ;;
 stop)
   id="$1"
   alive "$id" && t kill-session -t "=sb-$id"

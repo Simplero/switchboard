@@ -45,6 +45,14 @@ final class Switchboard {
     private var moving = Set<String>()
     /// A session waiting to move: since when it looked free (it moves when it still is 3 s later).
     private var moveFreeSince: [String: Double] = [:]
+    /// The model of each open Claude session's last answer and the folder it last worked in, by key.
+    private var details: [String: (model: String?, cwd: String?)] = [:]
+    /// The work tree of each folder sessions work in ("machine|folder"), looked at once a minute,
+    /// and which one each open session works in.
+    private var worktrees: [String: (at: Double, info: SBWorktree.Info?)] = [:]
+    private var worktreeOf: [String: String] = [:]
+    private var worktreeAt: Double = 0
+    private var worktreeLooking = false
     /// The conversations that run on each other machine (in tmux there), by machine name, so
     /// one with no terminal here shows as running there. Looked at every 30 s.
     private var remoteRunning: [String: Set<String>] = [:]
@@ -287,6 +295,7 @@ final class Switchboard {
         closeAwaySessions()
         moveWhenFree()
         if t0 - remoteAt >= 30, !remoteLooking, !SBMachines.all.isEmpty { remoteAt = t0; lookAtMachines() }
+        if t0 - worktreeAt >= 10, !worktreeLooking { worktreeAt = t0; lookAtWorktrees() }
         if let outside { mergeElsewhere(outside) }
         if let app { mergeClaudeApp(app) }
         SBSpares.shared.tick()
@@ -306,6 +315,59 @@ final class Switchboard {
             remoteLooking = false
             publish()
         }
+    }
+
+    /// The work tree each open Claude session works in: the slot its Claude claimed (it may
+    /// have started in ~/Simplero), else the folder its conversation last worked in, else its
+    /// folder. Each one is looked at again after a minute (git, off the main thread).
+    private func lookAtWorktrees() {
+        let slots = SBWorktree.slotsByOwner()
+        var of: [String: String] = [:]
+        var stale = Set<String>()
+        for e in reg.sessions.values where e.isOpen && e.agent == "claude" {
+            var folder = details[e.key]?.cwd ?? e.cwd
+            if e.machine == nil, let pid = e.pid, let slot = slots[pid] { folder = slot }
+            guard let folder, !folder.isEmpty else { continue }
+            let key = (e.machine ?? "") + "|" + folder
+            of[e.key] = key
+            if now - (worktrees[key]?.at ?? 0) >= 60 { stale.insert(key) }
+        }
+        worktreeOf = of
+        worktrees = worktrees.filter { k, _ in of.values.contains(k) }
+        guard !stale.isEmpty else { return }
+        worktreeLooking = true
+        let machines = SBMachines.all
+        Task.detached(priority: .utility) {
+            var found: [String: SBWorktree.Info?] = [:]
+            let local = stale.filter { $0.hasPrefix("|") }
+            if !local.isEmpty {
+                let commands = SBWorktree.commands()
+                for k in local { found[k] = SBWorktree.local(String(k.dropFirst()), commands: commands) }
+            }
+            for m in machines {
+                let mine = stale.filter { $0.hasPrefix(m.name + "|") }
+                guard !mine.isEmpty else { continue }
+                let folders = mine.map { String($0.dropFirst(m.name.count + 1)) }
+                let r = await SBMachines.worktrees(m, folders: folders)
+                for f in folders { found[m.name + "|" + f] = r[f] }
+            }
+            await MainActor.run {
+                let sb = Switchboard.shared
+                let t = sb.now
+                for (k, v) in found { sb.worktrees[k] = (t, v) }
+                sb.worktreeLooking = false
+                sb.publish()
+            }
+        }
+    }
+
+    /// The work tree of an open session, for the panel.
+    private func worktreeObject(_ e: SBEntry) -> Any {
+        guard e.isOpen, let key = worktreeOf[e.key], let w = worktrees[key]?.info else { return NSNull() }
+        var top = SBPaths.tilde(w.top)
+        if let m = e.machine, let home = SBMachines.status[m]?.home, top.hasPrefix(home) { top = "~" + top.dropFirst(home.count) }
+        let sv: Any = w.server.map { ["l": $0.label, "u": $0.url, "up": $0.up] as [String: Any] } ?? NSNull()
+        return ["top": top, "br": w.branch, "f": w.files, "a": w.add, "d": w.del, "sh": w.shared, "sv": sv] as [String: Any]
     }
 
     private func runsOnMachine(_ e: SBEntry) -> Bool {
@@ -565,6 +627,7 @@ final class Switchboard {
             e.surface_id = sf
             e.pid = a.pid
             e.machine = a.machine
+            details[key] = (a.model, a.lastCwd)
             e.cwd = cwd ?? e.cwd
             e.branch = a.branch
             e.last_seen = now
@@ -836,6 +899,8 @@ final class Switchboard {
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
             "mv": e.move_to.map { SBPaths.tilde($0) as Any } ?? NSNull(),
             "m": e.machine.map { $0 as Any } ?? NSNull(),
+            "md": (e.isOpen ? SBBackground.modelName(details[e.key]?.model) : nil).map { $0 as Any } ?? NSNull(),
+            "wt": worktreeObject(e),
         ]
     }
 

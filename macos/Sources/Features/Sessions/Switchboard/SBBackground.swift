@@ -24,11 +24,14 @@ enum SBBackground {
         var inClaudeApp = false
         /// Runs on another machine (SBMachines): this is the ssh that shows it here.
         var machine: String? = nil
+        /// The model of its last answer and the folder it last worked in (from its transcript).
+        var model: String? = nil
+        var lastCwd: String? = nil
     }
 
     private static let lock = NSLock()
     private static var slowCache: [Int: (at: Double, cwd: String?, branch: String?)] = [:]
-    private static var transcriptCache: [String: (path: String, mtime: Double, title: String?)] = [:]
+    private static var transcriptCache: [String: (path: String, mtime: Double, title: String?, model: String?, cwd: String?)] = [:]
 
     /// The agents running in terminals with these tty names (one per terminal: the oldest).
     static func agents(onTTYs ttys: [String]) -> [Agent] {
@@ -73,16 +76,20 @@ enum SBBackground {
                 lock.unlock()
             }
             let t: (title: String?, mtime: Double?) = p.kind == "claude" ? transcript(sid) : (nil, nil)
+            let more: (model: String?, cwd: String?) = p.kind == "claude" ? transcriptDetails(sid) : (nil, nil)
             out.append(Agent(pid: pid, kind: p.kind, tty: tty, loginDir: loginDir, sid: sid, cwd: slow?.cwd,
-                             branch: slow?.branch, transcriptTitle: t.title, transcriptMtime: t.mtime))
+                             branch: slow?.branch, transcriptTitle: t.title, transcriptMtime: t.mtime,
+                             model: more.model, lastCwd: more.cwd))
         }
         let machines = SBMachines.all
         for (tty, r) in remote where best[tty] == nil {
             // Its conversation comes back here through the synced projects folder.
             let t = transcript(r.a.sid)
+            let more = transcriptDetails(r.a.sid)
             let name = machines.first(where: { $0.host == r.a.host })?.name ?? r.a.host
             out.append(Agent(pid: Int(r.pid), kind: "claude", tty: tty, loginDir: SBLogins.norm(r.a.login), sid: r.a.sid,
-                             cwd: r.a.folder, branch: nil, transcriptTitle: t.title, transcriptMtime: t.mtime, machine: name))
+                             cwd: r.a.folder, branch: nil, transcriptTitle: t.title, transcriptMtime: t.mtime, machine: name,
+                             model: more.model, lastCwd: more.cwd))
         }
         return out
     }
@@ -195,7 +202,7 @@ enum SBBackground {
         let fm = FileManager.default
         if hit == nil || !fm.fileExists(atPath: hit!.path) {
             guard let p = transcriptPath(sid) else { return (nil, nil) }
-            hit = (p, 0, nil)
+            hit = (p, 0, nil, nil, nil)
         }
         guard var h = hit,
               let attrs = try? fm.attributesOfItem(atPath: h.path),
@@ -206,6 +213,8 @@ enum SBBackground {
             let tail = String(decoding: fh.readDataToEndOfFile(), as: UTF8.self)
             try? fh.close()
             if let title = lastCustomTitle(tail) { h.title = title }
+            if let model = lastMatch(modelRE, tail) { h.model = model }
+            if let cwd = lastMatch(cwdRE, tail) { h.cwd = cwd }
             h.mtime = m
         }
         lock.lock()
@@ -215,6 +224,36 @@ enum SBBackground {
     }
 
     private static let customTitleRE = try! NSRegularExpression(pattern: #""customTitle":"((?:[^"\\]|\\.)*)""#)
+    private static let modelRE = try! NSRegularExpression(pattern: #""model":"(claude-[A-Za-z0-9.\[\]-]+)""#)
+    private static let cwdRE = try! NSRegularExpression(pattern: #""cwd":"((?:[^"\\]|\\.)*)""#)
+
+    private static func lastMatch(_ re: NSRegularExpression, _ text: String) -> String? {
+        guard let m = re.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
+              let r = Range(m.range(at: 1), in: text) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: Data(("\"" + text[r] + "\"").utf8), options: .fragmentsAllowed)) as? String
+    }
+
+    /// The model of a Claude conversation's last answer and the folder it last worked in
+    /// (read with `transcript`, from the same end of the file).
+    static func transcriptDetails(_ sid: String?) -> (model: String?, cwd: String?) {
+        guard let sid else { return (nil, nil) }
+        _ = transcript(sid)
+        lock.lock()
+        defer { lock.unlock() }
+        return (transcriptCache[sid]?.model, transcriptCache[sid]?.cwd)
+    }
+
+    /// "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-4-5-20250929" → "Sonnet 4.5".
+    static func modelName(_ id: String?) -> String? {
+        guard var s = id, s.hasPrefix("claude-") else { return nil }
+        var long = ""
+        if let r = s.range(of: "[1m]") { s.removeSubrange(r); long = " 1M" }
+        let parts = s.dropFirst("claude-".count).split(separator: "-").map(String.init)
+            .filter { !($0.count == 8 && Int($0) != nil) }
+        guard let name = parts.first, !name.isEmpty else { return nil }
+        let version = parts.dropFirst().joined(separator: ".")
+        return name.prefix(1).uppercased() + name.dropFirst() + (version.isEmpty ? "" : " " + version) + long
+    }
 
     static func lastCustomTitle(_ text: String) -> String? {
         let ms = customTitleRE.matches(in: text, range: NSRange(text.startIndex..., in: text))

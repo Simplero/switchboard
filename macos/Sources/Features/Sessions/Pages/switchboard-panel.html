@@ -24,9 +24,11 @@ html,body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.4 -apple-sy
 button{font:inherit;color:inherit;cursor:default}
 /* The panel has one fixed height (the app uses the same number), so nothing
    above the terminal ever jumps: every row is always there, empty or not. */
-#wrap{display:flex;flex-direction:column;height:136px;overflow:hidden}
-#banner{display:flex;flex-direction:column;gap:3px;height:106px;flex:none;padding:8px 12px;border-bottom:1px solid var(--line);overflow:hidden}
+#wrap{display:flex;flex-direction:column;height:158px;overflow:hidden}
+#banner{display:flex;flex-direction:column;gap:3px;height:128px;flex:none;padding:8px 12px;border-bottom:1px solid var(--line);overflow:hidden}
 #banner.needs{border-bottom:2px solid var(--needs)}
+.r0{display:flex;align-items:center;gap:6px;min-width:0;height:19px;overflow:hidden}
+.r0 .dir,.r0 .chip{height:19px}
 .r1{display:flex;align-items:center;gap:8px;min-width:0;height:22px}
 .none{color:var(--muted);font-size:12.5px}
 .name{font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -40,6 +42,21 @@ button{font:inherit;color:inherit;cursor:default}
 .dir span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .dir .br{color:var(--muted);flex:0 2 auto}
 .dir .mv{flex:0 0 auto}
+/* Where it runs and what it works on: machine › folder, model, work tree, its changes, its dev server. */
+.where{flex:0 3 auto}
+.where .sep{color:var(--faint);flex:none}
+.chip{display:inline-flex;align-items:center;gap:4px;min-width:0;flex:0 1 auto;font-size:11.5px;font-weight:600;color:var(--ink2);border:1px solid var(--line2);border-radius:6px;padding:1px 7px;background:var(--surface);white-space:nowrap;height:20px}
+.chip span{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.chip.md{flex:none;color:var(--muted)}
+.chip.wt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;flex:0 4 auto;max-width:340px}
+.chip.diff{flex:none;font-variant-numeric:tabular-nums}
+.chip.diff .add{color:var(--done)}
+.chip.diff .del{color:#C8362E}
+@media (prefers-color-scheme: dark){ .chip.diff .del{color:#FF7B72} }
+.chip.diff.none{color:var(--muted);font-weight:500}
+button.chip.srv{flex:none}
+button.chip.srv:hover{border-color:var(--accent);color:var(--ink)}
+.r1 .upd{flex:0 100 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .r1 .name{flex:0 1 auto;min-width:40px}
 .r1 .acct{flex-shrink:0}
 .r2,.r3{display:flex;gap:6px;align-items:center;min-width:0;height:18px}
@@ -99,6 +116,10 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const bridge = (type, d={}) => { try { window.webkit.messageHandlers.sessions.postMessage({type, page:'banner', ...d}); } catch {} };
 const ICON = {
+  laptop:'<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>',
+  branch:'<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 5-12 3-12 8"/>',
+  play:'<path d="M7 5v14l11-7z"/>',
+  moon:'<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
   server:'<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
   q:'<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2-3 4"/><path d="M12 17h.01"/>',
   eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
@@ -201,6 +222,27 @@ function dirHTML(s){
   return `<span class="dir" title="${on}${esc(s.cwd)}${br ? '\nBranch: ' + esc(br) : ''}${mv}">${ic(s.m ? 'server' : 'folder',10,2.2)}<span>${s.m ? esc(s.m) + ':' : ''}${esc(s.cwd)}</span>${s.mv ? `<span class="mv">→ ${esc(s.mv)}</span>` : ''}${br ? `<span class="br">⎇ ${esc(br)}</span>` : ''}</span>`;
 }
 
+// Where it runs (the machine, then the folder there), the model, the work tree with its
+// changes (as GitHub counts them: + added lines, − removed lines), and its dev server.
+function placeHTML(s){
+  const mach = s.m || 'This Mac';
+  const where = `<span class="dir where" title="Runs on ${esc(mach)}.\nFolder: ${esc(s.cwd || '~')}${s.mv ? `\nMoves to ${esc(s.mv)} when its turn is over and you are not looking at it.` : ''}">${ic(s.m ? 'server' : 'laptop',10,2.2)}<span>${esc(mach)}</span><span class="sep">›</span>${ic('folder',10,2.2)}<span>${esc(s.cwd || '~')}</span>${s.mv ? `<span class="mv">→ ${esc(s.mv)}</span>` : ''}</span>`;
+  const md = s.md ? `<span class="chip md" title="The model of its last answer">${ic('spark',10,2.2)}<span>${esc(s.md)}</span></span>` : '';
+  const w = s.wt;
+  let wt = '', diff = '', srv = '';
+  if (w){
+    const other = w.top !== s.cwd;   // it works in another work tree (a slot) than its folder
+    const where2 = other ? esc(w.top.split('/').pop()) + ' · ' : '';
+    wt = `<span class="chip wt" title="Work tree: ${esc(w.top)}\nBranch: ${esc(w.br)}">${ic('branch',10,2.2)}<span>${where2}${esc(w.br)}</span></span>`;
+    const n = x => Number(x || 0).toLocaleString('en-US');
+    if (w.sh) diff = `<span class="chip diff none" title="The main checkout: its uncommitted changes are every session's, so they are not counted here.">shared checkout</span>`;
+    else if (!w.f) diff = `<span class="chip diff none" title="No changes against where this branch left the main branch.">no changes</span>`;
+    else diff = `<span class="chip diff" title="${n(w.f)} files changed against where this branch left the main branch, with uncommitted and new files (looked at once a minute).">${n(w.f)} ${w.f === 1 ? 'file' : 'files'} <span class="add">+${n(w.a)}</span> <span class="del">−${n(w.d)}</span></span>`;
+    if (w.sv) srv = `<button class="chip srv" data-url="${esc(w.sv.u)}" title="${w.sv.up ? 'Its dev server runs' : 'Its dev server is not running; it starts when you open it (about a minute)'}: ${esc(w.sv.u)}">${ic(w.sv.up ? 'play' : 'moon',10,2.2)}<span>${esc(w.sv.l)}</span></button>`;
+  }
+  return where + md + wt + diff + srv;
+}
+
 function render(){
   // The session of this window: the first Claude session in any of its tabs, so a
   // new tab (a shell, a server) keeps the same panel above it.
@@ -211,11 +253,12 @@ function render(){
   const b = $('#banner');
   if (!s){
     b.className = '';
-    b.innerHTML = `<div class="r1"><span class="none">No session in this window.</span></div><div class="r2"></div><div class="r3"></div><div class="r4"></div>`;
+    b.innerHTML = `<div class="r0"></div><div class="r1"><span class="none">No session in this window.</span></div><div class="r2"></div><div class="r3"></div><div class="r4"></div>`;
   } else if (s.a === 'shell'){
     // A plain shell session (⌘N): no agent, no login, no usage.
     b.className = '';
     b.innerHTML = `
+      <div class="r0">${placeHTML(s)}</div>
       <div class="r1"><span class="name">${esc(s.n)}</span>
         <span class="badge" style="color:var(--muted);background:color-mix(in srgb, var(--muted) 15%, transparent)">${ic('term',11,2.4)} Terminal</span></div>
       <div class="r2"><span class="k" style="color:var(--muted)">Folder:</span><span class="v">${esc(s.cwd)}</span></div>
@@ -240,10 +283,10 @@ function render(){
       ? `<span class="k">Still open:</span><span class="v" title="${esc(op.map(([w, t]) => '• ' + (w === 'you' ? 'You: ' : '') + t).join('\n'))}">${op.map(([w, t]) => (w === 'you' ? '<span class="you">You:</span> ' : '') + esc(t)).join('<span class="sep">·</span>')}</span>`
       : s.gl ? `<span class="k">Still open:</span><span class="v muted">Nothing.</span>` : '';
     b.innerHTML = `
+      <div class="r0">${placeHTML(s)}</div>
       <div class="r1">
         <span class="name">${esc(s.n)}</span>
         <span class="badge" style="color:var(${L[2]});background:color-mix(in srgb, var(${L[2]}) 15%, transparent)">${ic(L[0],11,2.4)} ${L[1]}</span>
-        ${dirHTML(s)}
         <span class="upd">updated ${ago(s.la)}</span>
         <span class="acct">
           <span class="login"><button data-act="login" data-k="${esc(s.k)}" data-ld="${esc(s.ld)}" title="Switch this session to another login">${ic(login[2],10,2.2)} ${esc(login[1])} ${ic('chev',9,2.6)}</button></span>

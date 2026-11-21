@@ -358,7 +358,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             if let o = body["o"] as? [String: Any] {
                 SessionSwitchLog.because("the sidebar: \(o["op"] as? String ?? "an action")")
                 if let op = o["op"] as? String, let k = o["k"] as? String,
-                   let action = ["done": "Done with", "close": "Close", "park": "Park"][op],
+                   let action = ["done": "Archive", "close": "Close", "park": "Park"][op],
                    !store.confirmClose(k, action: action) { return }
                 if o["op"] as? String == "resume_conv", let key = o["key"] as? String,
                    let d = SBHistory.shared.doc(key), let warning = SBHistory.shared.otherMacWarning(d) {
@@ -499,7 +499,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         menuActions = []
         let menu = NSMenu()
         menu.addItem(item(s.isOpen ? "Go to session" : s.isPinned ? "Start it" : "Reopen here") { store.open(s) })
-        // A pin stays: no Done, Park or Close. Unpin it first.
+        // A pin stays: no Archive or Close. Unpin it first.
         if s.isPinned {
             let n = (store.pins.firstIndex { $0.k == s.k } ?? 99) + 1
             menu.addItem(item("Unpin" + (n <= 9 ? "  (⌃\(n))" : "")) { store.send(["op": "unpin", "k": s.k]) })
@@ -507,24 +507,31 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             let n = store.pins.count + 1
             menu.addItem(item("Pin" + (n <= 9 ? "  (⌃\(n) opens it)" : "")) { store.send(["op": "pin", "k": s.k]) })
         }
-        if !s.isPinned && (s.isOpen || !s.isArchived) {
-            menu.addItem(item(s.a == "shell" ? "Done (close it and its tabs)" : "Done (close it, move it to the Archive)") {
-                guard store.confirmClose(s.k, action: "Done with") else { return }
-                store.send(["op": "done", "k": s.k])
-            })
-        }
-        if s.isOpen && s.a != "shell" && !s.isPinned {
-            // A shell has nothing to resume, so it cannot be parked or closed "for later".
-            menu.addItem(item("Park for later (saves its work, frees the room)") {
-                guard store.confirmClose(s.k, action: "Park") else { return }
-                store.send(["op": "park", "k": s.k])
-            })
-            menu.addItem(item("Close") {
-                guard store.confirmClose(s.k, action: "Close") else { return }
-                store.send(["op": "close", "k": s.k])
-            })
-        } else if s.isParked {
-            menu.addItem(item("Unpark") { store.open(s) })
+        // Close: it stops, and stays under Not running until you archive it (a click resumes it).
+        // Archive: you are done with it.
+        if s.isOpen && !s.isPinned {
+            if s.a == "shell" {
+                // A shell has nothing to resume, so it is only closed.
+                menu.addItem(item("Close (it and its tabs)") {
+                    guard store.confirmClose(s.k, action: "Close") else { return }
+                    store.send(["op": "done", "k": s.k])
+                })
+            } else {
+                menu.addItem(item("Close (keep it under Not running)") {
+                    guard store.confirmClose(s.k, action: "Close") else { return }
+                    store.send(["op": "close", "k": s.k])
+                })
+                menu.addItem(item("Archive (done with it)") {
+                    guard store.confirmClose(s.k, action: "Archive") else { return }
+                    store.send(["op": "done", "k": s.k])
+                })
+            }
+        } else if !s.isPinned && !s.isOpen && s.a != "shell" {
+            if s.isArchived {
+                menu.addItem(item("Take it out of the Archive") { store.send(["op": "unarchive", "k": s.k]) })
+            } else {
+                menu.addItem(item("Move to the Archive") { store.send(["op": "done", "k": s.k]) })
+            }
         }
         menu.addItem(item(s.st == "handled" ? "Needs me again" : "Mark as handled") { store.send(["op": "ack", "k": s.k]) })
         menu.addItem(.separator())

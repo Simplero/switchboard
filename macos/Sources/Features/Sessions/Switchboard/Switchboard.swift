@@ -114,6 +114,20 @@ final class Switchboard {
         summaries = cache
         summaryOrder = Array(cache.keys)
         self.writable = writable
+        // Once: sessions closed more than 14 days ago were no longer listed (Closed recently
+        // dropped them). Not running now keeps a closed session until you archive it, so those
+        // go to the Archive instead of coming back into the list.
+        if writable, !UserDefaults.standard.bool(forKey: "sessions.oldClosedArchived") {
+            for (k, e) in reg.sessions where !e.isOpen && e.agent != "shell" && e.pinned == nil && e.archived != true
+                && e.parked != true && now - (e.closed_at ?? e.last_activity ?? now) >= 14 * 86400 {
+                var x = e
+                x.archived = true
+                x.archived_at = e.closed_at ?? e.last_activity
+                reg.sessions[k] = x
+            }
+            UserDefaults.standard.set(true, forKey: "sessions.oldClosedArchived")
+            save()
+        }
         // Sessions that ran in cmux are not shown as running here: they show as
         // closed and reopen here (cmux is no longer read).
         for (k, e) in reg.sessions where e.isOpen && e.backend != "ghostty" {
@@ -830,10 +844,11 @@ final class Switchboard {
         let live = sess.filter(\.isOpen)
         // Pins are always there, running or not.
         let pins = sess.filter { !$0.isOpen && $0.pinned != nil }
-        let recent = sess.filter { !$0.isOpen && $0.pinned == nil && ($0.parked == true || ($0.archived != true && now - ($0.closed_at ?? 0) < 14 * 86400)) }
+        // Not running: every closed session you did not archive, for as long as it takes.
+        let recent = sess.filter { !$0.isOpen && $0.pinned == nil && $0.archived != true }
         let archived = sess.filter { $0.archived == true && !$0.isOpen && $0.pinned == nil }
             .sorted { ($0.archived_at ?? 0) > ($1.archived_at ?? 0) }.prefix(80)
-        let rows = live + pins + recent.prefix(max(0, 150 - live.count)) + archived
+        let rows = live + pins + recent.prefix(max(0, 400 - live.count)) + archived
         var payload: [String: Any] = [
             "v": 1, "at": Int(now), "hub": NSNull(),
             "classes": reg.classes, "labels": reg.labels,
@@ -1042,6 +1057,7 @@ final class Switchboard {
         case "park": return await park(k)
         case "close": return close(k, park: false)
         case "done": return done(k)
+        case "unarchive": return unarchive(k)
         case "switch": return await switchLogin(k, msg["login"] as? String ?? "", focus: focus)
         case "move": return await moveSession(k, to: msg["cwd"] as? String ?? "", now: msg["now"] as? Bool == true)
         case "move_cancel": return cancelMove(k)
@@ -1212,6 +1228,17 @@ final class Switchboard {
         guard let name = e.machine, let m = SBMachines.named(name), let sid = e.session_id else { return }
         remoteRunning[name]?.remove(sid)
         Task.detached { await SBMachines.stop(m, sid: sid) }
+    }
+
+    /// Out of the Archive, without resuming it: it is under Not running again.
+    func unarchive(_ k: String) -> (Bool, String) {
+        guard reg.sessions[k] != nil else { return (false, "Unknown session.") }
+        update(k) { x in
+            x.archived = false
+            x.archived_at = nil
+            if !x.isOpen { x.state = stateOf(x) }
+        }
+        return (true, "It is under Not running again.")
     }
 
     /// Another terminal of the same session (a shell tab), so a replaced agent comes back

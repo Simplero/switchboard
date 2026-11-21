@@ -654,15 +654,17 @@ function rowsFor(ci){
   const c = colState[ci];
   const all = data.s.filter(s => !isPin(s) && inDir(c, s));
   const whereOk = s => c.where === 'any' || (c.where === 'here' ? (s.o && s.be === 'ghostty') : c.where === 'cmux' ? (s.o && s.be !== 'ghostty') : !s.o);
-  if (c.filter === 'parked'){
-    // Parked for later: closed to free the room, kept here with what each needs from you.
-    const parked = all.filter(s => s.pk && !s.o && !s.el).sort((a,b) => (b.la||0) - (a.la||0));
-    return parked.length ? parked.map(s => ({s, card: true})) : [{empty:'Nothing parked. Right-click a session and choose Park to keep it here for later.'}];
-  }
+  // (The Parked chip is gone: parked sessions are under Not running.)
+  if (c.filter === 'parked'){ c.filter = 'all'; c.where = 'off'; }
   if (c.where === 'off'){
-    // Not running anywhere: parked and closed sessions only.
-    const off = all.filter(s => !s.o && !s.el).sort((a,b) => (b.ca||b.la||0) - (a.ca||a.la||0)).slice(0, 80);
-    return off.length ? off.map(s => ({s})) : [{empty:'Nothing here.'}];
+    // Not running: closed (and parked) sessions you did not archive. They stay until you do.
+    const off = all.filter(s => !s.o && !s.el && !s.ar).sort((a,b) => (b.ca||b.la||0) - (a.ca||a.la||0));
+    return off.length ? off.map(s => ({s})) : [{empty:'Nothing here. A session you close stays here until you archive it.'}];
+  }
+  if (c.where === 'archive'){
+    // We're done with these. Clicking one resumes it and takes it out of the Archive.
+    const ar = all.filter(s => s.ar && !s.o && !s.el).sort((a,b) => (b.aa||0) - (a.aa||0));
+    return ar.length ? ar.map(s => ({s})) : [{empty:'Nothing in the Archive. Right-click a session and choose Archive when you are done with it.'}];
   }
   const open = all.filter(s => s.o && whereOk(s));
   const shown = open.filter(s => c.filter === 'all' || (c.filter === 'needs' ? heldNeeds(s) : c.filter === 'done' ? isFinished(s) : stateOf(s) === 'working'));
@@ -691,10 +693,9 @@ function rowsFor(ci){
   const away = all.filter(s => s.el).sort((a,b) => (b.ca||0) - (a.ca||0) || a.k.localeCompare(b.k));
   if (away.length && c.filter === 'all'){ out.push({h:'Running elsewhere', n:away.length}); if (!folded['Running elsewhere']) away.forEach(s => out.push({s})); }
   if (c.where !== 'any') return out;
-  const parked = all.filter(s => s.pk && !s.o && !s.el).sort((a,b) => (b.la||0) - (a.la||0));
-  if (parked.length){ out.push({h:'Parked', n:parked.length}); if (!folded['Parked']) parked.forEach(s => out.push({s})); }
-  const closed = all.filter(s => !s.o && !s.pk && !s.ar && !s.el).sort((a,b) => (b.ca||0) - (a.ca||0)).slice(0, 40);
-  if (closed.length){ out.push({h:'Closed recently', n:closed.length}); if (!folded['Closed recently']) closed.forEach(s => out.push({s})); }
+  // Not running: closed (and parked) and not archived. They stay until you archive them.
+  const closed = all.filter(s => !s.o && !s.ar && !s.el).sort((a,b) => (b.ca||b.la||0) - (a.ca||a.la||0));
+  if (closed.length){ out.push({h:'Not running', n:closed.length}); if (!folded['Not running']) closed.forEach(s => out.push({s})); }
   // Done (✓ in the panel): closed for good, kept here. Clicking one resumes it and takes it out.
   const archive = all.filter(s => s.ar && !s.o && !s.el).sort((a,b) => (b.aa||0) - (a.aa||0));
   if (archive.length){ out.push({h:'Archive', n:archive.length}); if (!folded['Archive']) archive.forEach(s => out.push({s})); }
@@ -726,7 +727,7 @@ function itemHTML(s, ci){
     const L = LOOK[stateOf(s)] || LOOK.closed;
     // A session from the Claude app that was never opened here: its last wrap-up from the app.
     const app = s.be === 'claude-app';
-    return `<div class="old" data-k="${esc(s.k)}" title="${s.ar ? 'In the Archive. Click to resume it here (it leaves the Archive).' : app ? 'From the Claude app, not running. Click to resume it here.' : s.pk ? 'Parked for later. Click to resume it here.' : 'Not running. Click to reopen it here.'}">
+    return `<div class="old" data-k="${esc(s.k)}" title="${s.ar ? 'In the Archive. Click to resume it here (it leaves the Archive).' : app ? 'From the Claude app, not running. Click to resume it here.' : s.pk ? 'Parked: its work is on a parked/… branch. Click to resume it here.' : 'Not running. It stays here until you archive it. Click to resume it here.'}">
       <span style="color:var(--faint)">${ic(L[0],11,2)}</span>
       <span class="nm">${esc(s.n)}</span>${app ? '<span class="tag">Claude app</span>' : ''}<span class="tt">${esc(s.t || s.ns || (app ? s.lm : '') || '')}</span>
       <span class="age">${ago(s.ca || s.la)}</span></div>`;
@@ -797,14 +798,17 @@ function colControls(ci){
   const c = colState[ci], count = f => data.s.filter(s => s.o && !isPin(s) && inDir(c, s) && f(s)).length;
   const fchip = (v, label, n, tip) => `<button class="fchip" data-f="${v}" aria-pressed="${c.filter===v}"${tip ? ` title="${tip}"` : ''}>${label} ${n}</button>`;
   const pills = (key, opts) => `<span class="seg">${opts.map(([v,l]) => `<button data-${key}="${v}" aria-pressed="${c[key]===v}">${l}</button>`).join('')}</span>`;
-  const wcount = w => data.s.filter(s => !isPin(s) && inDir(c, s)).filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el) : true).length;
+  const wcount = w => data.s.filter(s => !isPin(s) && inDir(c, s)).filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el && !s.ar) : w === 'archive' ? (!s.o && !s.el && s.ar) : true).length;
   const wchip = (v, label) => `<button class="fchip" data-w="${v}" aria-pressed="${c.where===v}">${label} ${v === 'any' ? '' : wcount(v)}</button>`;
+  // Not running and Archive list closed sessions, newest first: the state, group and sort
+  // controls are for running sessions, so they are not shown there.
+  const stopped = c.where === 'off' || c.where === 'archive';
   return `<div class="ctrl">
-    <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('any','Anywhere')}</div>
-    <div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('done','Done',count(isFinished),'The agent finished what you asked: Done, Answered, or marked as handled')}${fchip('all','All',count(()=>true))}${fchip('parked','Parked',data.s.filter(s => s.pk && !s.o && !s.el && !isPin(s) && inDir(c, s)).length,'Parked for later: closed to free the room, kept here with what each needs from you')}</div>
-    <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir']])}</div>
+    <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('archive','Archive')}${wchip('any','Anywhere')}</div>
+    ${stopped ? '' : `<div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('done','Finished',count(isFinished),'The agent finished what you asked: Done, Answered, or marked as handled')}${fchip('all','All',count(()=>true))}</div>
+    <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir']])}</div>`}
     <div class="row"><button class="colfolder${c.dir ? ' on' : ''}" data-colfolder="${ci}" title="${c.dir ? 'Only sessions in ' + esc(c.dir) + '. Click to pick another folder or all of them.' : 'Only sessions in one folder: click to pick it.'}">${ic('folder',10,2.2)}<span>${esc(c.dir || 'All folders')}</span>${ic('chev',8,2.6)}</button></div>
-    <div class="row" title="Sort. Manual: drag rows to put them in your order.">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>
+    ${stopped ? '' : `<div class="row" title="Sort. Manual: drag rows to put them in your order.">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>`}
   </div>`;
 }
 

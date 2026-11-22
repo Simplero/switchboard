@@ -468,6 +468,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Switchboard: the tab in front before this one (see `select`). While another tab
         // opens in the background, the tab you were on before that one.
         let previousSelected = (select ? nil : Self.backgroundReturn) ?? parent.tabGroup?.selectedWindow ?? parent
+        // Switchboard: the frame you see is the tab in front's. A tab in the background keeps
+        // the frame it had when it was last in front (after a restart: where the window was
+        // then), and a tab added next to it takes that frame, so selecting the new tab moved
+        // the window back there, even to the other screen.
+        let shownFrame = (parent.tabGroup?.selectedWindow ?? parent).frame
 
         // Create a new window and add it to the parent
         let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
@@ -511,6 +516,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 tabCreated = parent.addTabbedWindowSafely(window, ordered: .above)
             }
             if tabCreated {
+                if window.frame != shownFrame { window.setFrame(shownFrame, display: false) }
                 // We set the selectedWindow early here because we want the next window
                 // to become first responder as quickly as possible. Usually this is
                 // set while `-[NSWindowController showWindow:]` is called, but we're
@@ -534,6 +540,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             Self.backgroundOpening += 1
         }
         controller.showWindowSafely(self)
+        if (window.tabGroup?.windows.count ?? 1) > 1, window.frame != shownFrame {
+            window.setFrame(shownFrame, display: true)
+        }
         if !select, previousSelected !== window {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 Self.backgroundOpening -= 1

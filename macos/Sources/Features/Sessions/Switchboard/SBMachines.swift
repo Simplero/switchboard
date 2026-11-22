@@ -109,7 +109,9 @@ enum SBMachines {
     /// Put a file there, in the helper's folder (~/.cache/switchboard/<name>). Returns its path there.
     static func upload(_ m: Machine, _ data: Data, name: String, home: String) async -> String? {
         let dir = ".cache/switchboard/" + (name as NSString).deletingLastPathComponent
-        let r = await run(m, "mkdir -p \(shq(dir)) && cat > \(shq(".cache/switchboard/" + name))", input: data, timeout: 60)
+        // A big file (a video from the phone) takes a while over ssh: about 2 s per MB at the slowest.
+        let r = await run(m, "mkdir -p \(shq(dir)) && cat > \(shq(".cache/switchboard/" + name))", input: data,
+                          timeout: max(60, Double(data.count) / 500_000))
         return r.status == 0 ? home + "/.cache/switchboard/" + name : nil
     }
 

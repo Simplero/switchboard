@@ -13,7 +13,8 @@ import Network
 /// - The phone then signs in with its Simplero login (the mobile API key). The Mac asks
 ///   Simplero who that is (GET /api/mobile/v1/users/me) and lets in only its owner: the
 ///   first Simplero person who connects from one of your devices (remote.json).
-/// - Messages are JSON. Phone → Mac: hello, watch, screen (on/off), send, keys, op, new.
+/// - Messages are JSON. Phone → Mac: hello, watch, screen (on/off), send, keys, op, new,
+///   put (a file from the phone, in parts: photos, videos, files; send and new name them).
 ///   Mac → phone: welcome / denied, sessions (the full list first, then only changed rows
 ///   and the keys that left), conv (the watched conversation: the end first, then what is
 ///   added), screen (the watched terminal, while the phone shows it), moved (the watched
@@ -53,6 +54,9 @@ final class SBRemote {
         /// (a working session changes every second; the whole list every time would be a lot on cellular).
         var sentRows: [String: Data] = [:]
         var sentUse: Data?
+        var sentMachines: Data?
+        /// Files coming from the phone, by upload id: where each one goes and the part expected next.
+        var uploads: [String: (path: String, next: Int, size: Int)] = [:]
         init(_ conn: NWConnection) { self.conn = conn }
     }
 
@@ -256,6 +260,7 @@ final class SBRemote {
         case "send": sendText(c, msg)
         case "keys": keys(c, msg)
         case "new": newSession(c, msg)
+        case "put": put(c, msg)
         case "op": op(c, msg)
         default: reply(c, msg, ok: false, "Unknown request “\(t)”.")
         }
@@ -415,7 +420,15 @@ final class SBRemote {
     private func welcome(_ p: Person) -> [String: Any] {
         let logins = SBLogins.dirs.map { ["d": $0, "lg": SBLogins.short($0), "email": SBLogins.email($0)] }
         return ["t": "welcome", "v": 1, "mac": Host.current().localizedName ?? "Mac", "user": p.name,
-                "logins": logins, "folders": folders()]
+                "logins": logins, "folders": folders(), "machines": machines()]
+    }
+
+    /// The other machines this Mac starts sessions on (machines.json): name, and whether it
+    /// answered the last time Switchboard looked (null: not looked yet).
+    private func machines() -> [[String: Any]] {
+        SBMachines.all.map { m in
+            ["n": m.name, "ok": SBMachines.status[m.name].map { $0.ok as Any } ?? NSNull()]
+        }
     }
 
     /// Where new sessions usually start: the folders of recent sessions, the most recent first.
@@ -443,12 +456,17 @@ final class SBRemote {
         let gone = c.sentRows.keys.filter { now[$0] == nil }
         let useData = try? JSONSerialization.data(withJSONObject: use, options: [.sortedKeys])
         let useChanged = useData != c.sentUse
-        if !full && changed.isEmpty && gone.isEmpty && !useChanged { return nil }
+        let ms = machines()
+        let msData = try? JSONSerialization.data(withJSONObject: ms, options: [.sortedKeys])
+        let machinesChanged = msData != c.sentMachines
+        if !full && changed.isEmpty && gone.isEmpty && !useChanged && !machinesChanged { return nil }
         c.sentRows = now
         c.sentUse = useData
+        c.sentMachines = msData
         var m: [String: Any] = ["t": "sessions", "full": full, "s": changed, "gone": Array(gone),
                                 "at": Int(Date().timeIntervalSince1970)]
         if full || useChanged { m["use"] = use }
+        if full || machinesChanged { m["machines"] = ms }
         return m
     }
 
@@ -555,12 +573,98 @@ final class SBRemote {
     }
 
     /// Type a message into the session's terminal, then Enter (a paste, so line breaks stay in the message).
+    /// Files from the phone (`put`) go below the message, as paths: for a session on another
+    /// machine, Switchboard copies them there first.
     private func sendText(_ c: Client, _ msg: [String: Any]) {
         guard let (_, sf) = liveSurface(c, msg) else { return }
         let text = (msg["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return reply(c, msg, ok: false, "Nothing to send.") }
-        let ok = SessionsAPI.sendInput(sf, text: text, enter: true)
-        reply(c, msg, ok: ok, ok ? "Sent." : "That terminal is gone.")
+        let files = Self.phoneFiles(msg)
+        guard !text.isEmpty || !files.isEmpty else { return reply(c, msg, ok: false, "Nothing to send.") }
+        Task {
+            let (paths, problem) = await Switchboard.shared.filesFor(surface: sf, files)
+            guard let paths else { return reply(c, msg, ok: false, problem) }
+            let all = Switchboard.firstMessage(text, files: paths)
+            let ok = SessionsAPI.sendInput(sf, text: all, enter: true)
+            reply(c, msg, ok: ok, ok ? "Sent." : "That terminal is gone.", extra: ["text": all])
+        }
+    }
+
+    // MARK: Files from the phone
+
+    static let phoneDir = SBPaths.data + "/phone"
+    /// A part is at most 1 MB as a message (maximumMessageSize): the phone sends 512 KB parts.
+    static let maxPhoneFile = 500 << 20
+
+    /// The files a request names: only files the phone sent (`put`), never any other file of this Mac.
+    static func phoneFiles(_ msg: [String: Any]) -> [String] {
+        let root = phoneDir + "/"
+        return (msg["files"] as? [String] ?? []).filter { p in
+            p.hasPrefix(root) && !p.contains("/../") && FileManager.default.fileExists(atPath: p)
+        }
+    }
+
+    /// A safe file name: no folders, no hidden file, at most 120 characters.
+    static func fileName(_ raw: String) -> String {
+        var n = (raw as NSString).lastPathComponent.replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        while n.hasPrefix(".") { n.removeFirst() }
+        if n.count > 120 {
+            let ext = (n as NSString).pathExtension
+            n = String(n.prefix(110)) + (ext.isEmpty ? "" : "." + ext)
+        }
+        return n.isEmpty ? "file" : n
+    }
+
+    /// One part of a file from the phone: {up: <its id>, name, seq: 0, 1, …, last, data: base64}.
+    /// The reply to the last part carries the file's path here ("path").
+    private func put(_ c: Client, _ msg: [String: Any]) {
+        guard let up = (msg["up"] as? String)?.lowercased(), up.count == 36,
+              up.allSatisfy({ $0.isHexDigit || $0 == "-" }) else { return reply(c, msg, ok: false, "Which file?") }
+        let seq = (msg["seq"] as? NSNumber)?.intValue ?? -1
+        guard let b64 = msg["data"] as? String, let data = Data(base64Encoded: b64) else {
+            return reply(c, msg, ok: false, "That part of the file did not arrive whole.")
+        }
+        let fm = FileManager.default
+        if seq == 0 {
+            Self.cleanPhoneFiles()
+            let dir = Self.phoneDir + "/" + up
+            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let path = dir + "/" + Self.fileName(msg["name"] as? String ?? "")
+            guard fm.createFile(atPath: path, contents: nil) else { return reply(c, msg, ok: false, "The Mac could not save the file.") }
+            c.uploads[up] = (path, 0, 0)
+        }
+        guard var u = c.uploads[up], u.next == seq else {
+            c.uploads[up] = nil
+            return reply(c, msg, ok: false, "A part of the file went missing. Send it again.")
+        }
+        u.size += data.count
+        guard u.size <= Self.maxPhoneFile else {
+            c.uploads[up] = nil
+            try? fm.removeItem(atPath: (u.path as NSString).deletingLastPathComponent)
+            return reply(c, msg, ok: false, "That file is too big (more than 500 MB).")
+        }
+        guard let h = FileHandle(forWritingAtPath: u.path) else { c.uploads[up] = nil; return reply(c, msg, ok: false, "The Mac could not save the file.") }
+        h.seekToEndOfFile()
+        h.write(data)
+        h.closeFile()
+        u.next += 1
+        if msg["last"] as? Bool == true {
+            c.uploads[up] = nil
+            reply(c, msg, ok: true, "Saved.", extra: ["path": u.path])
+        } else {
+            c.uploads[up] = u
+            reply(c, msg, ok: true, "")
+        }
+    }
+
+    /// Files from the phone stay a week (a session may read them again later), then go.
+    private static func cleanPhoneFiles() {
+        let fm = FileManager.default
+        let old = Date().addingTimeInterval(-7 * 86400)
+        for d in (try? fm.contentsOfDirectory(atPath: phoneDir)) ?? [] {
+            let p = phoneDir + "/" + d
+            if let at = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, at < old { try? fm.removeItem(atPath: p) }
+        }
     }
 
     /// Key names the phone can press, as Ghostty `text:` actions (Zig string escapes).
@@ -582,12 +686,22 @@ final class SBRemote {
         reply(c, msg, ok: true, "Sent.")
     }
 
-    /// A new Claude session, with its first message.
+    /// A new Claude session, with its first message and the files sent for it (`put`). With
+    /// "machine", on that machine (machines.json): this Mac shows it over ssh.
     private func newSession(_ c: Client, _ msg: [String: Any]) {
         let login = msg["login"] as? String ?? "~/.claude"
         guard SBLogins.dirs.contains(login) else { return reply(c, msg, ok: false, "Unknown login \(login).") }
         let prompt = (msg["prompt"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let r = Switchboard.shared.newClaude(login, focus: false, cwd: msg["cwd"] as? String, prompt: prompt.isEmpty ? nil : prompt)
+        let files = Self.phoneFiles(msg)
+        if let m = msg["machine"] as? String, !m.isEmpty {
+            Task {
+                let r = await Switchboard.shared.newRemoteClaude(m, login: login, focus: false, cwd: msg["cwd"] as? String,
+                                                                 prompt: prompt.isEmpty ? nil : prompt, files: files)
+                reply(c, msg, ok: r.ok, r.message, extra: r.surface.map { ["sf": $0, "k": "surface:" + $0] } ?? [:])
+            }
+            return
+        }
+        let r = Switchboard.shared.newClaude(login, focus: false, cwd: msg["cwd"] as? String, prompt: prompt.isEmpty ? nil : prompt, files: files)
         reply(c, msg, ok: r.ok, r.message, extra: r.surface.map { ["sf": $0, "k": "surface:" + $0] } ?? [:])
     }
 

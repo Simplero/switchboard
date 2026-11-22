@@ -1137,9 +1137,10 @@ final class Switchboard {
         case "new":
             // From the sidebar's new-session form: a first message, files and a name, all optional.
             if let m = msg["machine"] as? String, !m.isEmpty {
-                return await newRemoteClaude(m, login: msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true,
-                                             cwd: msg["cwd"] as? String, prompt: msg["prompt"] as? String, name: msg["name"] as? String,
-                                             files: msg["files"] as? [String] ?? [])
+                let r = await newRemoteClaude(m, login: msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true,
+                                              cwd: msg["cwd"] as? String, prompt: msg["prompt"] as? String, name: msg["name"] as? String,
+                                              files: msg["files"] as? [String] ?? [])
+                return (r.ok, r.message)
             }
             let r = newClaude(msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true, cwd: msg["cwd"] as? String,
                               prompt: msg["prompt"] as? String, name: msg["name"] as? String, files: msg["files"] as? [String] ?? [])
@@ -1393,6 +1394,24 @@ final class Switchboard {
             SessionsAPI.surface(id: sf)?.surfaceModel?.pasteText(paths.joined(separator: " "))
         }
         return true
+    }
+
+    /// Files for a session, as paths it can read: on this Mac as they are; for a session on
+    /// another machine, copied there first (its paths there). Nil and why when a copy failed.
+    func filesFor(surface sf: String, _ files: [String]) async -> (paths: [String]?, problem: String) {
+        guard !files.isEmpty, let (m, sid) = remoteSession(surface: sf) else { return (files, "") }
+        let st = await SBMachines.prepare(m)
+        guard st.ok, let home = st.home else { return (nil, st.message.isEmpty ? "\(m.name) does not answer." : st.message) }
+        var out: [String] = []
+        for f in files {
+            let name = (f as NSString).lastPathComponent
+            guard let data = FileManager.default.contents(atPath: f) else { return (nil, "Switchboard could not read \(name).") }
+            guard let p = await SBMachines.upload(m, data, name: "files/\(sid)/\(name)", home: home) else {
+                return (nil, "Switchboard could not copy \(name) to \(m.name).")
+            }
+            out.append(p)
+        }
+        return (out, "")
     }
 
     /// For ⌘V and ⌃V: hand the clipboard's files or picture over to a session on another machine.
@@ -1856,17 +1875,17 @@ final class Switchboard {
     /// A new Claude session on another machine (a Linux box): Claude runs there in a tmux session, this
     /// Mac shows it in a terminal over ssh. The first message and the files you added go there first.
     func newRemoteClaude(_ machine: String, login loginDir: String, focus: Bool = true, cwd: String? = nil, prompt: String? = nil,
-                         name: String? = nil, files: [String] = []) async -> (Bool, String) {
-        guard let m = SBMachines.named(machine) else { return (false, "Switchboard does not know the machine \(machine).") }
+                         name: String? = nil, files: [String] = []) async -> (ok: Bool, message: String, surface: String?) {
+        guard let m = SBMachines.named(machine) else { return (false, "Switchboard does not know the machine \(machine).", nil) }
         let st = await SBMachines.prepare(m)
-        guard st.ok, let home = st.home else { return (false, st.message.isEmpty ? "\(m.name) does not answer." : st.message) }
+        guard st.ok, let home = st.home else { return (false, st.message.isEmpty ? "\(m.name) does not answer." : st.message, nil) }
         let sid = UUID().uuidString.lowercased()
         // The files you added are on this Mac: copy them there and give Claude their paths there.
         var there: [String] = []
         for f in files where !f.isEmpty {
-            guard let data = FileManager.default.contents(atPath: f) else { return (false, "Could not read \(SBPaths.tilde(f)).") }
+            guard let data = FileManager.default.contents(atPath: f) else { return (false, "Could not read \(SBPaths.tilde(f)).", nil) }
             guard let p = await SBMachines.upload(m, data, name: "files/\(sid)/\((f as NSString).lastPathComponent)", home: home) else {
-                return (false, "Could not copy \((f as NSString).lastPathComponent) to \(m.name).")
+                return (false, "Could not copy \((f as NSString).lastPathComponent) to \(m.name).", nil)
             }
             there.append(p)
         }
@@ -1875,19 +1894,19 @@ final class Switchboard {
         if !text.isEmpty {
             let body = text.hasPrefix("-") ? " " + text : text     // never read as an option
             guard let p = await SBMachines.upload(m, Data(body.utf8), name: "first-\(sid).txt", home: home) else {
-                return (false, "Could not send the first message to \(m.name).")
+                return (false, "Could not send the first message to \(m.name).", nil)
             }
             first = p
         }
         let folder = (cwd ?? Self.defaultFolder).trimmingCharacters(in: .whitespacesAndNewlines)
         let command = SBMachines.attachCommand(m, sid: sid, login: loginDir, folder: folder.isEmpty ? Self.defaultFolder : folder, mode: "new", first: first)
         guard let sf = openAgentTerminal(cwd: "~", command: command, loginDir: nil, focus: focus) else {
-            return (false, "Switchboard could not open a terminal.")
+            return (false, "Switchboard could not open a terminal.", nil)
         }
         let label = name.map(SBScreen.strip).flatMap { $0.isEmpty ? nil : String($0.prefix(80)) }
         if let label { pendingNames[sf] = (label, now) }
         if focus { SessionsAPI.focusTerminal(sf) }
-        return (true, "Started on \(m.name).")
+        return (true, "Started on \(m.name).", sf)
     }
 
     /// Type the first message into a spare once Claude shows its prompt (it may still be

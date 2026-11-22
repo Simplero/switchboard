@@ -125,14 +125,39 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
     @Published var findText = ""
     /// "4 found", "Not found", or nothing while the field is empty.
     @Published var findResult = ""
-    /// Goes up each time ⌘F asks for the find field (it takes the keyboard again).
-    @Published var findFocus = 0
     private var lastFind = ""
+    /// The find fields (one in each of the session's tab windows; the page moves into the one in front).
+    let findFields = NSHashTable<NSTextField>.weakObjects()
+    /// The find field in the window the page is in.
+    var findField: NSTextField? { findFields.allObjects.first { $0.window != nil && $0.window === webView.window } }
 
+    /// ⌘F: the find bar opens and its field takes the keyboard, with its text selected, so you type
+    /// at once (the new text replaces the old).
     func openFind() {
         finding = true
-        findFocus += 1
+        focusFindField()
         if !findText.isEmpty { find() }
+    }
+
+    /// The field takes the keyboard by AppKit, not by SwiftUI focus (that one did not always
+    /// take it from the page). The bar's field may come a moment later: try again for half a second.
+    private func focusFindField(tries: Int = 15) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.finding else { return }
+            guard let f = self.findField, let w = f.window else {
+                if tries > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { self.focusFindField(tries: tries - 1) } }
+                return
+            }
+            if !self.hasFindField(w.firstResponder) { w.makeFirstResponder(f) }
+            f.currentEditor()?.selectAll(nil)
+        }
+    }
+
+    /// The responder is one of the find fields (its field editor).
+    func hasFindField(_ r: NSResponder?) -> Bool {
+        guard let r else { return false }
+        let field = (r as? NSTextView)?.delegate as AnyObject? ?? r
+        return findFields.allObjects.contains { $0 === field }
     }
 
     func closeFind() {
@@ -221,7 +246,6 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
 struct DocPaneView: View {
     @ObservedObject var page: DocPage
     let close: () -> Void
-    @FocusState private var findFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -270,12 +294,7 @@ struct DocPaneView: View {
     /// Find on the page: ↩ next, ⇧↩ previous, esc closes it.
     private var findBar: some View {
         HStack(spacing: 6) {
-            TextField("Find on this page", text: $page.findText)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 13))
-                .focused($findFocused)
-                .onSubmit { page.find(backwards: NSApp.currentEvent?.modifierFlags.contains(.shift) == true) }
-                .onExitCommand { page.closeFind() }
+            FindField(page: page, text: page.findText)
                 .onChange(of: page.findText) { _ in page.find() }
             Text(page.findResult)
                 .font(.system(size: 12, weight: .medium))
@@ -287,8 +306,6 @@ struct DocPaneView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .onAppear { findFocused = true }
-        .onChange(of: page.findFocus) { _ in findFocused = true }
     }
 
     /// A button of the bar: a big symbol (and a word for the ones a symbol does not make clear)
@@ -306,6 +323,61 @@ struct DocPaneView: View {
         .buttonStyle(PaneButtonStyle())
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+/// The find bar's field (AppKit, so ⌘F can give it the keyboard for sure): ↩ next, ⇧↩ previous,
+/// esc closes the bar.
+private struct FindField: NSViewRepresentable {
+    let page: DocPage
+    /// The text, so SwiftUI updates the field when the text changes from outside it.
+    let text: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(page: page) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let f = NSTextField(string: page.findText)
+        f.placeholderString = "Find on this page"
+        f.bezelStyle = .roundedBezel
+        f.font = .systemFont(ofSize: 13)
+        f.usesSingleLineMode = true
+        f.cell?.isScrollable = true
+        f.cell?.wraps = false
+        f.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        f.delegate = context.coordinator
+        page.findFields.add(f)
+        return f
+    }
+
+    func updateNSView(_ f: NSTextField, context: Context) {
+        context.coordinator.page = page
+        page.findFields.add(f)
+        if f.stringValue != text { f.stringValue = text }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var page: DocPage
+        init(page: DocPage) { self.page = page }
+
+        func controlTextDidChange(_ note: Notification) {
+            guard let f = note.object as? NSTextField else { return }
+            MainActor.assumeIsolated { page.findText = f.stringValue }
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            MainActor.assumeIsolated {
+                switch selector {
+                case #selector(NSResponder.insertNewline(_:)):
+                    page.find(backwards: NSApp.currentEvent?.modifierFlags.contains(.shift) == true)
+                    return true
+                case #selector(NSResponder.cancelOperation(_:)):
+                    page.closeFind()
+                    return true
+                default: return false
+                }
+            }
+        }
     }
 }
 

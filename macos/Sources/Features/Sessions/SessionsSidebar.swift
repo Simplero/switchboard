@@ -152,6 +152,21 @@ final class SessionsStore: ObservableObject {
                r === page || r.isDescendant(of: page) {
                 return event
             }
+            // ⌘F ⌘G ⇧⌘G while the pane's page has you (the page or its find field has the keyboard,
+            // or you last clicked there): find on that page, not in the terminal. After you were in
+            // another app the terminal has the keyboard again, and ⌘F searched the terminal; and
+            // ⌘F in the find field went to the terminal too.
+            let findMods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            let findKey = event.charactersIgnoringModifiers?.lowercased()
+            if (findMods == .command && (findKey == "f" || findKey == "g")) || (findMods == [.command, .shift] && findKey == "g"),
+               let w = event.window ?? NSApp.keyWindow, let doc = Self.docWebView(in: w), let page = doc.owner {
+                let r = w.firstResponder
+                let inPage = (r as? NSView).map { $0 === doc || $0.enclosingDocWebView === doc } ?? false
+                if inPage || page.hasFindField(r) || self.pageHasYou {
+                    if findKey == "f" { page.openFind(); return nil }
+                    if !page.findText.isEmpty { page.find(backwards: findMods.contains(.shift)); return nil }
+                }
+            }
             // A page in the pane has the keyboard (or you last clicked in it): ⌘ arrows move in it,
             // not between sessions, and ⌘+ ⌘− ⌘0 zoom it, not the terminal's text.
             let cmdOnly = event.modifierFlags.intersection([.command, .option, .control]) == .command
@@ -216,7 +231,9 @@ final class SessionsStore: ObservableObject {
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             if let w = event.window, let content = w.contentView {
                 let hit = content.hitTest(content.convert(event.locationInWindow, from: nil))
+                let page = Self.docWebView(in: w)?.owner
                 self?.pageHasYou = hit is DocWebView || hit?.enclosingDocWebView != nil
+                    || (page?.findFields.allObjects.contains { f in hit.map { $0 === f || $0.isDescendant(of: f) } ?? false } ?? false)
             }
             return event
         }

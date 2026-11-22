@@ -374,7 +374,7 @@ final class SessionsAPI {
             if let tid = req.json["responder_terminal"] as? String, let tv = surface(tid) {
                 // As when the terminal takes the keyboard back (its window came forward).
                 w.makeFirstResponder(tv)
-            } else if req.json["click"] as? Bool != true {
+            } else if req.json["click"] as? Bool != true, req.json["keep"] as? Bool != true {   // keep: whatever has the keyboard keeps it
                 w.makeFirstResponder(web)
             }
             let ch = req.json["key"] as? String ?? "v"
@@ -495,6 +495,7 @@ final class SessionsAPI {
             return (200, ["open": page != nil, "title": page?.title ?? "", "url": page?.webView.url?.absoluteString ?? "",
                           "finding": page?.finding ?? false, "find_text": page?.findText ?? "", "find_result": page?.findResult ?? "",
                           "keyboard": SessionsAPI.keyboardOwner(controller.window),
+                          "find_selection": SessionsAPI.selection(controller.window),
                           "in_window": page?.webView.window === controller.window,
                           "pane_width": page?.webView.frame.width ?? 0,
                           "grid": SessionsAPI.gridSize(view).map { [$0.cols, $0.rows] } ?? []])
@@ -895,6 +896,13 @@ final class SessionsAPI {
         if let v = r as? NSView, v is DocWebView || v.enclosingDocWebView != nil { return "page" }
         if r is Ghostty.SurfaceView { return "terminal" }
         return String(describing: type(of: r))
+    }
+
+    /// For checks: the selected range in the text that has the keyboard.
+    static func selection(_ w: NSWindow?) -> [Int] {
+        guard let t = w?.firstResponder as? NSTextView else { return [] }
+        let r = t.selectedRange()
+        return [r.location, r.length]
     }
 
     static func gridSize(_ view: Ghostty.SurfaceView) -> (cols: Int, rows: Int)? {

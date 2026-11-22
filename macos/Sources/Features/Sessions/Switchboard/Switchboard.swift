@@ -1353,6 +1353,65 @@ final class Switchboard {
         return (r.ok, r.ok ? "Now on \(SBLogins.short(loginDir))." : r.message)
     }
 
+    // MARK: Files for a session on another machine
+
+    /// The session on another machine that this terminal shows, if any.
+    func remoteSession(surface sf: String) -> (machine: SBMachines.Machine, sid: String)? {
+        guard let e = reg.sessions.values.first(where: { $0.isOpen && $0.surface_id == sf && $0.machine != nil }),
+              let name = e.machine, let m = SBMachines.named(name), let sid = e.session_id else { return nil }
+        return (m, sid)
+    }
+
+    /// Files you drop or paste into a session that runs on another machine: Claude there cannot
+    /// read this Mac's files (or its clipboard), so they are copied there first, and their paths
+    /// there are pasted instead. A picture on the clipboard (no file) becomes a PNG file.
+    /// Returns false when the terminal is not such a session (the paste goes on as usual).
+    func handOver(surface sf: String, files: [URL], image: Data? = nil) -> Bool {
+        guard let (m, sid) = remoteSession(surface: sf), !files.isEmpty || image != nil else { return false }
+        SessionSwitchLog.did("files to \(m.name): \(files.count + (image == nil ? 0 : 1))")
+        Task { @MainActor in
+            let st = await SBMachines.prepare(m)
+            guard st.ok, let home = st.home else { SessionsStore.shared.showFailure(st.message); return }
+            var paths: [String] = []
+            var items: [(name: String, data: Data?)] = files.map { ($0.lastPathComponent, FileManager.default.contents(atPath: $0.path)) }
+            if let image {
+                let f = DateFormatter()
+                f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+                items.append(("Pasted image \(f.string(from: Date())).png", image))
+            }
+            for item in items {
+                guard let data = item.data else {
+                    SessionsStore.shared.showFailure("Switchboard could not read \(item.name), so it did not go to \(m.name).")
+                    return
+                }
+                guard let p = await SBMachines.upload(m, data, name: "files/\(sid)/\(item.name)", home: home) else {
+                    SessionsStore.shared.showFailure("Switchboard could not copy \(item.name) to \(m.name).")
+                    return
+                }
+                paths.append(Ghostty.Shell.escape(p))
+            }
+            SessionsAPI.surface(id: sf)?.surfaceModel?.pasteText(paths.joined(separator: " "))
+        }
+        return true
+    }
+
+    /// For ⌘V and ⌃V: hand the clipboard's files or picture over to a session on another machine.
+    /// Plain text (also a path you copied as text) pastes as usual.
+    func handOverClipboard(surface sf: String) -> Bool {
+        guard remoteSession(surface: sf) != nil else { return false }
+        let pb = NSPasteboard.general
+        let files = (pb.pasteboardItems ?? []).compactMap { item -> URL? in
+            guard let plist = item.propertyList(forType: .fileURL),
+                  let url = NSURL(pasteboardPropertyList: plist, ofType: .fileURL) as URL?, url.isFileURL else { return nil }
+            return url
+        }
+        if !files.isEmpty { return handOver(surface: sf, files: files) }
+        guard pb.string(forType: .string) == nil, let img = NSImage(pasteboard: pb),
+              let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return false }
+        return handOver(surface: sf, files: [], image: png)
+    }
+
     // MARK: Move to another folder
 
     /// Where sessions usually run: ~/Simplero, then the folders of recent Claude sessions, the

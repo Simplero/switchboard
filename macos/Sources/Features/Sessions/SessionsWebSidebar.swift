@@ -823,7 +823,11 @@ enum SessionsLinkOpener {
 
     /// A Simplero Doc opens next to the session in front (SessionsDocPanes); `nextToSession:
     /// false` (the pane's "Open in your browser") sends it to the browser.
+    /// A test copy (SWITCHBOARD_QUIET) only notes the links it would open.
+    static var lastOpened: [String] = []
+
     static func open(_ url: URL, nextToSession: Bool = true) {
+        if SBPaths.quiet { lastOpened.append(url.absoluteString); return }
         if nextToSession, SessionsDocPanes.isDoc(url), Thread.isMainThread {
             let shown: Bool = MainActor.assumeIsolated {
                 guard let ws = SessionsDocPanes.frontSession else { return false }

@@ -2329,6 +2329,10 @@ extension Ghostty.SurfaceView {
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         let pb = sender.draggingPasteboard
 
+        // Switchboard: files dropped on a session that runs on another machine go there first.
+        let urls = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        if !urls.isEmpty, Switchboard.shared.handOver(surface: id.uuidString, files: urls) { return true }
+
         let content = pb.getOpinionatedStringContents()
 
         if let content {

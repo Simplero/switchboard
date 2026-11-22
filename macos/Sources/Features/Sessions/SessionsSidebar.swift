@@ -165,6 +165,13 @@ final class SessionsStore: ObservableObject {
                 }
             }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            // ⌘V or ⌃V (Claude's picture paste) in a session on another machine: the clipboard's
+            // files or picture go there first, and their paths there are pasted.
+            if (mods == .command || mods == .control), event.keyCode == 9, !event.isARepeat,
+               let view = (event.window ?? NSApp.keyWindow)?.firstResponder as? Ghostty.SurfaceView,
+               Switchboard.shared.handOverClipboard(surface: view.id.uuidString) {
+                return nil
+            }
             // ⌃1…⌃9: the pins. The same key again goes back to the session you were in.
             if mods == .control, !event.isARepeat, let c = event.charactersIgnoringModifiers, c.count == 1,
                let n = Int(c), (1...9).contains(n), n <= self.pins.count {

@@ -2866,8 +2866,11 @@ pub fn keyCallback(
         // 1. mouse reporting is off
         // OR
         // 2. mouse reporting is on and we are not reporting shift to the terminal
+        // OR
+        // 3. super (Cmd) is held: it is never reported to the terminal (Switchboard)
         if (self.io.terminal.flags.mouse_event == .none or
-            (self.mouse.mods.shift and !self.mouseShiftCapture(false)))
+            (self.mouse.mods.shift and !self.mouseShiftCapture(false)) or
+            self.mouse.mods.super)
         {
             // Refresh our link state
             const pos = self.rt_surface.getCursorPos() catch break :mouse_mods;
@@ -2881,7 +2884,7 @@ pub fn keyCallback(
                 log.warn("failed to refresh links err={}", .{err});
                 break :mouse_mods;
             };
-        } else if (self.io.terminal.flags.mouse_event != .none and !self.mouse.mods.shift) {
+        } else if (self.io.terminal.flags.mouse_event != .none and !self.mouse.mods.shift and !self.mouse.mods.super) {
             // If we have mouse reports on and we don't have shift pressed, we reset state
             _ = try self.rt_app.performAction(
                 .{ .surface = self },
@@ -4063,6 +4066,10 @@ pub fn mouseButtonCallback(
             // then we do not do a mouse report.
             if (mods.shift and !shift_capture) break :report;
 
+            // Switchboard: a Cmd-click on a link opens it (on release); the program does
+            // not get the press either.
+            if (mods.super and self.mouse.over_link) break :report;
+
             // In any other mouse button scenario without shift pressed we
             // clear the selection since the underlying application can handle
             // that in any way (i.e. "scrolling").
@@ -4768,7 +4775,10 @@ pub fn cursorPosCallback(
         self.mouse.link_point == null or
         (self.mouse.link_point != null and !self.mouse.link_point.?.eql(pos_vp))) and
         (self.io.terminal.flags.mouse_event == .none or
-            (self.mouse.mods.shift and !self.mouseShiftCapture(false))))
+            (self.mouse.mods.shift and !self.mouseShiftCapture(false)) or
+            // Switchboard: Cmd over a link opens it also when a program (tmux) takes the
+            // mouse. Mouse reports cannot carry Cmd, so the program never needs it.
+            self.mouse.mods.super))
     {
         // If we were previously over a link, we always update. We do this so that if the text
         // changed underneath us, even if the mouse didn't move, we update the URL hints and state

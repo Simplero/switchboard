@@ -312,6 +312,41 @@ final class SessionsAPI {
                                       "cursor": c.map { [$0.row, $0.col] } ?? [], "row": c.flatMap { SessionsAPI.rowText(of: view, $0.row) } ?? NSNull()]
             if let k = req.query["k"] { out["blocker"] = Switchboard.shared.moveCheck(k) }
             return (200, out)
+        case ("POST", "/sb/clickcheck"):
+            // For checks: move the mouse to a cell of a terminal and click it, with ⌘ when
+            // "mods" is "command" ({"id", "row", "col"}); then the links a test copy would have opened.
+            guard let view = surface(req.json["id"] as? String), let s = view.surface, let w = view.window else { return (404, ["error": "no such terminal"]) }
+            let size = ghostty_surface_size(s)
+            let scale = Double(w.backingScaleFactor)
+            let cw = Double(size.cell_width_px) / scale, ch = Double(size.cell_height_px) / scale
+            var row = Double(req.json["row"] as? Int ?? 0), col = Double(req.json["col"] as? Int ?? 0)
+            if let needle = req.json["find"] as? String {
+                // The last row of the active area with this text, and a cell inside it.
+                var found = false
+                for r in stride(from: Int(size.rows) - 1, through: 0, by: -1) {
+                    if let t = SessionsAPI.rowText(of: view, r), let range = t.range(of: needle) {
+                        row = Double(r); col = Double(t.distance(from: t.startIndex, to: range.lowerBound) + 2); found = true; break
+                    }
+                }
+                if !found { return (404, ["error": "text not on the screen"]) }
+            }
+            let pad = req.json["pad"] as? Double ?? 2
+            let local = NSPoint(x: pad + (col + 0.5) * cw, y: view.isFlipped ? pad + (row + 0.5) * ch : view.bounds.height - pad - (row + 0.5) * ch)
+            let p = view.convert(local, to: nil)
+            let mods: NSEvent.ModifierFlags = req.json["mods"] as? String == "command" ? [.command] : []
+            SessionsLinkOpener.lastOpened = []
+            for type in [NSEvent.EventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
+                guard let ev = NSEvent.mouseEvent(with: type, location: p, modifierFlags: mods, timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { continue }
+                switch type {
+                case .mouseMoved: view.mouseMoved(with: ev)
+                case .leftMouseDown: view.mouseDown(with: ev)
+                default: view.mouseUp(with: ev)
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            return (200, ["opened": SessionsLinkOpener.lastOpened, "cell": [cw, ch], "grid": [Int(size.columns), Int(size.rows)]])
         case ("POST", "/sb/keycheck"):
             // For checks: press a key with ⌘ (or ⌃) on the sidebar page the way AppKit dispatches it
             // (local monitors, the window's views, then the menu). {"key": "v"}
@@ -320,7 +355,14 @@ final class SessionsAPI {
             if let pid = req.json["pane"] as? String, let view = surface(pid),
                let controller = BaseTerminalController.controller(owning: view) as? TerminalController,
                let page = SessionsDocPanes.shared.pages[controller.sessionsWorkspace] { web = page.webView }
-            guard let w = web.window else { return (404, ["error": "no window for that page"]) }
+            guard var w = web.window else { return (404, ["error": "no window for that page"]) }
+            // With a terminal for the keyboard: that terminal's window.
+            if let tid = req.json["responder_terminal"] as? String, let tw = surface(tid)?.window { w = tw }
+            if req.json["handover"] as? Bool == true, let tid = req.json["responder_terminal"] as? String {
+                // What ⌘V does in a session on another machine (a test copy is never the active
+                // app, so Ghostty's own ⌘V binding takes the key there first).
+                return (200, ["handed_over": Switchboard.shared.handOverClipboard(surface: tid)])
+            }
             if req.json["click"] as? Bool == true {
                 // A click in the middle of the page, the way AppKit dispatches it (monitors first).
                 let p = web.convert(NSPoint(x: web.bounds.midX, y: web.bounds.midY), to: nil)

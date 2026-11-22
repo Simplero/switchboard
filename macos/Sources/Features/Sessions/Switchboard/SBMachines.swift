@@ -207,7 +207,8 @@ echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
         // which hid the session. The helper there picks a terminal type it knows.
         let ssh = "/usr/bin/ssh -tt -o ServerAliveInterval=15 -o ServerAliveCountMax=8 -o ControlPath=none \(shq(m.host)) -- \(shq(remote))"
         let again = "printf '\\n\\033[2mLost the connection to \(m.name). Connecting again in 5 s…\\033[0m\\n'"
-        return "while :; do \(ssh); r=$?; [ $r -eq 255 ] || break; \(again); sleep 5; done"
+        // 255: the connection dropped; 75: detached while Claude runs (a new config): attach again.
+        return "while :; do \(ssh); r=$?; [ $r -eq 75 ] && continue; [ $r -eq 255 ] || break; \(again); sleep 5; done"
     }
 
     /// An ssh process that shows a session of a machine: its host and what it attaches to.
@@ -245,7 +246,7 @@ echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 8
+    static let helperVersion = 9
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -264,7 +265,8 @@ STATE="$HOME/.cache/switchboard"
 CONF="$STATE/tmux.conf"
 CLAUDE_BIN="${SWITCHBOARD_CLAUDE_BIN:-claude}"
 mkdir -p "$STATE"
-cat > "$CONF" <<'CONF'
+conf_new="$CONF.new"
+cat > "$conf_new" <<'CONF'
 # Written by switchboard-remote. tmux only keeps the session alive: no status line, no
 # prefix key (Ctrl+B stays Claude's), the wheel scrolls back, a selection is copied to
 # the Mac's clipboard, and Claude's title and focus reach Switchboard.
@@ -276,7 +278,8 @@ set -g history-limit 100000
 # Not 0: an arrow key split over the network must never read as Escape (Claude stops on Escape).
 set -s escape-time 25
 set -g default-terminal "tmux-256color"
-set -as terminal-features ",xterm-ghostty:RGB:extkeys:clipboard:title,xterm-256color:RGB"
+# hyperlinks: Claude's links (OSC 8) reach Ghostty, so Cmd-click opens them, also when wrapped.
+set -as terminal-features ",xterm-ghostty:RGB:extkeys:clipboard:title:hyperlinks,xterm-256color:RGB:hyperlinks"
 set -s extended-keys on
 set -s extended-keys-format csi-u
 set -g allow-passthrough on
@@ -292,6 +295,13 @@ CONF
 # A shell run by ssh may have no locale: say UTF-8, or tmux draws ❯ and ⏺ as "_".
 export LANG="${LANG:-C.UTF-8}"
 t() { tmux -u -L "$SOCK" -f "$CONF" "$@"; }
+# A changed config also reaches the tmux server that runs already (and its attached terminals).
+if ! cmp -s "$conf_new" "$CONF" 2>/dev/null; then
+  mv "$conf_new" "$CONF"
+  t source-file "$CONF" >/dev/null 2>&1 || true
+else
+  rm -f "$conf_new"
+fi
 expand() { case "$1" in "~") echo "$HOME" ;; "~/"*) echo "$HOME/${1#\~/}" ;; *) echo "$1" ;; esac; }
 alive() { t has-session -t "=sb-$1" 2>/dev/null; }
 gone() { for _ in $(seq 1 40); do pgrep -f -- "(--resume|--session-id) $1" >/dev/null || return 0; sleep 0.25; done; }
@@ -356,7 +366,10 @@ attach)
   if alive "$id"; then
     if [ "$(t show-environment -t "=$name" SB_LOGIN 2>/dev/null)" = "SB_LOGIN=$login" ]; then
       infocmp "${TERM:-dumb}" >/dev/null 2>&1 || export TERM=xterm-256color
-      exec tmux -u -L "$SOCK" -f "$CONF" attach-session -t "=$name"
+      tmux -u -L "$SOCK" -f "$CONF" attach-session -t "=$name"
+      # Detached while Claude still runs (to pick up a new config): the terminal attaches again.
+      alive "$id" && exit 75
+      exit 0
     fi
     # Another login now (Switch login): end this Claude, resume the conversation with the new one.
     t kill-session -t "=$name"; mode=resume
@@ -380,7 +393,9 @@ attach)
     fi
   } > "$run"
   chmod +x "$run"
-  exec tmux -u -L "$SOCK" -f "$CONF" new-session -s "$name" -e "SB_LOGIN=$login" "bash -l $(printf %q "$run")" ;;
+  tmux -u -L "$SOCK" -f "$CONF" new-session -s "$name" -e "SB_LOGIN=$login" "bash -l $(printf %q "$run")"
+  alive "$id" && exit 75
+  exit 0 ;;
 *) echo "usage: switchboard-remote attach|stop|list|version"; exit 2 ;;
 esac
 """#

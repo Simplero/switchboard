@@ -248,7 +248,7 @@ echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 9
+    static let helperVersion = 10
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -386,6 +386,9 @@ attach)
     printf 'cd %q || exit 1\n' "$folder"
     if [ "$login" = "~/.claude" ]; then echo 'unset CLAUDE_CONFIG_DIR'; else printf 'export CLAUDE_CONFIG_DIR=%q\n' "$(expand "$login")"; fi
     echo 'unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT'
+    # Inside tmux (TERM_PROGRAM=tmux) Claude writes no links (OSC 8), and it breaks a long
+    # URL into rows itself, so only its first row opened. With links, every row opens all of it.
+    echo 'export FORCE_HYPERLINK=1'
     flag=--resume; [ "$mode" = new ] && flag=--session-id
     if [ -n "$first" ] && [ -f "$first" ]; then
       printf 'm=$(cat %q); rm -f %q\n' "$first" "$first"

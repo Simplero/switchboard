@@ -379,7 +379,7 @@ final class SessionsAPI {
             }
             let ch = req.json["key"] as? String ?? "v"
             let arrows: [String: (UInt16, String)] = ["up": (126, "\u{F700}"), "down": (125, "\u{F701}"), "left": (123, "\u{F702}"), "right": (124, "\u{F703}")]
-            let code: UInt16 = arrows[ch]?.0 ?? ["v": 9, "c": 8, "x": 7, "a": 0, "1": 18, "2": 19, "3": 20, "=": 24, "-": 27, "0": 29][ch] ?? 9
+            let code: UInt16 = arrows[ch]?.0 ?? ["v": 9, "c": 8, "x": 7, "a": 0, "f": 3, "g": 5, "1": 18, "2": 19, "3": 20, "=": 24, "-": 27, "0": 29][ch] ?? 9
             // "mods": "control" for ⌃ (the pins' keys) instead of ⌘.
             let mods: NSEvent.ModifierFlags = req.json["mods"] as? String == "control" ? [.control] : [.command]
             let chars = arrows[ch]?.1 ?? ch
@@ -494,6 +494,7 @@ final class SessionsAPI {
             let page = SessionsDocPanes.shared.pages[controller.sessionsWorkspace]
             return (200, ["open": page != nil, "title": page?.title ?? "", "url": page?.webView.url?.absoluteString ?? "",
                           "finding": page?.finding ?? false, "find_text": page?.findText ?? "", "find_result": page?.findResult ?? "",
+                          "keyboard": SessionsAPI.keyboardOwner(controller.window),
                           "in_window": page?.webView.window === controller.window,
                           "pane_width": page?.webView.frame.width ?? 0,
                           "grid": SessionsAPI.gridSize(view).map { [$0.cols, $0.rows] } ?? []])
@@ -885,6 +886,17 @@ final class SessionsAPI {
     }
 
     /// Columns and rows of a terminal.
+    /// For checks: what has the keyboard in a window ("find field", "page", "terminal", or the view's type).
+    static func keyboardOwner(_ w: NSWindow?) -> String {
+        guard let r = w?.firstResponder else { return "nothing" }
+        if let editor = r as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSTextField {
+            return field.placeholderString == "Find on this page" ? "find field" : "field \(field.placeholderString ?? "")"
+        }
+        if let v = r as? NSView, v is DocWebView || v.enclosingDocWebView != nil { return "page" }
+        if r is Ghostty.SurfaceView { return "terminal" }
+        return String(describing: type(of: r))
+    }
+
     static func gridSize(_ view: Ghostty.SurfaceView) -> (cols: Int, rows: Int)? {
         guard let s = view.surface else { return nil }
         let size = ghostty_surface_size(s)

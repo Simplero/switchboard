@@ -497,6 +497,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             tg.removeWindow(window)
         }
 
+        // Switchboard: the tab the new one joins gets the frame you see first (see shownFrame).
+        let joins = ghostty.config.windowNewTabPosition == "end" ? (parent.tabGroup?.windows.last ?? parent) : parent
+        if joins.frame != shownFrame { joins.setFrame(shownFrame, display: false) }
+
         // If we don't allow tabs then we create a new window instead.
         if window.tabbingMode != .disallowed {
             let tabCreated: Bool

@@ -847,6 +847,7 @@ final class Switchboard {
         }
         if writable { SBFiles.queue.async { SBFiles.writeJSON(hist, SBPaths.usageHistory) } }
         usage = out
+        SBBackground.setOwnUsage(out)
         publish()
     }
 

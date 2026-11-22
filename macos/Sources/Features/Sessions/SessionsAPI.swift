@@ -347,6 +347,12 @@ final class SessionsAPI {
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.5))
             return (200, ["opened": SessionsLinkOpener.lastOpened, "cell": [cw, ch], "grid": [Int(size.columns), Int(size.rows)]])
+        case ("POST", "/sb/askcheck"):
+            // For checks: which login Switchboard's own Claude calls use. {"usage": {login: {"h5": {"p": 40}, "wk": {"p": 100}}}}
+            if let u = req.json["usage"] as? [String: Any] { SBBackground.setOwnUsage(u) }
+            let order = SBBackground.ownLogins()
+            let out = req.json["run"] as? Bool == true ? SBBackground.ask("haiku", "Say ok", timeout: 20) : nil
+            return (200, ["order": order, "out": out as Any? ?? NSNull(), "used": SBBackground.ownLast as Any? ?? NSNull(), "after": SBBackground.ownLogins()])
         case ("POST", "/sb/keycheck"):
             // For checks: press a key with ⌘ (or ⌃) on the sidebar page the way AppKit dispatches it
             // (local monitors, the window's views, then the menu). {"key": "v"}

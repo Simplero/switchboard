@@ -437,12 +437,9 @@ enum SBLinks {
         guard let f = SBBackground.transcriptPath(sid) else { return nil }
         let size = fileSize(f)
         guard let log = condensed(f), !log.isEmpty else { return nil }
-        let claude = SBPaths.home + "/.local/bin/claude"
-        guard let r = SBBackground.run(claude, ["-p", "--model", "sonnet", "--no-session-persistence", "--setting-sources", "", "--strict-mcp-config"],
-                                       input: briefPrompt + log,
-                                       env: SBBackground.toolEnv(dropping: ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY"]), timeout: 180),
-              let open = r.out.firstIndex(of: "{"), let close = r.out.lastIndex(of: "}"), open < close,
-              let j = try? JSONSerialization.jsonObject(with: Data(r.out[open...close].utf8)) as? [String: Any] else { return nil }
+        guard let out = SBBackground.ask("sonnet", briefPrompt + log, timeout: 180),
+              let open = out.firstIndex(of: "{"), let close = out.lastIndex(of: "}"), open < close,
+              let j = try? JSONSerialization.jsonObject(with: Data(out[open...close].utf8)) as? [String: Any] else { return nil }
         let goal = (j["goal"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let items: [SBBrief.Item] = ((j["open"] as? [Any]) ?? []).compactMap { x in
             if let s = x as? String { return SBBrief.Item(who: nil, text: s) }

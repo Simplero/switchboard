@@ -373,13 +373,65 @@ enum SBBackground {
         return (p.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
-    /// Ask Haiku what the end of a terminal says (Claude Code's own login, no MCP, no hooks).
+    /// Ask Haiku what the end of a terminal says (no MCP, no hooks).
     static func summarize(_ tail: String) -> SBSummary? {
-        let claude = SBPaths.home + "/.local/bin/claude"
-        guard let r = run(claude, ["-p", "--model", "haiku", "--no-session-persistence", "--setting-sources", "", "--strict-mcp-config"],
-                          input: prompt + tail, env: toolEnv(dropping: ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY"]), timeout: 90),
-              let open = r.out.firstIndex(of: "{"), let close = r.out.lastIndex(of: "}"), open < close else { return nil }
-        return try? JSONDecoder().decode(SBSummary.self, from: Data(r.out[open...close].utf8))
+        guard let out = ask("haiku", prompt + tail, timeout: 90),
+              let open = out.firstIndex(of: "{"), let close = out.lastIndex(of: "}"), open < close else { return nil }
+        return try? JSONDecoder().decode(SBSummary.self, from: Data(out[open...close].utf8))
+    }
+
+    // MARK: The login for Switchboard's own Claude calls
+
+    private static let ownLock = NSLock()
+    /// Plan usage per login, as the panel shows it ({"h5": {"p"}, "wk": {"p"}}).
+    private static var ownUsage: [String: [String: Any]] = [:]
+    /// When each login last answered "you've hit your limit".
+    private static var ownOut: [String: Double] = [:]
+    private static var lastLogin: String?
+    /// The login the last call used.
+    static var ownLast: String? { ownLock.lock(); defer { ownLock.unlock() }; return lastLogin }
+
+    static func setOwnUsage(_ usage: [String: Any]) {
+        ownLock.lock(); defer { ownLock.unlock() }
+        ownUsage = usage.compactMapValues { $0 as? [String: Any] }
+    }
+
+    /// The logins to try, most room first: the lowest weekly use, logins at 100% (5-hour or
+    /// weekly) last. A login that hit its limit in the last 15 minutes is left out.
+    static func ownLogins() -> [String] {
+        ownLock.lock(); defer { ownLock.unlock() }
+        let now = Date().timeIntervalSince1970
+        func pct(_ d: String, _ k: String) -> Int? { (ownUsage[d]?[k] as? [String: Any])?["p"] as? Int }
+        func full(_ d: String) -> Bool { (pct(d, "h5") ?? 0) >= 100 || (pct(d, "wk") ?? 0) >= 100 }
+        return SBLogins.dirs.enumerated()
+            .filter { now - (ownOut[$0.element] ?? 0) > 900 }
+            .sorted { a, b in
+                let ka = (full(a.element) ? 1 : 0, pct(a.element, "wk") ?? 100, a.offset)
+                let kb = (full(b.element) ? 1 : 0, pct(b.element, "wk") ?? 100, b.offset)
+                return ka < kb
+            }
+            .map(\.element)
+    }
+
+    /// Run `claude -p` on the login with the most room. When a login is at its limit (or not
+    /// signed in), the next one takes the call. The output, or nil.
+    static func ask(_ model: String, _ input: String, timeout: Double) -> String? {
+        let env = ProcessInfo.processInfo.environment
+        let claude = env["SWITCHBOARD_OWN_CLAUDE"].flatMap { $0.isEmpty ? nil : $0 } ?? SBPaths.home + "/.local/bin/claude"
+        for login in ownLogins() {
+            var e = toolEnv(dropping: ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY"])
+            if login != "~/.claude" { e["CLAUDE_CONFIG_DIR"] = SBPaths.expand(login) }
+            guard let r = run(claude, ["-p", "--model", model, "--no-session-persistence", "--setting-sources", "", "--strict-mcp-config"],
+                              input: input, env: e, timeout: timeout) else { return nil }
+            let low = r.out.lowercased()
+            if r.code != 0 && (low.contains("limit") || low.contains("not logged in") || low.contains("/login")) {
+                ownLock.lock(); ownOut[login] = Date().timeIntervalSince1970; ownLock.unlock()
+                continue
+            }
+            ownLock.lock(); lastLogin = login; ownLock.unlock()
+            return r.out
+        }
+        return nil
     }
 
     // MARK: Plan usage per login

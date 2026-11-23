@@ -202,8 +202,10 @@ echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
     /// What a terminal here runs to show the session: ssh to the machine, attach to the session
     /// (or start it: `new` with this id, `resume` an existing conversation). When the connection
     /// drops it connects again; when Claude ends, it ends.
-    static func attachCommand(_ m: Machine, sid: String, login: String, folder: String, mode: String, first: String? = nil) -> String {
-        var remote = envPrefix(m) + ".local/bin/switchboard-remote attach \(sid) \(shq(login)) \(shq(folder)) \(mode)"
+    static func attachCommand(_ m: Machine, sid: String, login: String, folder: String, mode: String, first: String? = nil, name: String? = nil) -> String {
+        // SB_NAME: the name you gave a new session, for Claude's --name there.
+        let named = name.map { "SB_NAME=\(shq($0)) " } ?? ""
+        var remote = envPrefix(m) + named + ".local/bin/switchboard-remote attach \(sid) \(shq(login)) \(shq(folder)) \(mode)"
         if let first { remote += " " + shq(first) }
         // /usr/bin/ssh, not "ssh": Ghostty's shell integration wraps that name (terminfo setup),
         // which hid the session. The helper there picks a terminal type it knows.
@@ -248,7 +250,7 @@ echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 10
+    static let helperVersion = 11
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -390,11 +392,13 @@ attach)
     # URL into rows itself, so only its first row opened. With links, every row opens all of it.
     echo 'export FORCE_HYPERLINK=1'
     flag=--resume; [ "$mode" = new ] && flag=--session-id
+    # A new session's name (SB_NAME) is Claude's name for the conversation too.
+    named=""; [ "$mode" = new ] && [ -n "${SB_NAME:-}" ] && named="--name $(printf %q "$SB_NAME")"
     if [ -n "$first" ] && [ -f "$first" ]; then
       printf 'm=$(cat %q); rm -f %q\n' "$first" "$first"
-      printf 'exec %q %s %s --dangerously-skip-permissions "$m"\n' "$CLAUDE_BIN" "$flag" "$id"
+      printf 'exec %q %s %s %s --dangerously-skip-permissions "$m"\n' "$CLAUDE_BIN" "$flag" "$id" "$named"
     else
-      printf 'exec %q %s %s --dangerously-skip-permissions\n' "$CLAUDE_BIN" "$flag" "$id"
+      printf 'exec %q %s %s %s --dangerously-skip-permissions\n' "$CLAUDE_BIN" "$flag" "$id" "$named"
     fi
   } > "$run"
   chmod +x "$run"

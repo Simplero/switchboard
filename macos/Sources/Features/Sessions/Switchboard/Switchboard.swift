@@ -1883,18 +1883,27 @@ final class Switchboard {
             return (false, "The folder \(cwd ?? folder) does not exist.", nil)
         }
         let prompt = Self.firstMessage(prompt, files: files)
-        let label = name.map(SBScreen.strip).flatMap { $0.isEmpty ? nil : String($0.prefix(80)) }
+        let label = Self.sessionLabel(name)
         if focus, let spare = SBSpares.shared.take(loginDir, folder: folder) {
             if let made = SessionsAPI.adoptSpare(spare.controller) {
                 recentNew[made.id] = now   // not a shell session while the scan catches up
                 if let label { pendingNames[made.id] = (label, now) }
                 SessionsAPI.focusTerminal(made.id)
-                if !prompt.isEmpty { typeWhenReady(made.id, prompt, since: now, seenAt: nil) }
+                // The spare's Claude already runs: /rename gives the conversation the name
+                // (Claude's own prompt box, /resume and the transcript), then the first message.
+                let first = { if !prompt.isEmpty { self.typeWhenReady(made.id, prompt, since: self.now, seenAt: nil) } }
+                if let label {
+                    typeWhenReady(made.id, "/rename " + label, since: now, seenAt: nil) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { MainActor.assumeIsolated { first() } }
+                    }
+                } else { first() }
                 return (true, "Started.", made.id)
             }
             SBSpares.close(spare.controller)
         }
         var command = Self.claudeLaunch(loginDir) + " --dangerously-skip-permissions"
+        // The name you gave is Claude's name for the conversation too.
+        if let label { command += " --name " + Self.shellQuote(label) }
         if !prompt.isEmpty {
             // Through a file, not typed into the shell: any length, any characters, line breaks.
             let dir = SBPaths.data + "/prompts"
@@ -1940,24 +1949,32 @@ final class Switchboard {
             first = p
         }
         let folder = (cwd ?? Self.defaultFolder).trimmingCharacters(in: .whitespacesAndNewlines)
-        let command = SBMachines.attachCommand(m, sid: sid, login: loginDir, folder: folder.isEmpty ? Self.defaultFolder : folder, mode: "new", first: first)
+        let label = Self.sessionLabel(name)
+        let command = SBMachines.attachCommand(m, sid: sid, login: loginDir, folder: folder.isEmpty ? Self.defaultFolder : folder, mode: "new", first: first, name: label)
         guard let sf = openAgentTerminal(cwd: "~", command: command, loginDir: nil, focus: focus) else {
             return (false, "Switchboard could not open a terminal.", nil)
         }
-        let label = name.map(SBScreen.strip).flatMap { $0.isEmpty ? nil : String($0.prefix(80)) }
         if let label { pendingNames[sf] = (label, now) }
         if focus { SessionsAPI.focusTerminal(sf) }
         return (true, "Started on \(m.name).", sf)
     }
 
+    /// The name you typed for a new session: one line, at most 80 characters.
+    static func sessionLabel(_ name: String?) -> String? {
+        guard let name else { return nil }
+        let one = SBScreen.strip(name).components(separatedBy: .newlines).joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return one.isEmpty ? nil : String(one.prefix(80))
+    }
+
     /// Type the first message into a spare once Claude shows its prompt (it may still be
-    /// starting when you press Enter), then Enter.
-    private func typeWhenReady(_ sf: String, _ text: String, since: Double, seenAt: Double?, quiet: Bool = false) {
+    /// starting when you press Enter), then Enter. `then` runs after it is sent.
+    private func typeWhenReady(_ sf: String, _ text: String, since: Double, seenAt: Double?, quiet: Bool = false, then: (() -> Void)? = nil) {
         guard let view = SessionsAPI.surface(id: sf) else { return }   // closed meanwhile
         var seen = seenAt
         if SBSpares.atPrompt(view) {
             // A moment after the prompt first shows, so Claude reads the paste as input.
-            if let s = seen, now - s >= 0.3 { _ = SessionsAPI.sendInput(sf, text: text, enter: true); return }
+            if let s = seen, now - s >= 0.3 { _ = SessionsAPI.sendInput(sf, text: text, enter: true); then?(); return }
             if seen == nil { seen = now }
         } else {
             seen = nil
@@ -1969,7 +1986,7 @@ final class Switchboard {
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            MainActor.assumeIsolated { self.typeWhenReady(sf, text, since: since, seenAt: seen, quiet: quiet) }
+            MainActor.assumeIsolated { self.typeWhenReady(sf, text, since: since, seenAt: seen, quiet: quiet, then: then) }
         }
     }
 

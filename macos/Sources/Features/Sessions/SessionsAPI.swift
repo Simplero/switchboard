@@ -510,6 +510,29 @@ final class SessionsAPI {
                           "in_window": page?.webView.window === controller.window,
                           "pane_width": page?.webView.frame.width ?? 0,
                           "grid": SessionsAPI.gridSize(view).map { [$0.cols, $0.rows] } ?? []])
+        case ("POST", "/sb/keytrace"):
+            // For checks: who has the keyboard in the front tab, every 50 ms for {"ms": 2000}.
+            SessionsAPI.keyTrace = []
+            let start = Date()
+            let ms = req.json["ms"] as? Double ?? 2000
+            Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { t in
+                MainActor.assumeIsolated {
+                    let el = Date().timeIntervalSince(start) * 1000
+                    if el > ms { t.invalidate(); return }
+                    let w = SessionsAPI.mainWindow()
+                    let sel = w?.tabGroup?.selectedWindow ?? w
+                    let line = "\(Int(el)) tab \(sel?.windowNumber ?? 0) key \(NSApp.keyWindow?.windowNumber ?? 0): \(SessionsAPI.responderName(sel?.firstResponder))"
+                    if SessionsAPI.keyTrace.last.map({ $0.split(separator: " ", maxSplits: 1).last.map(String.init) != line.split(separator: " ", maxSplits: 1).last.map(String.init) }) ?? true {
+                        SessionsAPI.keyTrace.append(line)
+                    }
+                }
+            }
+            return (200, ["ok": true])
+        case ("GET", "/sb/keytrace"):
+            let w = SessionsAPI.mainWindow()
+            let sel = w?.tabGroup?.selectedWindow ?? w
+            let surf = (sel?.windowController as? BaseTerminalController)?.surfaceTree.root?.leaves().map { String($0.id.uuidString.prefix(8)) } ?? []
+            return (200, ["trace": SessionsAPI.keyTrace, "now": SessionsAPI.responderName(sel?.firstResponder), "tab_terminals": surf])
         case ("GET", "/sb/switchlog"):
             // For checks: the end of the log of session switches, and the sidebar's away state.
             let text = (try? String(contentsOfFile: SessionSwitchLog.path, encoding: .utf8)) ?? ""
@@ -899,6 +922,21 @@ final class SessionsAPI {
 
     /// Columns and rows of a terminal.
     /// For checks: what has the keyboard in a window ("find field", "page", "terminal", or the view's type).
+    static var keyTrace: [String] = []
+
+    /// For checks: who has the keyboard, in words.
+    static func responderName(_ r: NSResponder?) -> String {
+        guard let r else { return "nothing" }
+        if let v = r as? Ghostty.SurfaceView { return "terminal " + v.id.uuidString.prefix(8) }
+        if let v = r as? NSView {
+            if v === SessionsWeb.shared.webView || v.isDescendant(of: SessionsWeb.shared.webView) { return "sidebar page" }
+            if v === SessionsWeb.banner.webView || v.isDescendant(of: SessionsWeb.banner.webView) { return "panel page" }
+            if v is DocWebView || v.enclosingDocWebView != nil { return "doc page" }
+        }
+        if r is NSWindow { return "the window" }
+        return String(describing: type(of: r))
+    }
+
     static func keyboardOwner(_ w: NSWindow?) -> String {
         guard let r = w?.firstResponder else { return "nothing" }
         if let editor = r as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSTextField {

@@ -1460,7 +1460,9 @@ final class Switchboard {
         let full = SBPaths.expand(cwd)
         var isDir: ObjCBool = false
         var found: String? = nil
-        if FileManager.default.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
+        // Not app folders (the Claude app's scratch folders), hidden ones or temporary ones.
+        let odd = full.hasPrefix(SBPaths.home + "/Library/") || full.contains("/.") || full.hasPrefix("/tmp") || full.hasPrefix("/private/")
+        if !odd, FileManager.default.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
             found = SBPaths.tilde(full)
             var dir = full
             while dir.count > 1 && dir != SBPaths.home {

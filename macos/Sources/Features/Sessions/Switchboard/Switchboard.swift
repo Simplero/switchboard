@@ -923,6 +923,7 @@ final class Switchboard {
             "v": 1, "at": Int(now), "hub": NSNull(),
             "classes": reg.classes, "labels": reg.labels,
             "spares": SBSpares.shared.info(),
+            "folders": usualFolders(8),
             "machines": SBMachines.all.map { m -> [String: Any] in
                 let st = SBMachines.status[m.name]
                 return ["n": m.name, "ok": st.map { $0.ok as Any } ?? NSNull(), "msg": st?.message ?? ""]
@@ -1221,6 +1222,7 @@ final class Switchboard {
             x.park_branch = nil
             x.surface_id = sf      // the scan ties the agent in this terminal to this session
         }
+        if focus { SessionsAPI.focusTerminal(sf) }
         // Parked after it saved its work: its work tree was freed, so tell it where the work is.
         if let b = e.park_branch, e.agent == "claude" {
             typeWhenReady(sf, "You were parked. Your work is on the branch \(b) (a draft PR). Get it back with simplero-slot --branch \(b), work in that slot from now on, and continue where you left off.", since: now, seenAt: nil, quiet: true)
@@ -1438,14 +1440,48 @@ final class Switchboard {
     /// most recent first.
     func usualFolders(_ limit: Int = 12) -> [String] {
         var out = [Self.defaultFolder]
-        let recent = reg.sessions.values.filter { $0.agent == "claude" }.sorted { ($0.last_activity ?? 0) > ($1.last_activity ?? 0) }
+        let recent = reg.sessions.values.filter { $0.agent == "claude" && $0.machine == nil }
+            .sorted { ($0.last_activity ?? 0) > ($1.last_activity ?? 0) }
         for e in recent {
-            guard let cwd = e.cwd, !cwd.isEmpty else { continue }
-            let t = SBPaths.tilde(cwd)
-            if !out.contains(t) { out.append(t) }
+            guard let cwd = e.cwd, !cwd.isEmpty, let f = Self.startFolder(cwd) else { continue }
+            if !out.contains(f) { out.append(f) }
             if out.count >= limit { break }
         }
         return out
+    }
+
+    private static var startFolders: [String: String?] = [:]
+
+    /// Where a session in this folder would start: the repository itself, not one of its work
+    /// trees (~/Simplero-9 is a work tree of ~/Simplero; the session finds its own work tree).
+    /// A folder that is not in a repository stays as it is. Nil when it is not on this Mac.
+    static func startFolder(_ cwd: String) -> String? {
+        if let hit = startFolders[cwd] { return hit }
+        let full = SBPaths.expand(cwd)
+        var isDir: ObjCBool = false
+        var found: String? = nil
+        if FileManager.default.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
+            found = SBPaths.tilde(full)
+            var dir = full
+            while dir.count > 1 && dir != SBPaths.home {
+                let git = dir + "/.git"
+                if FileManager.default.fileExists(atPath: git, isDirectory: &isDir) {
+                    if isDir.boolValue {
+                        found = SBPaths.tilde(dir)
+                    } else if let text = try? String(contentsOfFile: git, encoding: .utf8),
+                              let line = text.split(separator: "\n").first(where: { $0.hasPrefix("gitdir:") }) {
+                        // gitdir: /Users/me/Simplero/.git/worktrees/Simplero-9
+                        let gitdir = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+                        if let r = gitdir.range(of: "/.git/worktrees/") { found = SBPaths.tilde(String(gitdir[..<r.lowerBound])) }
+                        else { found = SBPaths.tilde(dir) }
+                    }
+                    break
+                }
+                dir = (dir as NSString).deletingLastPathComponent
+            }
+        }
+        startFolders[cwd] = found
+        return found
     }
 
     /// A path with its symlinks resolved, the way Claude Code sees its folder.

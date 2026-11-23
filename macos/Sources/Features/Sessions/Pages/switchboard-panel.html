@@ -104,6 +104,8 @@ svg{flex-shrink:0}
 .use .meter.hi i{background:var(--needs)}
 .use b{color:var(--ink);font-weight:700}
 .use .spark{color:var(--accent)}
+.use .rs{color:var(--done)}
+.use .rs b{color:var(--done)}
 </style>
 </head>
 <body>
@@ -116,6 +118,7 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const bridge = (type, d={}) => { try { window.webkit.messageHandlers.sessions.postMessage({type, page:'banner', ...d}); } catch {} };
 const ICON = {
+  reset:'<path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/>',
   laptop:'<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>',
   branch:'<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9c0 5-12 3-12 8"/>',
   play:'<path d="M7 5v14l11-7z"/>',
@@ -170,7 +173,10 @@ function usageHTML(s){
     const lbl = `Weekly usage over the last ${span >= 86400 * 1.5 ? Math.round(span / 86400) + ' days' : Math.round(span / 3600) + ' hours'}`;
     spark = `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-label="${lbl}"><title>${lbl}</title><rect x="0" y="0" width="${W}" height="${H}" rx="3" fill="var(--sunk)"/><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
   }
-  return `<span class="use">${meter(u.h5, '5h', 'Usage in the current 5-hour window')}${meter(u.wk, 'Week', 'Usage this week')}${spark}</span>`;
+  // The limit resets this login has left (Claude's "reset my limit" grants).
+  const rs = u.rs || [];
+  const resets = rs.length ? `<span class="g rs" title="${esc('Limit resets left:\n' + rs.map(r => '· ' + r[0] + (r[1] ? ' (until ' + new Date(r[1]).toLocaleDateString(undefined, {month: 'short', day: 'numeric'}) + ')' : '') + (r[2] ? '' : ', not usable now')).join('\n'))}">${ic('reset', 11, 2.4)} <b>${rs.length}</b> ${rs.length === 1 ? 'reset' : 'resets'} left</span>` : '';
+  return `<span class="use">${meter(u.h5, '5h', 'Usage in the current 5-hour window')}${meter(u.wk, 'Week', 'Usage this week')}${spark}${resets}</span>`;
 }
 
 // Links: [kind, url, title, login]. Dev pages open in Chrome; Docs next to the session (a pane

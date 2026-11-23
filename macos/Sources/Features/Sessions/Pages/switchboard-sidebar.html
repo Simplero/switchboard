@@ -41,17 +41,18 @@ button{font:inherit;color:inherit;cursor:default}
 /* Your Claude subscriptions, next to New session: how much of the week is left, and how the
    week has gone. A click shows only that login's sessions. Room on the right for the sidebar button. */
 #newbtns{padding-right:30px;row-gap:6px;gap:8px}
-#subs{display:flex;gap:6px;flex:1 1 290px;min-width:0}
-.subbtn{flex:1 1 0;min-width:0;max-width:150px;border:0;background:var(--sunk);border-radius:8px;padding:4px 8px;display:flex;flex-direction:column;gap:2px;text-align:left}
+#subs{display:flex;gap:6px;flex:1 1 280px;min-width:0;justify-content:flex-end}
+.subbtn{flex:0 1 auto;min-width:0;border:0;background:var(--sunk);border-radius:8px;padding:4px 8px;display:flex;flex-direction:column;gap:2px;text-align:left}
 .subbtn:hover{background:var(--line2)}
 .subbtn[aria-pressed=true]{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent)}
 .subbtn .ln{display:flex;align-items:center;gap:5px;min-width:0;white-space:nowrap}
 .subbtn .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:3px;font-size:10.5px;font-weight:600;color:var(--muted)}
 .subbtn[aria-pressed=true] .nm{color:var(--ink)}
 .subbtn .rs{display:inline-flex;align-items:center;gap:2px;font-size:10px;color:var(--muted2);font-variant-numeric:tabular-nums}
-.subbtn svg.wk{flex:1;min-width:14px;height:15px;color:var(--accent)}
+.subbtn svg.wk{flex:1 1 34px;min-width:0;height:15px;color:var(--accent)}
 .subbtn .pct{flex:none;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}
-.subbtn.low svg.wk,.subbtn.low .pct{color:var(--needs)}
+.subbtn.hi svg.wk,.subbtn.hi .pct{color:var(--needs)}
+.subbtn .rs.gr{color:var(--done);font-weight:600}
 
 /* new-session form: drops down under the + buttons, over the list (nothing below moves) */
 #scrim{position:absolute;left:0;right:0;bottom:0;z-index:20;background:rgba(20,20,26,.08)}
@@ -299,6 +300,7 @@ const store = {
 };
 
 const ICON = {
+  reset:'<path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/>',
   clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   server:'<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
@@ -868,6 +870,13 @@ function idHitHTML(){
 
 // Folders to offer for new sessions: where your sessions run most, plus the current one.
 function folderChoices(machine){
+  // This Mac: the folders sessions start in (the repository, not its work trees, which
+  // the session finds by itself), as the app works them out.
+  if (!machine && data && data.folders){
+    const list = data.folders.slice();
+    if (!list.includes(newCwd)) list.push(newCwd);
+    return list;
+  }
   const n = new Map();
   for (const s of (data && data.s) || []) if (s.cwd && !s.rm && (s.m || null) === (machine || null)) n.set(s.cwd, (n.get(s.cwd) || 0) + 1);
   const list = [...n.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0]).slice(0, 8);
@@ -945,32 +954,35 @@ document.addEventListener('mousemove', e => {
 // Switchboard back only bring it back, not open the row now under the pointer.)
 let awaySig = null;
 const rowSig = () => [...document.querySelectorAll('#cols .item[data-k]')].map(r => r.dataset.k + '@' + Math.round(r.getBoundingClientRect().top)).join(',');
-// One subscription: the share of the week that is left, and a graph of the week so far. The
-// graph runs from the start of the week to its reset; the dashed line is an even pace (what is
-// left if the week is used evenly). Above it, room will be left at the reset; below, it runs out early.
+// One subscription, as the panel above a session shows it: how much of this week is used,
+// a graph of the weekly use over the last 7 days, when the week resets, and the limit
+// resets the account has left (↻ 2: two resets you can use).
 function subHTML(d){
   const name = loginName(d), u = (data.use || {})[d] || {}, wk = u.wk, on = loginFilter === d;
-  const left = wk && wk.p != null ? Math.max(0, 100 - wk.p) : null;
+  const used = wk && wk.p != null ? wk.p : null;
   const reset = wk && wk.r ? Date.parse(wk.r) / 1000 : null, now = Date.now() / 1000;
-  const inT = t => { const x = t - now; return x <= 0 ? 'now' : x < 3600 ? Math.round(x/60) + ' min' : x < 86400 ? Math.round(x/3600) + ' h' : Math.round(x/86400) + ' d'; };
+  const inT = t => { const x = t - now; return x <= 0 ? 'now' : x < 3600 ? Math.round(x/60) + 'm' : x < 86400 ? Math.round(x/3600) + 'h' : Math.round(x/86400) + 'd'; };
   const W = 60, H = 15;
   let graph = `<svg class="wk" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><rect width="${W}" height="${H}" rx="2" fill="var(--bg)"/>`;
-  if (reset){
-    const t0 = reset - 7 * 86400, X = t => ((t - t0) / (7 * 86400) * W).toFixed(1), Y = l => (H - 1 - l / 100 * (H - 2)).toFixed(1);
-    graph += `<line x1="0" y1="${Y(100)}" x2="${W}" y2="${Y(0)}" stroke="var(--faint)" stroke-width="1" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>`;
-    const pts = (u.hist || []).filter(x => x[1] != null && x[0] >= t0 && x[0] <= now).map(x => [x[0], 100 - x[1]]);
-    if (left != null) pts.push([now, left]);
-    if (pts.length > 1) graph += `<polyline points="${pts.map(p => X(p[0]) + ',' + Y(p[1])).join(' ')}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+  const h = (u.hist || []).filter(x => x[1] != null);
+  if (h.length > 1){
+    const t0 = Math.max(now - 7 * 86400, h[0][0]), span = Math.max(1, now - t0);
+    const pts = h.filter(x => x[0] >= t0).map(x => [x[0], x[1]]);
+    if (used != null) pts.push([now, used]);
+    graph += `<polyline points="${pts.map(p => ((p[0] - t0) / span * W).toFixed(1) + ',' + (H - 1 - p[1] / 100 * (H - 2)).toFixed(1)).join(' ')}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
   }
   graph += '</svg>';
-  const pct = left == null ? '–' : left + '% left';
-  const tip = (left == null ? `${name}: usage not known yet.` : `${name}: ${left}% of this week left${reset ? ', resets in ' + inT(reset) : ''}.`)
+  const rs = u.rs || [], usable = rs.filter(r => r[2]).length;
+  const tip = (used == null ? `${name}: usage not known yet.` : `${name}: ${used}% of this week used${reset ? ', resets in ' + inT(reset) : ''}.`)
     + (u.h5 && u.h5.p != null ? ` ${u.h5.p}% of the 5-hour window used.` : '')
-    + `\nThe line is the week so far; the dashed line is an even pace.\n`
-    + (on ? 'Click to show the sessions of every login.' : `Click to show only the ${name} sessions.`);
-  return `<button class="subbtn${left != null && left <= 10 ? ' low' : ''}" data-sub="${d}" aria-pressed="${on}" title="${esc(tip)}">`
-    + `<span class="ln"><span class="nm">${on ? ic('check', 9, 3) : ''}${esc(name)}</span>${reset ? `<span class="rs">${ic('clock', 9, 2.4)}${inT(reset).replace(' ', '')}</span>` : ''}</span>`
-    + `<span class="ln">${graph}<span class="pct">${pct}</span></span></button>`;
+    + `\nThe graph is the weekly use over the last 7 days.`
+    + (rs.length ? `\nLimit resets left: ${rs.length}${usable < rs.length ? ` (${usable} usable now)` : ''}:\n` + rs.map(r => `· ${r[0]}${r[1] ? ' (until ' + new Date(r[1]).toLocaleDateString(undefined, {month: 'short', day: 'numeric'}) + ')' : ''}`).join('\n') : '')
+    + `\n` + (on ? 'Click to show the sessions of every login.' : `Click to show only the ${name} sessions.`);
+  return `<button class="subbtn${used != null && used >= 90 ? ' hi' : ''}" data-sub="${d}" aria-pressed="${on}" title="${esc(tip)}">`
+    + `<span class="ln"><span class="nm">${on ? ic('check', 9, 3) : ''}${esc(name)}</span>`
+    + (rs.length ? `<span class="rs gr" aria-label="${rs.length} limit resets left">${ic('reset', 9, 2.4)}${rs.length}</span>` : '')
+    + `</span><span class="ln">${graph}<span class="pct">${used == null ? '–' : used + '%'}</span>`
+    + (reset ? `<span class="rs">${ic('clock', 9, 2.4)}${inT(reset)}</span>` : '') + `</span></button>`;
 }
 
 function render(){

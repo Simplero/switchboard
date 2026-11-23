@@ -513,6 +513,18 @@ final class SessionsAPI {
         case ("POST", "/sb/keytrace"):
             // For checks: who has the keyboard in the front tab, every 50 ms for {"ms": 2000}.
             SessionsAPI.keyTrace = []
+            // {"give": "panel" | "sidebar"}: that page has the keyboard first, as after a click in it.
+            if let give = req.json["give"] as? String {
+                let web = give == "panel" ? SessionsWeb.banner.webView : SessionsWeb.shared.webView
+                web.window?.makeFirstResponder(web)
+            }
+            // {"then": "newtab"}: a new tab in the front session, as + in the panel does.
+            if req.json["then"] as? String == "newtab", let appDelegate = NSApp.delegate as? AppDelegate,
+               let w = SessionsAPI.mainWindow() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    _ = TerminalController.newTab(appDelegate.ghostty, from: w.tabGroup?.selectedWindow ?? w)
+                }
+            }
             let start = Date()
             let ms = req.json["ms"] as? Double ?? 2000
             Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { t in
@@ -864,25 +876,49 @@ final class SessionsAPI {
         return true
     }
 
-    /// Put the keyboard in this terminal. Again a moment later if the sidebar page took it
-    /// (the page moves into the window that just came to the front, after a click in it).
+    /// Put the keyboard in this terminal: its own tab in front (not the tab of its session
+    /// you used last), and it keeps the keyboard while the tab settles (see keepKeyboard).
     static func focusTerminal(_ id: String) {
-        guard let view = surface(id: id) else { return }
-        focus(view)
+        guard let view = surface(id: id), let controller = BaseTerminalController.controller(owning: view) else { return }
+        if let window = controller.window {
+            window.tabGroup?.selectedWindow = window
+            window.makeKeyAndOrderFront(nil)
+        }
+        controller.focusSurface(view)
         view.window?.makeFirstResponder(view)
-        for delay in [0.15, 0.5] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                MainActor.assumeIsolated {
-                    guard let v = surface(id: id), let w = v.window, w.firstResponder !== v,
-                          (w.tabGroup?.selectedWindow ?? w) === w, !SessionsWebView.newFormOpen else { return }
-                    // Only from the sidebar page (or nothing): never from a field you clicked meanwhile.
-                    let r = w.firstResponder
-                    let page = SessionsWeb.shared.webView
-                    guard r == nil || r === w || (r as? NSView).map({ $0 === page || $0.isDescendant(of: page) }) == true else { return }
-                    w.makeFirstResponder(v)
-                }
+        keepKeyboard(id)
+    }
+
+    private static var lastClick = Date.distantPast
+    private static var clickMonitor: Any?
+
+    /// For a moment after Switchboard opens or selects a terminal, the keyboard stays in it.
+    /// The sidebar and panel pages move into the window in front, and the page you clicked
+    /// (+ in the panel, a row, a menu) can take the keyboard back while the new tab settles;
+    /// a window that was key already does not hand it on by itself. Only from those pages, or
+    /// from nothing: a click of yours after it opened, another tab, or the new-session form
+    /// ends it.
+    static func keepKeyboard(_ id: String, for seconds: Double = 1.2) {
+        if clickMonitor == nil {
+            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+                lastClick = Date()
+                return event
             }
         }
+        let start = Date()
+        func check() {
+            guard Date().timeIntervalSince(start) < seconds, lastClick < start,
+                  let v = surface(id: id), let w = v.window, (w.tabGroup?.selectedWindow ?? w) === w else { return }
+            if w.firstResponder !== v, !SessionsWebView.newFormOpen {
+                let r = w.firstResponder
+                let pages: [NSView] = [SessionsWeb.shared.webView, SessionsWeb.banner.webView]
+                let ours = r == nil || r === w || pages.contains { p in (r as? NSView).map { $0 === p || $0.isDescendant(of: p) } == true }
+                guard ours else { return }     // a field or a terminal you chose: leave it there
+                w.makeFirstResponder(v)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { MainActor.assumeIsolated { check() } }
+        }
+        check()
     }
 
     /// A spare (SBSpares, Claude already at its prompt) becomes a new session: the last

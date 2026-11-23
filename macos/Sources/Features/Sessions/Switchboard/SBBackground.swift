@@ -449,10 +449,12 @@ enum SBBackground {
         guard let r = run("/usr/bin/security", ["find-generic-password", "-s", keychainService(loginDir), "-w"], timeout: 5),
               let j = try? JSONSerialization.jsonObject(with: Data(SBScreen.strip(r.out).utf8)) as? [String: Any],
               let token = (j["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String else { return nil }
-        var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
+        // cedar_ember: the limit resets the account has left. Only Claude Code's own client
+        // name gets them (another name gets "ineligible: surface").
+        var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage?cedar_ember=1")!)
         req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        req.setValue("claude-code/2.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("claude-cli/2.1.280 (external, cli)", forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 8
         let sem = DispatchSemaphore(value: 0)
         var body: Data?
@@ -466,7 +468,19 @@ enum SBBackground {
             guard let x = x as? [String: Any], let u = x["utilization"] as? Double else { return NSNull() }
             return ["p": Int(u.rounded()), "r": x["resets_at"] ?? NSNull()]
         }
-        return ["h5": part(d["five_hour"]), "wk": part(d["seven_day"])]
+        // Resets left: [label, ends at, usable now], one per reset.
+        var resets: [[Any]] = []
+        if let g = d["cedar_ember"] as? [String: Any], g["eligible"] as? Bool == true {
+            let now = ISO8601DateFormatter()
+            for x in g["grants"] as? [[String: Any]] ?? [] {
+                let left = x["resets_left"] as? Int ?? 0
+                let ends = x["ends_at"] as? String
+                if left < 1 { continue }
+                if let ends, let t = now.date(from: ends.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)), t < Date() { continue }
+                for _ in 0..<left { resets.append([x["label"] as? String ?? "A limit reset", ends ?? NSNull(), x["usable_now"] as? Bool ?? false]) }
+            }
+        }
+        return ["h5": part(d["five_hour"]), "wk": part(d["seven_day"]), "rs": resets]
     }
 
     // MARK: Artifact links

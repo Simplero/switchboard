@@ -544,6 +544,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             Self.backgroundOpening += 1
         }
         controller.showWindowSafely(self)
+        // Switchboard: the new tab keeps the keyboard (the sidebar or panel page you clicked
+        // moves into it and can take it back).
+        if select, let view = controller.surfaceTree.root?.leaves().first { SessionsAPI.keepKeyboard(view.id.uuidString) }
         if (window.tabGroup?.windows.count ?? 1) > 1, window.frame != shownFrame {
             window.setFrame(shownFrame, display: true)
         }

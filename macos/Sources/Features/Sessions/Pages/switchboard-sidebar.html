@@ -954,9 +954,23 @@ document.addEventListener('mousemove', e => {
 // Switchboard back only bring it back, not open the row now under the pointer.)
 let awaySig = null;
 const rowSig = () => [...document.querySelectorAll('#cols .item[data-k]')].map(r => r.dataset.k + '@' + Math.round(r.getBoundingClientRect().top)).join(',');
+// Limit resets left, tidy: "Full week resets: 1, the next ends Dec 10" and the same per
+// model ("Fable resets: 3, …"). rs: [label, ends at, usable now, kind] per reset.
+function resetLines(rs){
+  const day = t => new Date(t).toLocaleDateString(undefined, {month: 'short', day: 'numeric'});
+  const groups = [['week', 'Full week resets']];
+  for (const r of rs) if (r[3] && r[3] !== 'week' && !groups.some(g => g[0] === r[3])) groups.push([r[3], r[3] === 'other' ? 'Other resets' : r[3] + ' resets']);
+  return groups.map(([k, name]) => {
+    const g = rs.filter(r => (r[3] || 'week') === k);
+    if (!g.length) return k === 'week' && rs.length ? `${name}: none` : '';
+    const next = g.map(r => r[1]).filter(Boolean).sort()[0];
+    return `${name}: ${g.length}${next ? ', the next ends ' + day(next) : ''}`;
+  }).filter(Boolean);
+}
+
 // One subscription, as the panel above a session shows it: how much of this week is used,
-// a graph of the weekly use over the last 7 days, when the week resets, and the limit
-// resets the account has left (↻ 2: two resets you can use).
+// a graph of the weekly use over the last 7 days, when the week resets, and the full week
+// resets the account has left (↻ 1: one).
 function subHTML(d){
   const name = loginName(d), u = (data.use || {})[d] || {}, wk = u.wk, on = loginFilter === d;
   const used = wk && wk.p != null ? wk.p : null;
@@ -972,15 +986,14 @@ function subHTML(d){
     graph += `<polyline points="${pts.map(p => ((p[0] - t0) / span * W).toFixed(1) + ',' + (H - 1 - p[1] / 100 * (H - 2)).toFixed(1)).join(' ')}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
   }
   graph += '</svg>';
-  const rs = u.rs || [], usable = rs.filter(r => r[2]).length;
-  const tip = (used == null ? `${name}: usage not known yet.` : `${name}: ${used}% of this week used${reset ? ', resets in ' + inT(reset) : ''}.`)
-    + (u.h5 && u.h5.p != null ? ` ${u.h5.p}% of the 5-hour window used.` : '')
-    + `\nThe graph is the weekly use over the last 7 days.`
-    + (rs.length ? `\nLimit resets left: ${rs.length}${usable < rs.length ? ` (${usable} usable now)` : ''}:\n` + rs.map(r => `· ${r[0]}${r[1] ? ' (until ' + new Date(r[1]).toLocaleDateString(undefined, {month: 'short', day: 'numeric'}) + ')' : ''}`).join('\n') : '')
-    + `\n` + (on ? 'Click to show the sessions of every login.' : `Click to show only the ${name} sessions.`);
+  const rs = u.rs || [], full = rs.filter(r => (r[3] || 'week') === 'week').length;
+  const tip = [used == null ? `${name}: usage not known yet.` : `${name}: ${used}% of this week used${reset ? ', resets in ' + inT(reset) : ''}.`,
+    ...(u.h5 && u.h5.p != null ? [`${u.h5.p}% of the 5-hour window used.`] : []),
+    ...resetLines(rs),
+    on ? 'Click to show the sessions of every login.' : `Click to show only the ${name} sessions.`].join('\n');
   return `<button class="subbtn${used != null && used >= 90 ? ' hi' : ''}" data-sub="${d}" aria-pressed="${on}" title="${esc(tip)}">`
     + `<span class="ln"><span class="nm">${on ? ic('check', 9, 3) : ''}${esc(name)}</span>`
-    + (rs.length ? `<span class="rs gr" aria-label="${rs.length} limit resets left">${ic('reset', 9, 2.4)}${rs.length}</span>` : '')
+    + (full ? `<span class="rs gr" aria-label="${full} full week ${full === 1 ? 'reset' : 'resets'} left">${ic('reset', 9, 2.4)}${full}</span>` : '')
     + `</span><span class="ln">${graph}<span class="pct">${used == null ? '–' : used + '%'}</span>`
     + (reset ? `<span class="rs">${ic('clock', 9, 2.4)}${inT(reset)}</span>` : '') + `</span></button>`;
 }

@@ -468,18 +468,21 @@ enum SBBackground {
             guard let x = x as? [String: Any], let u = x["utilization"] as? Double else { return NSNull() }
             return ["p": Int(u.rounded()), "r": x["resets_at"] ?? NSNull()]
         }
-        // Resets left: [label, ends at, usable now], one per reset.
+        // Resets left: [label, ends at, usable now, kind], one per reset.
         var resets: [[Any]] = []
         if let g = d["cedar_ember"] as? [String: Any], g["eligible"] as? Bool == true {
             let now = ISO8601DateFormatter()
             for x in g["grants"] as? [[String: Any]] ?? [] {
-                // Only resets of the whole week (not the model launch ones, which clear less).
-                guard (x["clears"] as? [String] ?? []).contains("seven_day") else { continue }
+                // "week": a reset of the whole week. Else the model it is for (a model launch's
+                // reset, which clears less), or "other".
+                let label = x["label"] as? String ?? ""
+                let kind = (x["clears"] as? [String] ?? []).contains("seven_day") ? "week"
+                    : ["Fable", "Opus", "Sonnet", "Haiku"].first { label.contains($0) } ?? "other"
                 let left = x["resets_left"] as? Int ?? 0
                 let ends = x["ends_at"] as? String
                 if left < 1 { continue }
                 if let ends, let t = now.date(from: ends.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)), t < Date() { continue }
-                for _ in 0..<left { resets.append([x["label"] as? String ?? "A limit reset", ends ?? NSNull(), x["usable_now"] as? Bool ?? false]) }
+                for _ in 0..<left { resets.append([label, ends ?? NSNull(), x["usable_now"] as? Bool ?? false, kind]) }
             }
         }
         return ["h5": part(d["five_hour"]), "wk": part(d["seven_day"]), "rs": resets]

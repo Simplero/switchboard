@@ -159,6 +159,19 @@ window.Banner = { setContext(c){ ctx = c || ctx; render(); }, setData(d){ data =
 
 const until = iso => { if (!iso) return ''; const d = (Date.parse(iso) - Date.now())/1000; if (d <= 0) return 'now';
   return d < 3600 ? Math.round(d/60) + 'm' : d < 86400 ? Math.round(d/3600) + 'h' : Math.round(d/86400) + 'd'; };
+// Limit resets left, tidy: "Full week resets: 1, the next ends Dec 10" and the same per
+// model ("Fable resets: 3, …"). rs: [label, ends at, usable now, kind] per reset.
+function resetLines(rs){
+  const day = t => new Date(t).toLocaleDateString(undefined, {month: 'short', day: 'numeric'});
+  const groups = [['week', 'Full week resets']];
+  for (const r of rs) if (r[3] && r[3] !== 'week' && !groups.some(g => g[0] === r[3])) groups.push([r[3], r[3] === 'other' ? 'Other resets' : r[3] + ' resets']);
+  return groups.map(([k, name]) => {
+    const g = rs.filter(r => (r[3] || 'week') === k);
+    if (!g.length) return k === 'week' && rs.length ? `${name}: none` : '';
+    const next = g.map(r => r[1]).filter(Boolean).sort()[0];
+    return `${name}: ${g.length}${next ? ', the next ends ' + day(next) : ''}`;
+  }).filter(Boolean);
+}
 // Plan usage of this session's login: the 5-hour window, the week, and (once it has
 // half a day of points) a graph of the weekly % over the last 7 days.
 function usageHTML(s){
@@ -173,9 +186,9 @@ function usageHTML(s){
     const lbl = `Weekly usage over the last ${span >= 86400 * 1.5 ? Math.round(span / 86400) + ' days' : Math.round(span / 3600) + ' hours'}`;
     spark = `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-label="${lbl}"><title>${lbl}</title><rect x="0" y="0" width="${W}" height="${H}" rx="3" fill="var(--sunk)"/><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
   }
-  // The limit resets this login has left (Claude's "reset my limit" grants).
-  const rs = u.rs || [];
-  const resets = rs.length ? `<span class="g rs" title="${esc('Limit resets left:\n' + rs.map(r => '· ' + r[0] + (r[1] ? ' (until ' + new Date(r[1]).toLocaleDateString(undefined, {month: 'short', day: 'numeric'}) + ')' : '') + (r[2] ? '' : ', not usable now')).join('\n'))}">${ic('reset', 11, 2.4)} <b>${rs.length}</b> ${rs.length === 1 ? 'reset' : 'resets'} left</span>` : '';
+  // The full week resets this login has left; the model launch resets in the hover too.
+  const rs = u.rs || [], full = rs.filter(r => (r[3] || 'week') === 'week').length;
+  const resets = full ? `<span class="g rs" title="${esc(resetLines(rs).join('\n'))}">${ic('reset', 11, 2.4)} <b>${full}</b> full ${full === 1 ? 'reset' : 'resets'} left</span>` : '';
   return `<span class="use">${meter(u.h5, '5h', 'Usage in the current 5-hour window')}${meter(u.wk, 'Week', 'Usage this week')}${spark}${resets}</span>`;
 }
 

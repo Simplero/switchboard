@@ -313,7 +313,7 @@ final class SessionsAPI {
             let png = rep?.representation(using: .png, properties: [:])
             let frame = b.frame
             b.finish()
-            return (200, ["png": png?.base64EncodedString() ?? NSNull(), "frame": [frame.minX, frame.minY, frame.width, frame.height], "view": [view.bounds.width, view.bounds.height]])
+            return (200, ["png": (png?.base64EncodedString() as Any?) ?? NSNull(), "frame": [frame.minX, frame.minY, frame.width, frame.height], "view": [view.bounds.width, view.bounds.height]])
         case ("GET", "/sb/termshot"):
             // For checks: what a terminal drew (?id=, or ?spare=<login dir>), read from its
             // layer, without a screen capture.

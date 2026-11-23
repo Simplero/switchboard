@@ -1419,7 +1419,9 @@ final class Switchboard {
 
     /// For ⌘V and ⌃V: hand the clipboard's files or picture over to a session on another machine.
     /// Plain text (also a path you copied as text) pastes as usual.
-    func handOverClipboard(surface sf: String) -> Bool {
+    /// `picture`: ⌃V, Claude's picture paste: a picture goes over even when the clipboard
+    /// also has text (⌘V pastes the text then).
+    func handOverClipboard(surface sf: String, picture: Bool = false) -> Bool {
         guard remoteSession(surface: sf) != nil else { return false }
         let pb = NSPasteboard.general
         let files = (pb.pasteboardItems ?? []).compactMap { item -> URL? in
@@ -1428,7 +1430,7 @@ final class Switchboard {
             return url
         }
         if !files.isEmpty { return handOver(surface: sf, files: files) }
-        guard pb.string(forType: .string) == nil, let img = NSImage(pasteboard: pb),
+        guard picture || pb.string(forType: .string) == nil, let img = NSImage(pasteboard: pb),
               let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else { return false }
         return handOver(surface: sf, files: [], image: png)

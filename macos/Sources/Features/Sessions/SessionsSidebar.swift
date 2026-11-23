@@ -182,9 +182,10 @@ final class SessionsStore: ObservableObject {
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
             // ⌘V or ⌃V (Claude's picture paste) in a session on another machine: the clipboard's
             // files or picture go there first, and their paths there are pasted.
-            if (mods == .command || mods == .control), event.keyCode == 9, !event.isARepeat,
+            // V by the character the layout types (key code 9 is V only on QWERTY; on Dvorak it is K).
+            if (mods == .command || mods == .control), event.charactersIgnoringModifiers?.lowercased() == "v", !event.isARepeat,
                let view = (event.window ?? NSApp.keyWindow)?.firstResponder as? Ghostty.SurfaceView,
-               Switchboard.shared.handOverClipboard(surface: view.id.uuidString) {
+               Switchboard.shared.handOverClipboard(surface: view.id.uuidString, picture: mods == .control) {
                 return nil
             }
             // ⌃1…⌃9: the pins. The same key again goes back to the session you were in.

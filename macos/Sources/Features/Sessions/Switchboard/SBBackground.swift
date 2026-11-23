@@ -473,6 +473,8 @@ enum SBBackground {
         if let g = d["cedar_ember"] as? [String: Any], g["eligible"] as? Bool == true {
             let now = ISO8601DateFormatter()
             for x in g["grants"] as? [[String: Any]] ?? [] {
+                // Only resets of the whole week (not the model launch ones, which clear less).
+                guard (x["clears"] as? [String] ?? []).contains("seven_day") else { continue }
                 let left = x["resets_left"] as? Int ?? 0
                 let ends = x["ends_at"] as? String
                 if left < 1 { continue }

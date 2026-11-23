@@ -300,6 +300,20 @@ final class SessionsAPI {
             // For checks: what "Restart to update" does, without the question.
             Task { @MainActor in SessionsVersion.shared.restart(confirm: false) }
             return (200, ["ok": true])
+        case ("POST", "/sb/badgecheck"):
+            // For checks: the box that shows files going to another machine, on a terminal
+            // (?id=), at `sent` of `total` bytes (no `sent`: still connecting). Returns its picture.
+            guard let view = surface(req.json["id"] as? String) else { return (404, ["error": "no such terminal"]) }
+            let total = Int64(req.json["total"] as? Int ?? 0)
+            guard let b = SBTransferBadge.show(on: view, what: req.json["what"] as? String ?? "clip.mov", machine: "om01", total: total) else { return (500, ["error": "no box"]) }
+            if let sent = req.json["sent"] as? Int { b.update(sent: Int64(sent)) }
+            view.layoutSubtreeIfNeeded()
+            let rep = b.bitmapImageRepForCachingDisplay(in: b.bounds)
+            if let rep { b.cacheDisplay(in: b.bounds, to: rep) }
+            let png = rep?.representation(using: .png, properties: [:])
+            let frame = b.frame
+            b.finish()
+            return (200, ["png": png?.base64EncodedString() ?? NSNull(), "frame": [frame.minX, frame.minY, frame.width, frame.height], "view": [view.bounds.width, view.bounds.height]])
         case ("GET", "/sb/termshot"):
             // For checks: what a terminal drew (?id=, or ?spare=<login dir>), read from its
             // layer, without a screen capture.

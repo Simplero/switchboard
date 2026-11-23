@@ -606,7 +606,9 @@ function openSession(s, via){
 // ---------- "Needs you" holds rows ----------
 // A session that stops needing you (you answered it) keeps its place for 30 s, and for as
 // long as it is the session in front: the list does not jump under you, and ⌘↑ gets you
-// back to it to add more. It shows its real state meanwhile.
+// back to it to add more. It shows its real state meanwhile. If it needs you again while it
+// is in front, it also keeps its place: it goes to the end of the list only when you leave it,
+// so ⌘↓ from it still goes to the session that was after it.
 const HOLD = 30;
 const needsMemo = {};   // key → {last: when it last needed you (or was in front), since: needs-you time}
 let holdTimer;
@@ -617,8 +619,9 @@ function noteNeeds(){
   for (const s of data.s){
     if (!s.o) continue;
     open.add(s.k);
-    if (needsYou(s)) needsMemo[s.k] = {last: t, since: s.nsn || s.la || t};
-    else if (needsMemo[s.k] && s.sf && s.sf === focusSf) needsMemo[s.k].last = t;
+    const front = s.sf && s.sf === focusSf;
+    if (needsYou(s)) needsMemo[s.k] = {last: t, since: front && needsMemo[s.k] ? needsMemo[s.k].since : s.nsn || s.la || t};
+    else if (needsMemo[s.k] && front) needsMemo[s.k].last = t;
   }
   let next = Infinity;
   for (const k of Object.keys(needsMemo)){
@@ -706,7 +709,8 @@ function rowsFor(ci){
     const inList = new Set(shown.map(s => s.k));
     const byKey = new Map(open.map(s => [s.k, s]));
     const rec = (recent || []).map(k => byKey.get(k)).filter(s => s && !inList.has(s.k)).slice(0, 6);
-    if (rec.length){ out.push({h:'Recently visited', n:rec.length}); if (!folded['Recently visited']) rec.forEach(s => out.push({s})); }
+    // Not part of the ⌘↑ ⌘↓ loop: that goes round the list above only.
+    if (rec.length){ out.push({h:'Recently visited', n:rec.length}); if (!folded['Recently visited']) rec.forEach(s => out.push({s, aside: true})); }
   }
   // Running in another terminal (cmux): listed so you can find them and move them here.
   // Ordered by when Switchboard first saw them there, so rows do not move under the mouse.
@@ -1035,7 +1039,7 @@ function renderNow(){
   const nav = [];
   for (let ci = 0; ci < cols; ci++){
     const rows = rowsFor(ci);
-    if (ci === navColOf()) rows.forEach(r => r.s && r.s.o && nav.push(r.s.k));
+    if (ci === navColOf()) rows.forEach(r => r.s && r.s.o && !r.aside && nav.push(r.s.k));
     html += `<div class="col${colState[ci].sort === 'manual' ? ' manual' : ''}" data-col="${ci}">${colControls(ci)}<div class="list">` + rows.map(r =>
       r.h ? `<div class="group${folded[r.h] ? ' folded' : ''}" data-fold="${esc(r.h)}"><span class="chev">${ic('chev',10,2.6)}</span>${esc(r.h)} <span class="n">${r.n}</span></div>`
       : r.empty ? `<div class="empty">${esc(r.empty)}</div>` : r.card ? parkedHTML(r.s) : itemHTML(r.s, ci)).join('') + `</div></div>`;

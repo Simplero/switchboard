@@ -38,6 +38,19 @@ button{font:inherit;color:inherit;cursor:default}
 .newbtn[aria-pressed=true]{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent)}
 .newbtn.big{padding:6px 12px;font-size:13px;border-radius:8px}
 .newbtn.big .plus{font-size:15px;line-height:1}
+/* Your Claude subscriptions, next to New session: how much of the week is left, and how the
+   week has gone. A click shows only that login's sessions. Room on the right for the sidebar button. */
+#newbtns{padding-right:30px;row-gap:6px}
+#subs{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.sub{border:0;background:var(--sunk);border-radius:8px;padding:4px 8px 4px;display:flex;flex-direction:column;gap:2px;min-width:96px;text-align:left}
+.sub:hover{background:var(--line2)}
+.sub[aria-pressed=true]{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent)}
+.sub .nm{display:flex;align-items:center;gap:3px;font-size:10.5px;font-weight:600;color:var(--muted);white-space:nowrap}
+.sub[aria-pressed=true] .nm{color:var(--ink)}
+.sub .ln{display:flex;align-items:center;gap:6px}
+.sub svg.wk{flex:1;min-width:44px;height:14px;color:var(--accent)}
+.sub .pct{font-size:11.5px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sub.low svg.wk,.sub.low .pct{color:var(--needs)}
 
 /* new-session form: drops down under the + buttons, over the list (nothing below moves) */
 #scrim{position:absolute;left:0;right:0;bottom:0;z-index:20;background:rgba(20,20,26,.08)}
@@ -365,6 +378,9 @@ let visits = store.get('visits', {});
 let manual = store.get('manual', null);
 let recent = store.get('recent', null);
 let cols = store.get('cols', 2), showNow = store.get('showNow', true);
+// Only the sessions of one login (a subscription button at the top), or all.
+let loginFilter = store.get('loginFilter', null);
+const loginOk = s => !loginFilter || s.ld === loginFilter;
 // The column ⌘↑ ⌘↓ follow: the one you last opened a session from. Its row for the session
 // in front is filled; the other column only outlines it.
 let navColPick = store.get('navCol', 0);
@@ -652,7 +668,7 @@ function cmp(c){
 function rowsFor(ci){
   ensureOrders();
   const c = colState[ci];
-  const all = data.s.filter(s => !isPin(s) && inDir(c, s));
+  const all = data.s.filter(s => !isPin(s) && inDir(c, s) && loginOk(s));
   const whereOk = s => c.where === 'any' || (c.where === 'here' ? (s.o && s.be === 'ghostty') : c.where === 'cmux' ? (s.o && s.be !== 'ghostty') : !s.o);
   // (The Parked chip is gone: parked sessions are under Not running.)
   if (c.filter === 'parked'){ c.filter = 'all'; c.where = 'off'; }
@@ -927,6 +943,33 @@ document.addEventListener('mousemove', e => {
 // Switchboard back only bring it back, not open the row now under the pointer.)
 let awaySig = null;
 const rowSig = () => [...document.querySelectorAll('#cols .item[data-k]')].map(r => r.dataset.k + '@' + Math.round(r.getBoundingClientRect().top)).join(',');
+// One subscription: the share of the week that is left, and a graph of the week so far. The
+// graph runs from the start of the week to its reset; the dashed line is an even pace (what is
+// left if the week is used evenly). Above it, room will be left at the reset; below, it runs out early.
+function subHTML(d){
+  const name = loginName(d), u = (data.use || {})[d] || {}, wk = u.wk, on = loginFilter === d;
+  const left = wk && wk.p != null ? Math.max(0, 100 - wk.p) : null;
+  const reset = wk && wk.r ? Date.parse(wk.r) / 1000 : null, now = Date.now() / 1000;
+  const inT = t => { const x = t - now; return x <= 0 ? 'now' : x < 3600 ? Math.round(x/60) + ' min' : x < 86400 ? Math.round(x/3600) + ' h' : Math.round(x/86400) + ' d'; };
+  const W = 60, H = 14;
+  let graph = `<svg class="wk" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><rect width="${W}" height="${H}" rx="2" fill="var(--bg)"/>`;
+  if (reset){
+    const t0 = reset - 7 * 86400, X = t => ((t - t0) / (7 * 86400) * W).toFixed(1), Y = l => (H - 1 - l / 100 * (H - 2)).toFixed(1);
+    graph += `<line x1="0" y1="${Y(100)}" x2="${W}" y2="${Y(0)}" stroke="var(--faint)" stroke-width="1" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>`;
+    const pts = (u.hist || []).filter(x => x[1] != null && x[0] >= t0 && x[0] <= now).map(x => [x[0], 100 - x[1]]);
+    if (left != null) pts.push([now, left]);
+    if (pts.length > 1) graph += `<polyline points="${pts.map(p => X(p[0]) + ',' + Y(p[1])).join(' ')}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+  }
+  graph += '</svg>';
+  const pct = left == null ? '–' : left === 0 && reset ? 'back in ' + inT(reset) : left + '% left';
+  const tip = (left == null ? `${name}: usage not known yet.` : `${name}: ${left}% of this week left${reset ? ', resets in ' + inT(reset) : ''}.`)
+    + (u.h5 && u.h5.p != null ? ` ${u.h5.p}% of the 5-hour window used.` : '')
+    + `\nThe line is the week so far; the dashed line is an even pace.\n`
+    + (on ? 'Click to show the sessions of every login.' : `Click to show only the ${name} sessions.`);
+  return `<button class="sub${left != null && left <= 10 ? ' low' : ''}" data-sub="${d}" aria-pressed="${on}" title="${esc(tip)}">`
+    + `<span class="nm">${on ? ic('check', 9, 3) : ''}${esc(name)}</span><span class="ln">${graph}<span class="pct">${pct}</span></span></button>`;
+}
+
 function render(){
   renderNow();
   if (awaySig !== null && rowSig() !== awaySig){ awaySig = null; bridge('movedAway'); }
@@ -935,7 +978,8 @@ function renderNow(){
   if (!data) return;
   // Not while the mouse button is down: a row rebuilt under the mouse loses the click.
   if (drag || pressing){ renderLater = true; return; }
-  $('#newbtns').innerHTML = `<button class="newbtn big" data-new="" aria-pressed="${nf.open}" title="New Claude session: pick the folder and the login. A first message, files and a name are optional."><span class="plus">+</span>New session</button>`;
+  $('#newbtns').innerHTML = `<button class="newbtn big" data-new="" aria-pressed="${nf.open}" title="New Claude session: pick the folder and the login. A first message, files and a name are optional."><span class="plus">+</span>New session</button>`
+    + `<span id="subs">${LOGINS.map(subHTML).join('')}</span>`;
   if (nf.open) nfStatus();
   seg('#colseg', [[1,'1'],[2,'2']], cols, v => { cols = v; store.set('cols', v); render(); });
   renderPins();
@@ -1204,6 +1248,8 @@ document.addEventListener('click', e => {
   }
   if (t.closest('#newform')) return;
   const nb = t.closest('[data-new]'); if (nb){ openNew(nb.dataset.new); return; }
+  const sb = t.closest('[data-sub]');
+  if (sb){ loginFilter = loginFilter === sb.dataset.sub ? null : sb.dataset.sub; store.set('loginFilter', loginFilter); render(); return; }
   const cf = t.closest('[data-colfolder]');
   if (cf){
     const ci = +cf.dataset.colfolder, r = cf.getBoundingClientRect();

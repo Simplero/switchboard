@@ -1373,23 +1373,31 @@ final class Switchboard {
     func handOver(surface sf: String, files: [URL], image: Data? = nil) -> Bool {
         guard let (m, sid) = remoteSession(surface: sf), !files.isEmpty || image != nil else { return false }
         SessionSwitchLog.did("files to \(m.name): \(files.count + (image == nil ? 0 : 1))")
+        // At once, on the terminal: what goes where and how far it is (a video takes a while).
+        let size = files.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) } + Int64(image?.count ?? 0)
+        let what = files.count + (image == nil ? 0 : 1) == 1 ? (files.first?.lastPathComponent ?? "the picture") : "\(files.count + (image == nil ? 0 : 1)) files"
+        let badge = SBTransferBadge.show(on: SessionsAPI.surface(id: sf), what: what, machine: m.name, total: size)
         Task { @MainActor in
+            defer { badge?.finish() }
             let st = await SBMachines.prepare(m)
             guard st.ok, let home = st.home else { SessionsStore.shared.showFailure(st.message); return }
             var paths: [String] = []
-            var items: [(name: String, data: Data?)] = files.map { ($0.lastPathComponent, FileManager.default.contents(atPath: $0.path)) }
+            var done: Int64 = 0
+            for file in files {
+                guard let p = await SBMachines.upload(m, file: file, name: "files/\(sid)/\(file.lastPathComponent)", home: home,
+                                                      progress: { [done] n in badge?.update(sent: done + n) }) else {
+                    SessionsStore.shared.showFailure("Switchboard could not copy \(file.lastPathComponent) to \(m.name).")
+                    return
+                }
+                done += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                paths.append(Ghostty.Shell.escape(p))
+            }
             if let image {
                 let f = DateFormatter()
                 f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-                items.append(("Pasted image \(f.string(from: Date())).png", image))
-            }
-            for item in items {
-                guard let data = item.data else {
-                    SessionsStore.shared.showFailure("Switchboard could not read \(item.name), so it did not go to \(m.name).")
-                    return
-                }
-                guard let p = await SBMachines.upload(m, data, name: "files/\(sid)/\(item.name)", home: home) else {
-                    SessionsStore.shared.showFailure("Switchboard could not copy \(item.name) to \(m.name).")
+                let name = "Pasted image \(f.string(from: Date())).png"
+                guard let p = await SBMachines.upload(m, image, name: "files/\(sid)/\(name)", home: home) else {
+                    SessionsStore.shared.showFailure("Switchboard could not copy \(name) to \(m.name).")
                     return
                 }
                 paths.append(Ghostty.Shell.escape(p))

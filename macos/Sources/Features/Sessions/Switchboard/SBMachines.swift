@@ -52,6 +52,11 @@ enum SBMachines {
 
     /// Run a command there (no terminal), with `input` on its stdin.
     static func run(_ m: Machine, _ remote: String, input: Data? = nil, timeout: Double = 25) async -> (status: Int32, out: String) {
+        await run(m, remote, feed: input.map { data in { h in try? h.write(contentsOf: data) } }, timeout: timeout)
+    }
+
+    /// `feed` writes what goes to the command's input (on a background queue); the input closes after it.
+    static func run(_ m: Machine, _ remote: String, feed: (@Sendable (FileHandle) -> Void)?, timeout: Double = 25) async -> (status: Int32, out: String) {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let p = Process()
@@ -60,11 +65,11 @@ enum SBMachines {
                 let out = Pipe(), inp = Pipe()
                 p.standardOutput = out
                 p.standardError = out
-                p.standardInput = input == nil ? FileHandle.nullDevice : inp
+                p.standardInput = feed == nil ? FileHandle.nullDevice : inp
                 do { try p.run() } catch { cont.resume(returning: (-1, "ssh did not start: \(error.localizedDescription)")); return }
-                if let input {
+                if let feed {
                     DispatchQueue.global().async {
-                        try? inp.fileHandleForWriting.write(contentsOf: input)
+                        feed(inp.fileHandleForWriting)
                         try? inp.fileHandleForWriting.close()
                     }
                 }
@@ -112,6 +117,28 @@ enum SBMachines {
         // A big file (a video from the phone) takes a while over ssh: about 2 s per MB at the slowest.
         let r = await run(m, "mkdir -p \(shq(dir)) && cat > \(shq(".cache/switchboard/" + name))", input: data,
                           timeout: max(60, Double(data.count) / 500_000))
+        return r.status == 0 ? home + "/.cache/switchboard/" + name : nil
+    }
+
+    /// Put a file of this Mac there, read from disk a piece at a time (a video can be large).
+    /// `progress` gets the bytes sent so far, on the main queue. Returns its path there.
+    static func upload(_ m: Machine, file: URL, name: String, home: String, progress: @escaping @MainActor (Int64) -> Void) async -> String? {
+        guard let reader = try? FileHandle(forReadingFrom: file) else { return nil }
+        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        let dir = ".cache/switchboard/" + (name as NSString).deletingLastPathComponent
+        // A failed read or write stops the copy, and then the size there is not the size here.
+        let path = shq(".cache/switchboard/" + name)
+        let remote = "mkdir -p \(shq(dir)) && cat > \(path) && [ \"$(wc -c < \(path) | tr -d ' ')\" = \(size) ]"
+        let r = await run(m, remote, feed: { h in
+            var sent: Int64 = 0
+            while let chunk = try? reader.read(upToCount: 1 << 20), !chunk.isEmpty {
+                guard (try? h.write(contentsOf: chunk)) != nil else { break }
+                sent += Int64(chunk.count)
+                let now = sent
+                DispatchQueue.main.async { MainActor.assumeIsolated { progress(now) } }
+            }
+            try? reader.close()
+        }, timeout: max(60, Double(size) / 500_000))
         return r.status == 0 ? home + "/.cache/switchboard/" + name : nil
     }
 

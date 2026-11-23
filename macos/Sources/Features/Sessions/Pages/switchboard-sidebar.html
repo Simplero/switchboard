@@ -813,10 +813,10 @@ function colFolders(){
 }
 
 function colControls(ci){
-  const c = colState[ci], count = f => data.s.filter(s => s.o && !isPin(s) && inDir(c, s) && f(s)).length;
+  const c = colState[ci], count = f => data.s.filter(s => s.o && !isPin(s) && inDir(c, s) && loginOk(s) && f(s)).length;
   const fchip = (v, label, n, tip) => `<button class="fchip" data-f="${v}" aria-pressed="${c.filter===v}"${tip ? ` title="${tip}"` : ''}>${label} ${n}</button>`;
   const pills = (key, opts) => `<span class="seg">${opts.map(([v,l]) => `<button data-${key}="${v}" aria-pressed="${c[key]===v}">${l}</button>`).join('')}</span>`;
-  const wcount = w => data.s.filter(s => !isPin(s) && inDir(c, s)).filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el && !s.ar) : w === 'archive' ? (!s.o && !s.el && s.ar) : true).length;
+  const wcount = w => data.s.filter(s => !isPin(s) && inDir(c, s) && loginOk(s)).filter(s => w === 'here' ? ((s.o && s.be === 'ghostty') || s.el) : w === 'cmux' ? (s.o && s.be !== 'ghostty') : w === 'off' ? (!s.o && !s.el && !s.ar) : w === 'archive' ? (!s.o && !s.el && s.ar) : true).length;
   const wchip = (v, label) => `<button class="fchip" data-w="${v}" aria-pressed="${c.where===v}">${label} ${v === 'any' ? '' : wcount(v)}</button>`;
   // Not running and Archive list closed sessions, newest first: the state, group and sort
   // controls are for running sessions, so they are not shown there.

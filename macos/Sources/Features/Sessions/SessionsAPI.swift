@@ -166,7 +166,12 @@ final class SessionsAPI {
                     if req.method == "GET", req.path == "/sb/snap", req.headers["x-token"] == self.token {
                         // For checks: a picture of the sidebar or the panel page (window pictures leave web views blank).
                         let page = req.query["page"] == "banner" ? SessionsWeb.banner : SessionsWeb.shared
-                        page.webView.takeSnapshot(with: nil) { image, _ in
+                        var web: WKWebView = page.webView
+                        // ?pane=<terminal id>: the page next to that terminal's session.
+                        if let pid = req.query["pane"], let view = SessionsAPI.surface(id: pid),
+                           let controller = BaseTerminalController.controller(owning: view) as? TerminalController,
+                           let doc = SessionsDocPanes.shared.pages[controller.sessionsWorkspace] { web = doc.webView }
+                        web.takeSnapshot(with: nil) { image, _ in
                             Task { @MainActor in
                                 guard let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
                                       let png = rep.representation(using: .png, properties: [:]) else {

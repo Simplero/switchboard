@@ -366,6 +366,10 @@ const needsYou = s => { const st = stateOf(s); return st === 'urgent' || NEEDS.h
 // The agent finished what you asked: Done, Answered, or a message you marked as handled.
 const FINISHED = new Set(['done', 'info', 'handled']);
 const isFinished = s => s.a !== 'shell' && FINISHED.has(stateOf(s));
+// A new answer: the turn ended (Done or Answered) after the last time you had the session in
+// front. It is in Needs you until you go to it, so the answers you waited for are in the loop.
+const isNewAnswer = s => s.o && s.a !== 'shell' && s.fa > 0 && (stateOf(s) === 'done' || stateOf(s) === 'info') && s.fa > seenAt(s.k);
+const wantsYou = s => needsYou(s) || isNewAnswer(s);
 
 let data = null, focusSf = null, query = '', results = [], idHit = null;
 // "Search inside conversations" (only when you ask for it): on or not, waiting for the answer,
@@ -376,6 +380,17 @@ let deep = false, deepBusy = false, deepGen = 0, convHits = [], convTotal = 0, i
 const HOME_FOLDER = '~/Simplero';
 let newCwd = HOME_FOLDER;
 let visits = store.get('visits', {});
+// When you last had each session in front (also while you stay in it). Answers from before the
+// first run of this do not count as new.
+const seen = store.get('seen', {});
+let seenBase = store.get('seenBase', 0);
+if (!seenBase){ seenBase = Date.now()/1000; store.set('seenBase', seenBase); }
+let seenSaved = 0;
+const seenAt = k => Math.max(seen[k] || 0, visits[k] || 0, seenBase);
+function markSeen(k, t){
+  seen[k] = t;
+  if (t - seenSaved > 5){ seenSaved = t; store.set('seen', seen); }
+}
 // Orders that never shift under the mouse:
 //  manual: the order sessions first showed up in; new ones go at the end, a new name does not move a row.
 //  recent: the "Recently visited" list; a session joins at the top on its first visit and then stays put.
@@ -423,11 +438,13 @@ window.Sessions = {
   setData(d){ data = d; noteNeeds(); render(); },
   setFocus(sf){
     noteNeeds();   // the session you leave keeps its place for another 30 s from now
+    seenSaved = 0;
     const moved = (sf || null) !== focusSf;
     focusSf = sf || null;
     const s = data?.s.find(x => x.sf === focusSf && x.o);
     if (s) {
       visits[s.k] = Date.now()/1000; store.set('visits', visits);
+      seenSaved = 0; markSeen(s.k, visits[s.k]);
       if (recent && !recent.includes(s.k)){ recent.unshift(s.k); recent = recent.slice(0, 30); store.set('recent', recent); }
     }
     render();
@@ -620,19 +637,20 @@ function noteNeeds(){
     if (!s.o) continue;
     open.add(s.k);
     const front = s.sf && s.sf === focusSf;
-    if (needsYou(s)) needsMemo[s.k] = {last: t, since: front && needsMemo[s.k] ? needsMemo[s.k].since : s.nsn || s.la || t};
+    if (front) markSeen(s.k, t);
+    if (wantsYou(s)) needsMemo[s.k] = {last: t, since: front && needsMemo[s.k] ? needsMemo[s.k].since : s.nsn || s.fa || s.la || t};
     else if (needsMemo[s.k] && front) needsMemo[s.k].last = t;
   }
   let next = Infinity;
   for (const k of Object.keys(needsMemo)){
     const s = data.s.find(x => x.k === k);
-    if (!open.has(k) || (!needsYou(s) && t - needsMemo[k].last > HOLD)) delete needsMemo[k];
-    else if (!needsYou(s)) next = Math.min(next, needsMemo[k].last + HOLD);
+    if (!open.has(k) || (!wantsYou(s) && t - needsMemo[k].last > HOLD)) delete needsMemo[k];
+    else if (!wantsYou(s)) next = Math.min(next, needsMemo[k].last + HOLD);
   }
   clearTimeout(holdTimer);
   if (next < Infinity) holdTimer = setTimeout(() => { noteNeeds(); render(); }, Math.max(0, next - t) * 1000 + 300);
 }
-const heldNeeds = s => needsYou(s) || !!needsMemo[s.k];
+const heldNeeds = s => wantsYou(s) || !!needsMemo[s.k];
 
 // ---------- building lists ----------
 function groupKey(c, s){
@@ -664,7 +682,7 @@ function cmp(c){
   // Needs you: the one that has waited longest first, so going down the list is a loop (a
   // session that needs you again goes to the end). Then busy ones, then the rest, newest first.
   const rank = s => heldNeeds(s) ? 0 : stateOf(s) === 'working' ? 1 : 2;
-  const since = s => needsMemo[s.k]?.since || s.nsn || s.la || 0;
+  const since = s => needsMemo[s.k]?.since || s.nsn || s.fa || s.la || 0;
   if (c.sort === 'visited') return (a,b) => (visits[b.k]||0) - (visits[a.k]||0) || (b.la||0) - (a.la||0);
   if (c.sort === 'active') return (a,b) => (b.la||0) - (a.la||0);
   if (c.sort === 'name') return (a,b) => a.n.localeCompare(b.n);
@@ -756,19 +774,21 @@ function itemHTML(s, ci){
       <span class="nm">${esc(s.n)}</span>${app ? '<span class="tag">Claude app</span>' : ''}<span class="tt">${esc(s.t || s.ns || (app ? s.lm : '') || '')}</span>
       <span class="age">${ago(s.ca || s.la)}</span></div>`;
   }
-  const st = stateOf(s), L = LOOK[st] || LOOK.info;
+  const st = stateOf(s), fresh = isNewAnswer(s);
+  const L = fresh ? ['bell', st === 'done' ? 'New: done' : 'New answer', 'b-needs', '--needs'] : LOOK[st] || LOOK.info;
+  const tip = fresh ? 'New: the agent finished its turn after you last looked. It stays in Needs you until you go to it.' : TIP[st] || '';
   const front = s.sf && s.sf === focusSf;
   // Filled in the column ⌘↑ ⌘↓ follow (or the only one), a border in the other.
   const sel = front && (ci == null || ci === navColOf()), ring = front && !sel;
   const line = st === 'working' ? (s.wl || s.ns) : (s.ns || s.sd || s.t || '');
   const labs = (s.lb || []).map(l => `<span class="lab">#${esc(l)}</span>`).join(' ');
   return `<div class="item${sel ? ' sel' : ''}${ring ? ' sel-ring' : ''}" data-k="${esc(s.k)}">
-    <span class="ico" title="${esc(TIP[st] || '')}" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
+    <span class="ico" title="${esc(tip)}" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
     <span class="body">
       <span class="top"><span class="name">${esc(s.n)}</span>
         <span class="age">${ago(s.la)}</span>
       </span>
-      <span class="line"><span class="word" title="${esc(TIP[st] || '')}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
+      <span class="line"><span class="word" title="${esc(tip)}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
       <span class="meta">${s.a === 'shell' ? `<span class="dir">${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>${s.m ? `<span class="mach" title="Runs on ${esc(s.m)}. You see and type in it here.">· ${ic('server',10,2.2)} ${esc(s.m)}</span>` : ''}${s.cwd ? `<span class="dir${s.mv ? ' shrink' : ''}" title="${esc(s.cwd)}">· ${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : ''}${s.mv ? `<span class="mv" title="Moves to ${esc(s.mv)} when its turn is over and you are not looking at it. Right-click › Move to folder to move it now or keep it here.">→ ${esc(s.mv)}</span>` : ''}`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span class="br" title="' + esc(s.br) + '">· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
     </span></div>`;
 }
@@ -829,7 +849,7 @@ function colControls(ci){
   const stopped = c.where === 'off' || c.where === 'archive';
   return `<div class="ctrl">
     <div class="chips" title="Where it runs">${wchip('here','Running')}${wchip('off','Not running')}${wchip('archive','Archive')}${wchip('any','Anywhere')}</div>
-    ${stopped ? '' : `<div class="chips">${fchip('needs','Needs you',count(needsYou))}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('done','Finished',count(isFinished),'The agent finished what you asked: Done, Answered, or marked as handled')}${fchip('all','All',count(()=>true))}</div>
+    ${stopped ? '' : `<div class="chips">${fchip('needs','Needs you',count(wantsYou),'The agent asks you something, or has a new answer you have not looked at yet')}${fchip('working','Busy',count(s=>stateOf(s)==='working'))}${fchip('done','Finished',count(isFinished),'The agent finished what you asked: Done, Answered, or marked as handled')}${fchip('all','All',count(()=>true))}</div>
     <div class="row" title="Group">${pills('group',[['none','Flat'],['class','Class'],['login','Login'],['folder','Dir']])}</div>`}
     <div class="row"><button class="colfolder${c.dir ? ' on' : ''}" data-colfolder="${ci}" title="${c.dir ? 'Only sessions in ' + esc(c.dir) + '. Click to pick another folder or all of them.' : 'Only sessions in one folder: click to pick it.'}">${ic('folder',10,2.2)}<span>${esc(c.dir || 'All folders')}</span>${ic('chev',8,2.6)}</button></div>
     ${stopped ? '' : `<div class="row" title="Sort. Manual: drag rows to put them in your order.">${pills('sort',[['needs','Needs'],['visited','Visited'],['active','Active'],['manual','Manual'],['name','A–Z']])}</div>`}

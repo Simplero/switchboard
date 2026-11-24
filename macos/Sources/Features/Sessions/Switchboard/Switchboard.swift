@@ -83,6 +83,10 @@ final class Switchboard {
     /// Since when each open session needs you (by key): the sidebar lists the longest-waiting first.
     private var needsSince: [String: Double] = [:]
     static let needsStates: Set<String> = ["permission", "question", "review", "heads_up"]
+    /// Since when each open session has had a new answer for you (by key): its turn ended in Done
+    /// or Answered. The sidebar puts it in Needs you until you look at it.
+    private var answeredAt: [String: Double] = [:]
+    static let answeredStates: Set<String> = ["done", "info"]
 
     static let scanEvery = 1.5
     /// How often to look for sessions in other terminals (cmux, Terminal…).
@@ -659,7 +663,16 @@ final class Switchboard {
             if st == "working" { e.summary = nil }
             e.summary_key = skey
             e.split = t.surfacesInTab > 1
+            let wasState = e.state
             e.state = stateOf(e)
+            if Self.answeredStates.contains(e.state ?? "") {
+                // When the turn ended: the conversation file's time (not when the summary came back).
+                if answeredAt[key] == nil || !Self.answeredStates.contains(wasState ?? "") {
+                    answeredAt[key] = min(e.last_activity ?? now, now)
+                }
+            } else if e.state != "reading" {
+                answeredAt[key] = nil
+            }
             if Self.needsStates.contains(e.state ?? "") {
                 // From when the agent stopped (a summary that is still being read does not count).
                 if needsSince[key] == nil { needsSince[key] = min(e.last_activity ?? now, now) }
@@ -679,6 +692,7 @@ final class Switchboard {
         recentNew = recentNew.filter { now - $0.value < 120 }
         pendingNames = pendingNames.filter { now - $0.value.at < 300 }
         needsSince = needsSince.filter { seen.contains($0.key) }
+        answeredAt = answeredAt.filter { seen.contains($0.key) }
         let liveIDs = Set(terms.map(\.id))
         screenMemo = screenMemo.filter { liveIDs.contains($0.key) }
         for (ws, ts) in byWS where !agentWSs.contains(ws) {
@@ -899,6 +913,7 @@ final class Switchboard {
             "ar": e.archived == true && !e.isOpen, "aa": Int(e.archived_at ?? 0),
             "was": n(e.was),
             "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
+            "fa": Int(e.isOpen ? (answeredAt[e.key] ?? 0) : 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
             "mv": e.move_to.map { ($0 == "#slot" ? "a slot" : $0.hasPrefix("@") ? (e.move_stage == "slotting" ? "a slot, then " : "") + String($0.dropFirst()) : SBPaths.tilde($0)) as Any } ?? NSNull(),
             "mvm": e.move_to?.hasPrefix("@") == true,

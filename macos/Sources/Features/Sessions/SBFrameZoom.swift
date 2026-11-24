@@ -1,14 +1,16 @@
 import AppKit
 import WebKit
 
-/// The WebKit in macOS 27 does not zoom what is inside a frame. A page that zooms with CSS zoom on
-/// its root (a Simplero Doc: its − 100% + control, ⌘+ and pinch) gets bigger, but the frames in it
-/// only get bigger boxes: their text stays the same size. A Doc made of HTML pages is all frames,
-/// so it does not zoom at all. Chrome zooms the frames too.
+/// The WebKit in macOS 27 zooms what is inside a frame only by the zoom its page had when the
+/// frame loaded. A page that zooms later with CSS zoom on its root (a Simplero Doc: its − 100% +
+/// control, ⌘+ and pinch) gets bigger, but the frames in it only get bigger boxes: their text
+/// stays the same size. A Doc made of HTML pages is all frames, so it does not zoom at all.
+/// Chrome zooms the frames too.
 ///
 /// When this WebKit has the problem (a test page, drawn once off screen, says so), the page pane
-/// gets a script in every frame: a page tells each frame in it how much it is zoomed, and the
-/// frame zooms its own page by that much. Where WebKit zooms frames itself, nothing is added.
+/// gets a script in every frame: a page tells each frame in it how much more it is zoomed than
+/// when the frame loaded, and the frame zooms its own page by that much. Where WebKit zooms
+/// frames itself, nothing is added.
 @MainActor
 enum SBFrameZoom {
     /// nil until the test page answered.
@@ -48,8 +50,9 @@ enum SBFrameZoom {
         controllers.removeAllObjects()
     }
 
-    /// A page zoomed 4 times with a black square 20 px tall in it, and the same square in a frame.
-    /// In the picture both are 80 px tall when WebKit zooms the frame; the frame's is 20 px when not.
+    /// A page with a black square 20 px tall in it, and the same square in a sealed frame (as a
+    /// Doc's HTML pages are). Once it has loaded, the page zooms 4 times. In the picture both
+    /// squares are 80 px tall when WebKit zooms the frame; the frame's stays 20 px when not.
     private final class Probe: NSObject, WKNavigationDelegate {
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 300, height: 300))
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 300, height: 300),
@@ -64,14 +67,15 @@ enum SBFrameZoom {
             window.contentView = web   // never shown: it only gives the page a size to draw at
             web.navigationDelegate = self
             let square = "<div style='width:20px;height:20px;background:#000'></div>"
-            let html = "<html style='zoom:4'><body style='margin:0;background:#fff'>" + square
-                + "<iframe style='display:block;border:0;width:40px;height:40px;margin-left:30px' srcdoc=\"<body style='margin:0;background:#fff'>"
+            let html = "<html><body style='margin:0;background:#fff'>" + square
+                + "<iframe sandbox style='display:block;border:0;width:40px;height:40px;margin-left:30px' srcdoc=\"<body style='margin:0;background:#fff'>"
                 + square + "</body>\"></iframe></body></html>"
             web.loadHTMLString(html, baseURL: nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.answer(nil) }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.evaluateJavaScript("document.documentElement.style.zoom = '4'")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self else { return }
                 self.web.takeSnapshot(with: nil) { image, _ in
@@ -112,24 +116,26 @@ enum SBFrameZoom {
       var given = 1
       var own = null
       var zoomOf = function () { return parseFloat(getComputedStyle(root).zoom) || 1 }
-      var tell = function (frame, z) {
+      // WebKit zooms a frame's page by this page's zoom when the frame loaded: the frame is told
+      // how much more (or less) this page is zoomed now.
+      var tell = function (frame) {
+        var z = zoomOf() / (frame.__switchboardBase || 1)
+        if (frame.__switchboardSent === z) return
+        frame.__switchboardSent = z
         try { if (frame.contentWindow) frame.contentWindow.postMessage({ switchboardFrameZoom: z }, '*') } catch (e) {}
       }
-      // How much this page is zoomed, for the frames in it. A frame zoomed by Switchboard passes
-      // nothing on: frames in frames stay as WebKit draws them.
-      var sent = 1
-      var tellAll = function (force) {
+      // A frame zoomed by Switchboard passes nothing on: frames in frames stay as WebKit draws them.
+      var tellAll = function () {
         if (given !== 1) return
-        var z = zoomOf()
-        if (z === sent && !force) return
-        sent = z
         var frames = document.querySelectorAll('iframe')
-        for (var i = 0; i < frames.length; i++) tell(frames[i], z)
+        for (var i = 0; i < frames.length; i++) tell(frames[i])
       }
-      new MutationObserver(function () { tellAll(false) }).observe(root, { attributes: true, attributeFilter: ['style', 'class'] })
+      new MutationObserver(tellAll).observe(root, { attributes: true, attributeFilter: ['style', 'class'] })
       document.addEventListener('load', function (event) {
         var t = event.target
-        if (t && t.tagName === 'IFRAME' && given === 1 && zoomOf() !== 1) tell(t, zoomOf())
+        if (!t || t.tagName !== 'IFRAME') return
+        t.__switchboardBase = zoomOf()
+        t.__switchboardSent = 1
       }, true)
       addEventListener('message', function (event) {
         var z = event.data && event.data.switchboardFrameZoom

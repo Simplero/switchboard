@@ -163,6 +163,14 @@ final class SessionsAPI {
                         }
                         return
                     }
+                    if req.method == "POST", req.path == "/sb/webwatch", req.headers["x-token"] == self.token {
+                        // For checks: this app's WebKit GPU processes; {"stop": true} stops them the
+                        // way the sidebar watch does when the sidebar does not draw.
+                        let before = SBWebWatch.gpuProcesses()
+                        let stopped = req.json["stop"] as? Bool == true ? SBWebWatch.stopGPU() : []
+                        self.respond(conn, status: 200, body: ["gpu": before.map { Int($0) }, "stopped": stopped.map { Int($0) }])
+                        return
+                    }
                     if req.method == "GET", req.path == "/sb/snap", req.headers["x-token"] == self.token {
                         // For checks: a picture of the sidebar or the panel page (window pictures leave web views blank).
                         let page = req.query["page"] == "banner" ? SessionsWeb.banner : SessionsWeb.shared

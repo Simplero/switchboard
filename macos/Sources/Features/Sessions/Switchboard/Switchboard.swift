@@ -121,6 +121,8 @@ final class Switchboard {
         }
         // Search inside every conversation on this Mac: the index builds in the background.
         SBHistory.shared.start()
+        // A sidebar that stays black after a start: WebKit's GPU process hung. Fix it alone.
+        SBWebWatch.start()
     }
 
     private func finishStart(_ loadedReg: SBRegistry, summaries cache: [String: SBSummary], writable: Bool) {

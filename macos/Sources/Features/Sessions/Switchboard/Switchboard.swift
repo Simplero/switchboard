@@ -123,6 +123,8 @@ final class Switchboard {
         SBHistory.shared.start()
         // A sidebar that stays black after a start: WebKit's GPU process hung. Fix it alone.
         SBWebWatch.start()
+        // Does this WebKit zoom what is inside a frame? The page pane needs the answer.
+        SBFrameZoom.check()
     }
 
     private func finishStart(_ loadedReg: SBRegistry, summaries cache: [String: SBSummary], writable: Bool) {

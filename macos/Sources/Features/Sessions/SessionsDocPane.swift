@@ -85,6 +85,7 @@ final class DocPage: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
     override init() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()   // stays signed in between runs
+        SBFrameZoom.prepare(config.userContentController)   // a zoomed Doc zooms its HTML pages too
         let web = DocWebView(frame: .zero, configuration: config)
         webView = web
         super.init()

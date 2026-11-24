@@ -70,6 +70,27 @@ enum SBProcesses {
     }
 
     /// The working folder of a process.
+    /// The conversation an Antigravity CLI (agy) process runs: it keeps
+    /// ~/.gemini/antigravity-cli/presence/<conversation id>.lock open.
+    static func agyConversation(_ pid: pid_t) -> String? {
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return nil }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(size) / stride + 16)
+        let got = fds.withUnsafeMutableBytes { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count)) }
+        guard got > 0 else { return nil }
+        let want = Int32(MemoryLayout<vnode_fdinfowithpath>.size)
+        for fd in fds.prefix(Int(got) / stride) where fd.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
+            var vi = vnode_fdinfowithpath()
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &vi, want) == want else { continue }
+            let path = withUnsafeBytes(of: vi.pvip.vip_path) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+            guard path.contains("/antigravity-cli/presence/"), path.hasSuffix(".lock") else { continue }
+            let id = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+            if !id.isEmpty { return id }
+        }
+        return nil
+    }
+
     static func cwd(_ pid: pid_t) -> String? {
         var info = proc_vnodepathinfo()
         let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
@@ -154,9 +175,10 @@ enum SBProcesses {
         }
     }
 
-    static let agents: Set<String> = ["claude", "codex", "opencode", "grok"]
+    static let agents: Set<String> = ["claude", "codex", "opencode", "grok", "agy", "antigravity"]
 
-    /// Which coding agent a command line is (claude, codex, opencode, grok), or nil.
+    /// Which coding agent a command line is (claude, codex, opencode, grok, agy), or nil.
+    /// agy is Google's Antigravity CLI; its program is called antigravity.
     /// One-shot runs (claude -p, codex exec, opencode run, …) are not sessions.
     static func agentKind(_ args: [String]) -> String? {
         guard !args.isEmpty else { return nil }
@@ -171,6 +193,13 @@ enum SBProcesses {
         if first == "claude" && (args.contains("-p") || args.contains(where: { $0.hasPrefix("--print") })) { return nil }
         if first == "codex" && rest.contains(where: { ["exec", "app-server", "mcp", "proto"].contains($0) }) { return nil }
         if first == "opencode" && rest.contains(where: { ["run", "serve", "mcp"].contains($0) }) { return nil }
+        if first == "antigravity" { first = "agy" }
+        if first == "agy" {
+            if args.contains(where: { ["-p", "--print", "--prompt"].contains($0) || $0.hasPrefix("--print=") || $0.hasPrefix("--prompt=") }) { return nil }
+            let sub: Set<String> = ["acp", "agent", "agents", "changelog", "help", "install", "mcp", "mic-serve", "models",
+                                    "plugin", "plugins", "remote-control", "update"]
+            if let a = args.dropFirst(restStart).first, sub.contains(a) { return nil }
+        }
         return first
     }
 }

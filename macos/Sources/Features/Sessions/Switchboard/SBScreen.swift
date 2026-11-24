@@ -11,10 +11,14 @@ enum SBScreen {
 
     static let spinner = re(#"^\s*\S\s+[A-Z][\w'-]+…\s*\("#)
     static let codexWorking = re(#"^\s*\S?\s*Working \(\d|Waiting for \d+ background agent"#, .caseInsensitive)
-    static let permission = re(#"Do you want to (proceed|make this edit|create|run)|❯ 1\. Yes|Allow command\?|approve this"#)
-    static let noise = re(#"^[\s─━╭╰│▔▁]*$|⏵⏵|bypass permissions|shift\+tab|esc to interrupt|ctrl\+b to run|Tip:|/focus to show|disable recaps"#)
+    /// Antigravity CLI (agy) while it works: "esc to cancel" under the prompt box, and a
+    /// braille spinner in front of what it thinks.
+    static let agyWorking = re(#"^\s*esc to cancel\s*$"#)
+    static let brailleSpinner = re(#"^\s*[\x{2801}-\x{28FF}]\s+\S"#)
+    static let permission = re(#"Do you want to (proceed|make this edit|create|run)|❯ 1\. Yes|Allow command\?|approve this|Do you trust the contents of this project\?"#)
+    static let noise = re(#"^[\s─━╭╰│▔▁]*$|⏵⏵|bypass permissions|shift\+tab|esc to interrupt|esc to cancel|\? for shortcuts|ctrl\+b to run|Tip:|/focus to show|disable recaps"#)
     static let rule = re(#"^\s*[─━]{20,}"#)
-    static let footer = re(#"⏵⏵|bypass permissions|shift\+tab|esc to|Update installed|ctrl\+|^\s*[⏺◯] (main|general-purpose)|^\s*\S\s+[A-Z][\w'-]+… \(|Tip:"#)
+    static let footer = re(#"⏵⏵|bypass permissions|shift\+tab|esc to|Update installed|\? for shortcuts|ctrl\+|^\s*[⏺◯] (main|general-purpose)|^\s*\S\s+[A-Z][\w'-]+… \(|Tip:"#)
     static let shellTitle = re(#"^[\w.-]+@[\w.-]+:|^(claude|zsh|bash|sh|-zsh|new session|terminal|switchboard)$"#, .caseInsensitive)
     static let titleLead = re(#"^[^\w(\[]+"#)
 
@@ -102,13 +106,13 @@ enum SBScreen {
     static func state(_ screen: String) -> String {
         let last = Array(lines(screen).filter { !strip($0).isEmpty }.suffix(25))
         if matches(permission, last.joined(separator: "\n")) { return "permission" }
-        for l in last.suffix(12) where matches(spinner, l) || matches(codexWorking, l) { return "working" }
+        for l in last.suffix(12) where matches(spinner, l) || matches(codexWorking, l) || matches(agyWorking, l) { return "working" }
         return "idle"
     }
 
     /// The agent's own "working" line (spinner and what it does).
     static func workingLine(_ screen: String) -> String {
-        for l in lines(screen).filter({ !strip($0).isEmpty }).reversed() where matches(spinner, l) || matches(codexWorking, l) {
+        for l in lines(screen).filter({ !strip($0).isEmpty }).reversed() where matches(spinner, l) || matches(codexWorking, l) || matches(brailleSpinner, l) {
             return strip(l)
         }
         return ""

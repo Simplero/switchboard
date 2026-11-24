@@ -226,7 +226,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             // On another machine there is no spare: look whether that machine answers instead.
             let machine = (body["machine"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             SBSpares.shared.want(machine == nil ? body["login"] as? String : nil)
-            SessionsWebView.newFormOpen = (body["login"] as? String) != nil
+            SessionsWebView.newFormOpen = (body["login"] as? String) != nil || body["open"] as? Bool == true
             if let m = SBMachines.named(machine) {
                 Task { @MainActor in _ = await SBMachines.prepare(m, force: true); Switchboard.shared.publish() }
             }

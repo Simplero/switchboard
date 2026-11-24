@@ -63,7 +63,7 @@ enum SBBackground {
             let pid = Int(p.pid)
             let loginDir = SBLogins.norm(p.env["CLAUDE_CONFIG_DIR"])
             let argSid = sessionIDArgument(kind: p.kind, p.args)
-            let fileSid = p.kind == "claude" ? claudeSessionFile(loginDir, pid) : nil
+            let fileSid = p.kind == "claude" ? claudeSessionFile(loginDir, pid) : p.kind == "agy" ? SBProcesses.agyConversation(p.pid) : nil
             let sid = fileSid ?? argSid
             lock.lock()
             var slow = slowCache[pid]
@@ -75,7 +75,7 @@ enum SBBackground {
                 slowCache[pid] = slow
                 lock.unlock()
             }
-            let t: (title: String?, mtime: Double?) = p.kind == "claude" ? transcript(sid) : (nil, nil)
+            let t: (title: String?, mtime: Double?) = p.kind == "claude" ? transcript(sid) : p.kind == "agy" ? (nil, agyMtime(sid)) : (nil, nil)
             let more: (model: String?, cwd: String?) = p.kind == "claude" ? transcriptDetails(sid) : (nil, nil)
             out.append(Agent(pid: pid, kind: p.kind, tty: tty, loginDir: loginDir, sid: sid, cwd: slow?.cwd,
                              branch: slow?.branch, transcriptTitle: t.title, transcriptMtime: t.mtime,
@@ -109,7 +109,7 @@ enum SBBackground {
         return best.compactMap { dev, p in
             let pid = Int(p.pid)
             let loginDir = SBLogins.norm(p.env["CLAUDE_CONFIG_DIR"])
-            let fileSid = p.kind == "claude" ? claudeSessionFile(loginDir, pid) : nil
+            let fileSid = p.kind == "claude" ? claudeSessionFile(loginDir, pid) : p.kind == "agy" ? SBProcesses.agyConversation(p.pid) : nil
             guard let sid = fileSid ?? sessionIDArgument(kind: p.kind, p.args) else { return nil }
             let t: (title: String?, mtime: Double?) = p.kind == "claude" ? transcript(sid) : (nil, nil)
             return Agent(pid: pid, kind: p.kind, tty: "dev:\(dev)", loginDir: loginDir, sid: sid, cwd: SBProcesses.cwd(p.pid),
@@ -117,8 +117,18 @@ enum SBBackground {
         }
     }
 
+    /// When an Antigravity CLI conversation last changed (its database and its log).
+    static func agyMtime(_ sid: String?) -> Double? {
+        guard let sid else { return nil }
+        let base = SBPaths.home + "/.gemini/antigravity-cli/conversations/" + sid + ".db"
+        let times = [base, base + "-wal"].compactMap {
+            (try? FileManager.default.attributesOfItem(atPath: $0)[.modificationDate] as? Date)?.timeIntervalSince1970
+        }
+        return times.max()
+    }
+
     /// The conversation id in an agent's command line: claude --resume / --session-id <uuid>,
-    /// codex resume <id>, opencode --session / -s <id>.
+    /// codex resume <id>, opencode --session / -s <id>, agy --conversation <id>.
     static func sessionIDArgument(kind: String, _ args: [String]) -> String? {
         var found: String?
         for (i, a) in args.enumerated() {
@@ -133,6 +143,9 @@ enum SBBackground {
                 if a == "resume", let n = next, !n.hasPrefix("-"), n.count >= 8 { found = n }
             case "grok":
                 if a == "--resume" || a == "-r", let n = next, !n.hasPrefix("-") { found = n }
+            case "agy":
+                if a == "--conversation", let n = next, !n.hasPrefix("-") { found = n }
+                if a.hasPrefix("--conversation=") { found = String(a.dropFirst("--conversation=".count)) }
             case "opencode":
                 if a == "--session" || a == "-s", let n = next, !n.hasPrefix("-") { found = n }
                 if a.hasPrefix("--session=") { found = String(a.dropFirst("--session=".count)) }

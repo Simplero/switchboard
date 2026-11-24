@@ -280,7 +280,8 @@ svg{flex-shrink:0}
     <div class="hd"><span id="nfhead"></span><button class="x" data-nf="cancel" title="Close (esc). What you wrote stays for next time.">×</button></div>
     <div class="pick" id="nfmachrow" hidden><span class="lbl">Machine</span><span class="logins" id="nfmachines"></span></div>
     <div class="pick"><span class="lbl">Folder</span><button id="dirbtn" class="dirbtn" data-nf="folder" title="The folder this session starts in. Click to pick another one. The next session starts in ~/Simplero again."></button></div>
-    <div class="pick"><span class="lbl">Login</span><span class="logins" id="nflogins"></span></div>
+    <div class="pick"><span class="lbl">Agent</span><span class="logins" id="nfagents"></span></div>
+    <div class="pick" id="nfloginrow"><span class="lbl">Login</span><span class="logins" id="nflogins"></span></div>
     <div class="sub" id="nfsub"></div>
     <textarea id="nfmsg" rows="4" placeholder="First message (optional)" spellcheck="true"></textarea>
     <div class="files" id="nffiles"></div>
@@ -454,7 +455,7 @@ window.Sessions = {
   // The folder menu (native) picked a folder for new sessions.
   // A column's folder filter, from its menu ("" = all folders).
   setColFolder(ci, p){ const c = colState[ci]; if (!c) return; if (p) c.dir = p; else delete c.dir; store.set('col' + ci, c); render(); },
-  setFolder(p){ if (p){ newCwd = p; if (!nf.machine) bridge('newFolder', {cwd: p}); render(); if (nf.open) nfStatus(); } },
+  setFolder(p){ if (p){ newCwd = p; if (!nfMachine()) bridge('newFolder', {cwd: p}); render(); if (nf.open) nfStatus(); } },
   // Files dropped on the page (the app knows their paths; the page only their names).
   droppedFiles(paths){ $('#newform').classList.remove('drop'); if (nf.open) addFiles(paths); },
   // The session did not start (the app said why): the message, name and files come back.
@@ -793,7 +794,7 @@ function itemHTML(s, ci){
     </span></div>`;
 }
 
-const AGENT_NAMES = {claude: 'Claude Code', codex: 'Codex', grok: 'Grok', opencode: 'OpenCode'};
+const AGENT_NAMES = {claude: 'Claude Code', codex: 'Codex', grok: 'Grok', opencode: 'OpenCode', agy: 'Antigravity'};
 // The words around a match: \uE000 and \uE001 mark the words you searched for.
 function snipHTML(sn){ return esc(sn || '').replace(/\uE000/g, '<mark>').replace(/\uE001/g, '</mark>'); }
 // A search result that matched inside its conversation.
@@ -1077,7 +1078,15 @@ function renderNow(){
 // just starts Claude. Esc closes; what you wrote stays for next time.
 const LOGINS = ['~/.claude','~/.claude-ccl','~/.claude-ccm'];
 // The login is remembered: you often use up one subscription before the next.
-const nf = {open: false, login: null, machine: '', files: [], sent: null};
+const nf = {open: false, agent: 'claude', login: null, machine: '', files: [], sent: null};
+// Claude, or another agent on this Mac, started like your shell aliases (cdx, gg): no approval prompts.
+const NEW_AGENTS = [['claude','Claude'],['codex','Codex'],['grok','Grok'],['agy','Antigravity']];
+const agentName = a => (NEW_AGENTS.find(x => x[0] === a) || NEW_AGENTS[0])[1];
+const lastAgent = () => { const a = store.get('newAgent', 'claude'); return NEW_AGENTS.some(x => x[0] === a) ? a : 'claude'; };
+// Other machines run Claude only.
+const nfMachine = () => nf.agent === 'claude' ? nf.machine : '';
+// Claude starts now (a spare), while you write. The other agents start when you press Enter.
+const nfWarm = () => bridge('newWarm', nf.agent === 'claude' ? {login: nf.login, machine: nf.machine} : {login: null, open: true});
 // Where Claude runs: this Mac (empty), or another machine. Remembered, like the login.
 const machineList = () => (data && data.machines) || [];
 const lastMachine = () => { const m = store.get('newMachine', ''); return machineList().some(x => x.n === m) ? m : ''; };
@@ -1089,17 +1098,23 @@ const baseName = p => p.split('/').filter(Boolean).pop() || p;
 
 function nfStatus(){
   const lg = loginName(nf.login);
-  $('#nfhead').innerHTML = `${ic('plus', 13, 2.4)} New Claude session`;
+  const other = nf.agent !== 'claude';
+  $('#nfhead').innerHTML = `${ic('plus', 13, 2.4)} New ${esc(agentName(nf.agent))} session`;
+  $('#nfagents').innerHTML = NEW_AGENTS.map(([a, n]) =>
+    `<button class="newbtn" data-nf="agent" data-agent="${a}" aria-pressed="${nf.agent === a}" title="${a === 'claude' ? 'Claude Code' : `${n}, with no approval prompts (like your shell alias). On this Mac.`}">${esc(n)}${nf.agent === a ? ' ' + ic('check', 10, 2.8) : ''}</button>`).join('');
+  $('#nfloginrow').hidden = other;
   $('#dirbtn').innerHTML = `${ic('folder',12,2.2)}<span class="mono">${esc(newCwd)}</span>${ic('chev',9,2.6)}`;
   $('#nflogins').innerHTML = LOGINS.map(d => { const n = loginName(d);
     return `<button class="newbtn" data-nf="login" data-login="${d}" aria-pressed="${nf.login === d}" title="Start it with the ${esc(n)} login">${ic(LOGIN_ICON[n] || 'person', 11, 2.2)}${esc(n)}${nf.login === d ? ' ' + ic('check', 10, 2.8) : ''}</button>`; }).join('');
   const ms = machineList();
   if (nf.machine && !ms.some(x => x.n === nf.machine)) nf.machine = '';
-  $('#nfmachrow').hidden = !ms.length;
+  $('#nfmachrow').hidden = !ms.length || other;
   $('#nfmachines').innerHTML = [['', 'This Mac', 'laptop'], ...ms.map(x => [x.n, x.n, 'server'])].map(([v, n, icon]) =>
     `<button class="newbtn" data-nf="machine" data-machine="${esc(v)}" aria-pressed="${nf.machine === v}" title="${v ? `Claude runs on ${esc(n)}, next to its files. You see and type in it here.` : 'Claude runs on this Mac.'}">${ic(icon, 11, 2.2)}${esc(n)}${nf.machine === v ? ' ' + ic('check', 10, 2.8) : ''}</button>`).join('');
   let rd;
-  if (nf.machine){
+  if (other){
+    rd = `<span class="rd">${ic('term', 11, 2.4)} ${esc(agentName(nf.agent))} starts when you press Enter</span>`;
+  } else if (nf.machine){
     const m = ms.find(x => x.n === nf.machine) || {};
     rd = m.ok === true ? `<span class="rd on">${ic('server', 11, 2.4)} Runs on ${esc(nf.machine)}</span><span>· Claude starts there when you press Enter</span>`
       : m.ok === false ? `<span class="rd bad">${ic('warn', 11, 2.4)} ${esc(m.msg || nf.machine + ' does not answer.')}</span>`
@@ -1124,14 +1139,14 @@ function nfGrow(){ nfMsg.style.height = 'auto'; nfMsg.style.height = Math.min(nf
 function openNew(login){
   const was = nf.open;
   nf.open = true; nf.login = login || nf.login || lastLogin();
-  if (!was) nf.machine = lastMachine();
+  if (!was){ nf.machine = lastMachine(); nf.agent = login ? 'claude' : lastAgent(); }
   login = nf.login;
   const r = $('#newbtns').getBoundingClientRect();
   $('#newform').style.top = (r.bottom + 6) + 'px';
   $('#scrim').style.top = (r.bottom + 2) + 'px';
   $('#newform').hidden = false; $('#scrim').hidden = false;
   nfStatus(); nfFiles(); nfGrow(); render();
-  bridge('newWarm', {login, machine: nf.machine});   // Claude starts now, while you write (on this Mac)
+  nfWarm();   // Claude starts now, while you write (on this Mac)
   if (!was || document.activeElement !== nfName) nfMsg.focus();
 }
 // keep: the draft stays (Esc, ×, a click outside). Starting clears it.
@@ -1147,12 +1162,13 @@ function closeNew(giveBack){
 function submitNew(){
   if (!nf.open) return;
   nf.sent = {text: nfMsg.value, name: nfName.value, files: nf.files.slice()};
-  op({op:'new', login: nf.login, machine: nf.machine || null, cwd: newCwd, prompt: nfMsg.value, name: nfName.value.trim(), files: nf.files.slice()});
+  op({op:'new', agent: nf.agent, login: nf.login, machine: nfMachine() || null, cwd: newCwd, prompt: nfMsg.value, name: nfName.value.trim(), files: nf.files.slice()});
   store.set('newLogin', nf.login);
   store.set('newMachine', nf.machine);
+  store.set('newAgent', nf.agent);
   nfMsg.value = ''; nfName.value = ''; nf.files = [];
   // The next session starts in ~/Simplero again.
-  if (newCwd !== HOME_FOLDER){ newCwd = HOME_FOLDER; if (!nf.machine) bridge('newFolder', {cwd: newCwd}); }
+  if (newCwd !== HOME_FOLDER){ newCwd = HOME_FOLDER; if (!nfMachine()) bridge('newFolder', {cwd: newCwd}); }
   nfFiles(); nfGrow();
   closeNew(false);   // the app puts the keyboard in the new session
 }
@@ -1283,16 +1299,22 @@ document.addEventListener('click', e => {
   if (nfb){
     if (nfb.dataset.nf === 'go') submitNew();
     else if (nfb.dataset.nf === 'cancel') closeNew(true);
-    else if (nfb.dataset.nf === 'folder'){ const r = nfb.getBoundingClientRect(); bridge('folderMenu', {folders: folderChoices(nf.machine), current: newCwd, machine: nf.machine || '', x: r.left, y: r.bottom + 4}); }
+    else if (nfb.dataset.nf === 'folder'){ const r = nfb.getBoundingClientRect(); bridge('folderMenu', {folders: folderChoices(nfMachine()), current: newCwd, machine: nfMachine() || '', x: r.left, y: r.bottom + 4}); }
     else if (nfb.dataset.nf === 'login' && nfb.dataset.login !== nf.login){
       nf.login = nfb.dataset.login; store.set('newLogin', nf.login);
-      bridge('newWarm', {login: nf.login, machine: nf.machine});   // that login's Claude starts now
+      nfWarm();   // that login's Claude starts now
+      nfStatus(); render(); nfMsg.focus();
+    }
+    else if (nfb.dataset.nf === 'agent' && nfb.dataset.agent !== nf.agent){
+      nf.agent = nfb.dataset.agent; store.set('newAgent', nf.agent);
+      if (!nfMachine()) bridge('newFolder', {cwd: newCwd});
+      nfWarm();
       nfStatus(); render(); nfMsg.focus();
     }
     else if (nfb.dataset.nf === 'machine' && nfb.dataset.machine !== nf.machine){
       nf.machine = nfb.dataset.machine; store.set('newMachine', nf.machine);
       if (!nf.machine) bridge('newFolder', {cwd: newCwd});
-      bridge('newWarm', {login: nf.login, machine: nf.machine});
+      nfWarm();
       nfStatus(); render(); nfMsg.focus();
     }
     else if (nfb.dataset.nf === 'rm'){ nf.files = nf.files.filter(f => f !== nfb.dataset.path); nfFiles(); $('#nfmsg').focus(); }

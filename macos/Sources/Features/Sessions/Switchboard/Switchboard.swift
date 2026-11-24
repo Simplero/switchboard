@@ -1101,8 +1101,10 @@ final class Switchboard {
             let bin = ProcessInfo.processInfo.environment["SWITCHBOARD_AGENT_BIN"].map { $0 + "/" } ?? ""
             switch e.agent {
             case "claude": return "\(Self.claudeLaunch(e.login_dir)) --resume \(sid) --dangerously-skip-permissions"
-            case "codex": return "\(bin)codex resume \(sid)"
-            case "grok": return "\(bin)grok --resume \(sid)"
+            // The same flags as your shell aliases (cdx, gg): no approval prompts.
+            case "codex": return "\(bin)codex --dangerously-bypass-approvals-and-sandbox resume \(sid)"
+            case "grok": return "\(bin)grok --yolo --resume \(sid)"
+            case "agy": return "\(bin)agy --dangerously-skip-permissions --conversation \(sid)"
             case "opencode": return "\(bin)opencode --session \(sid)"
             default: break
             }
@@ -1153,6 +1155,14 @@ final class Switchboard {
             return (r.ok, r.message)
         case "new":
             // From the sidebar's new-session form: a first message, files and a name, all optional.
+            if let kind = msg["agent"] as? String, kind != "claude" {
+                if let m = msg["machine"] as? String, !m.isEmpty {
+                    return (false, "\(Self.otherAgents[kind]?.name ?? kind) runs on this Mac only. Pick This Mac, or Claude for \(m).")
+                }
+                let r = newOtherAgent(kind, focus: msg["select"] as? Bool ?? true, cwd: msg["cwd"] as? String,
+                                      prompt: msg["prompt"] as? String, name: msg["name"] as? String, files: msg["files"] as? [String] ?? [])
+                return (r.ok, r.message)
+            }
             if let m = msg["machine"] as? String, !m.isEmpty {
                 let r = await newRemoteClaude(m, login: msg["login"] as? String ?? "~/.claude", focus: msg["select"] as? Bool ?? true,
                                               cwd: msg["cwd"] as? String, prompt: msg["prompt"] as? String, name: msg["name"] as? String,
@@ -1928,13 +1938,8 @@ final class Switchboard {
         // The name you gave is Claude's name for the conversation too.
         if let label { command += " --name " + Self.shellQuote(label) }
         if !prompt.isEmpty {
-            // Through a file, not typed into the shell: any length, any characters, line breaks.
-            let dir = SBPaths.data + "/prompts"
-            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            let file = dir + "/\(UUID().uuidString).txt"
-            let text = prompt.hasPrefix("-") ? " " + prompt : prompt     // never read as an option
-            guard SBFiles.writeAtomic(Data(text.utf8), file) else { return (false, "Could not save the first message.", nil) }
-            command += " \"$(cat \(Self.shellQuote(file)); rm -f \(Self.shellQuote(file)))\""
+            guard let arg = Self.promptArgument(prompt) else { return (false, "Could not save the first message.", nil) }
+            command += " " + arg
         }
         // One pane: just Claude. A shell is a tab away (+ in the panel, or ⌘T).
         guard let sf = openAgentTerminal(cwd: folder, command: command, loginDir: loginDir, focus: focus) else {
@@ -1943,6 +1948,51 @@ final class Switchboard {
         if let label { pendingNames[sf] = (label, now) }
         if focus { SessionsAPI.focusTerminal(sf) }
         return (true, "Started.", sf)
+    }
+
+    /// The first message as one shell word: through a file, not typed into the shell, so any
+    /// length, any characters and line breaks work.
+    static func promptArgument(_ prompt: String) -> String? {
+        let dir = SBPaths.data + "/prompts"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let file = dir + "/\(UUID().uuidString).txt"
+        let text = prompt.hasPrefix("-") ? " " + prompt : prompt     // never read as an option
+        guard SBFiles.writeAtomic(Data(text.utf8), file) else { return nil }
+        return "\"$(cat \(shellQuote(file)); rm -f \(shellQuote(file)))\""
+    }
+
+    /// The agents other than Claude that the new-session form starts, with the flags of your
+    /// shell aliases (cdx, gg): no approval prompts. agy is Google's Antigravity CLI.
+    static let otherAgents: [String: (name: String, command: String, promptFlag: String)] = [
+        "codex": ("Codex", "codex --dangerously-bypass-approvals-and-sandbox", ""),
+        "grok": ("Grok", "grok --yolo", ""),
+        "agy": ("Antigravity", "agy --dangerously-skip-permissions", "-i "),
+    ]
+
+    /// A new Codex, Grok or Antigravity session in a folder on this Mac. With `prompt` (and
+    /// `files`), it starts on that first message. The name you give is Switchboard's name for it.
+    func newOtherAgent(_ kind: String, focus: Bool = true, cwd: String? = nil, prompt: String? = nil,
+                       name: String? = nil, files: [String] = []) -> (ok: Bool, message: String, surface: String?) {
+        guard let agent = Self.otherAgents[kind] else { return (false, "Switchboard cannot start “\(kind)”.", nil) }
+        let folder = SBPaths.expand(cwd ?? Self.defaultFolder)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDir), isDir.boolValue else {
+            return (false, "The folder \(cwd ?? folder) does not exist.", nil)
+        }
+        // A test copy runs stand-ins for the other agents (SWITCHBOARD_AGENT_BIN).
+        let bin = ProcessInfo.processInfo.environment["SWITCHBOARD_AGENT_BIN"].map { $0 + "/" } ?? ""
+        var command = bin + agent.command
+        let prompt = Self.firstMessage(prompt, files: files)
+        if !prompt.isEmpty {
+            guard let arg = Self.promptArgument(prompt) else { return (false, "Could not save the first message.", nil) }
+            command += " " + agent.promptFlag + arg
+        }
+        guard let sf = openAgentTerminal(cwd: folder, command: command, loginDir: nil, focus: focus) else {
+            return (false, "Switchboard could not open a terminal.", nil)
+        }
+        if let label = Self.sessionLabel(name) { pendingNames[sf] = (label, now) }
+        if focus { SessionsAPI.focusTerminal(sf) }
+        return (true, "Started \(agent.name).", sf)
     }
 
     /// A new Claude session on another machine (a Linux box): Claude runs there in a tmux session, this

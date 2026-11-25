@@ -20,6 +20,9 @@ body{overflow:hidden}
 .col__empty{font-size:12px;color:var(--muted);text-align:center;padding:14px 6px;border:1.5px dashed color-mix(in srgb,var(--col) 35%,transparent);border-radius:8px}
 .card{cursor:pointer}
 .card.dragging{opacity:.35}
+.ghost{position:fixed;z-index:60;pointer-events:none;rotate:1.5deg;box-shadow:0 12px 30px rgba(0,0,0,.35);opacity:.95}
+.col-dragging{opacity:.6;outline:2px dashed var(--col);outline-offset:-2px}
+body.is-dragging,body.is-dragging *{cursor:grabbing!important;user-select:none;-webkit-user-select:none}
 .card .card__more{position:absolute;top:4px;right:6px;opacity:0;border:0;background:none;color:var(--muted);font:800 15px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;cursor:pointer;border-radius:5px;padding:0 5px;z-index:3}
 .card:hover .card__more,.card__more:focus{opacity:1}
 .card__more:hover{background:var(--line2);color:var(--ink)}
@@ -166,7 +169,7 @@ function cardHTML({r, c}, col){
   let lin = '';
   if (editing && editing.k === r.k && editing.what === 'linear')
     lin = `<input class="line-edit" placeholder="Paste a Linear issue or project link" value="${esc(c.linear || '')}"><div class="edit-hint">Return saves · empty removes it · Esc: cancel</div>`;
-  return `<article class="card ${st === 'off' ? 'card--off' : ''} ${st === 'needs' ? 'needs' : ''}" data-k="${esc(r.k)}" draggable="true" title="Click to go to “${esc(r.n)}”. Drag it to another column.">
+  return `<article class="card ${st === 'off' ? 'card--off' : ''} ${st === 'needs' ? 'needs' : ''}" data-k="${esc(r.k)}" title="Click to go to “${esc(r.n)}”. Drag it to another column.">
     <div class="card__tab"><span class="nm">${esc(r.n)}</span><span class="state state--${st === 'done' ? 'done' : st}">${word}</span>${bubble}</div>
     <button class="card__more" data-cardmenu="${esc(r.k)}" title="Note, waits for, Linear, remove" aria-label="More for ${esc(r.n)}">⋯</button>
     <h3 class="card__title">${esc(title)}</h3>
@@ -189,11 +192,11 @@ function render(){
       return `<section class="col col--${esc(col.color)} collapsed" data-col="${esc(col.id)}" style="--n:${list.length}" title="${esc(col.name)}: ${list.length}. Click to open it."><div class="col__pill"><b>${list.length}</b><span>${esc(col.name)}</span></div></section>`;
     const nameEdit = editing && editing.col === col.id;
     return `<section class="col col--${esc(col.color)}" data-col="${esc(col.id)}">
-      <div class="col__head" draggable="${nameEdit ? 'false' : 'true'}" data-colhead="${esc(col.id)}" title="Drag to move the column. Double-click the name to rename it."><span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
+      <div class="col__head" data-colhead="${esc(col.id)}" title="Drag to move the column. Double-click the name to rename it."><span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
       ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">Drag a session here.</div>`}
     </section>`;
   }).join('');
-  $('#app').innerHTML = `<div class="board__bar"><span class="board__hint">${all.length} session${all.length === 1 ? '' : 's'} · drag a card to park it · esc or ⌘B goes back</span><span class="board__spacer"></span><button class="board__add" data-addcol>+ Column</button></div><div class="board__cols">${cols}</div>`;
+  $('#app').innerHTML = `<div class="board__bar"><span class="board__hint">${all.length} session${all.length === 1 ? '' : 's'} · drag a card to park it, drag a column by its name to move it · esc or ⌘B goes back</span><span class="board__spacer"></span><button class="board__add" data-addcol>+ Column</button></div><div class="board__cols">${cols}</div>`;
   if (editing){
     const f = editing.col ? $('.col__head .name[contenteditable]') : $('.note-edit, .line-edit');
     if (f){ f.focus(); if (editing.col){ const r = document.createRange(); r.selectNodeContents(f); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } else if (f.setSelectionRange) f.setSelectionRange(f.value.length, f.value.length); }
@@ -280,7 +283,10 @@ function colMenu(id, x, y){
 }
 
 // MARK: Drag and drop
-let dragK = null, dragCol = null;
+// With the mouse itself (not the browser's drag and drop, which a WebKit view in an app does not
+// always start): press, move 5 points, and the card or column follows the pointer. Cards: a
+// line shows where it lands. Columns: they change places as you move.
+let dragK = null, dragCol = null, press = null, ghost = null, justDragged = false;
 function moveCard(k, colId, before){
   const list = cardsOf().filter(x => (x.c.col || board.cols[0].id) === colId && x.r.k !== k)
     .sort((a, b) => (a.c.pos ?? -1e9) - (b.c.pos ?? -1e9) || (b.r.la - a.r.la));
@@ -290,57 +296,103 @@ function moveCard(k, colId, before){
   list.forEach((x, n) => setCard(x.r.k, c => { c.pos = n; }));
   setCard(k, c => { if (c.col !== colId) c.at = Math.floor(Date.now() / 1000); c.col = colId; c.hidden = false; });
 }
-document.addEventListener('dragstart', e => {
-  const head = e.target.closest && e.target.closest('[data-colhead]');
-  if (head){ dragCol = head.dataset.colhead; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'col'); return; }
-  const card = e.target.closest && e.target.closest('.card[data-k]');
-  if (!card) return;
-  dragK = card.dataset.k;
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', dragK);
-  setTimeout(() => card.classList.add('dragging'), 0);
-});
-function dropSpot(e){
-  const col = e.target.closest && e.target.closest('.col[data-col]');
+function colAt(x, y){
+  const el = document.elementFromPoint(x, y);
+  return el && el.closest('.col[data-col]');
+}
+function cardSpot(x, y){
+  const col = colAt(x, y);
   if (!col) return null;
   if (col.classList.contains('collapsed')) return {col: col.dataset.col, before: null, el: col};
   const cards = [...col.querySelectorAll('.card[data-k]')].filter(c => c.dataset.k !== dragK);
-  const before = cards.find(c => { const b = c.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; });
+  const before = cards.find(c => { const b = c.getBoundingClientRect(); return y < b.top + b.height / 2; });
   return {col: col.dataset.col, before: before ? before.dataset.k : null, el: col, beforeEl: before};
 }
-document.addEventListener('dragover', e => {
-  if (!dragK && !dragCol) return;
+document.addEventListener('mousedown', e => {
+  if (e.button !== 0 || editing || e.target.closest('button, .chip, .pop, [contenteditable="true"], textarea, input')) return;
+  const head = e.target.closest('[data-colhead]'), card = !head && e.target.closest('.card[data-k]');
+  if (!head && !card) return;
+  press = {x: e.clientX, y: e.clientY, head, card, on: false};
+});
+document.addEventListener('mousemove', e => {
+  if (!press) return;
+  if (!e.buttons){ endDrag(e, true); return; }
+  if (!press.on){
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
+    press.on = true;
+    closePop();
+    if (press.head){
+      dragCol = press.head.dataset.colhead;
+      press.colEl = press.head.closest('.col');
+      press.colEl.classList.add('col-dragging');
+    } else {
+      dragK = press.card.dataset.k;
+      const b = press.card.getBoundingClientRect();
+      ghost = press.card.cloneNode(true);
+      ghost.classList.add('ghost');
+      ghost.style.width = b.width + 'px';
+      press.dx = press.x - b.left; press.dy = press.y - b.top;
+      document.body.appendChild(ghost);
+      press.card.classList.add('dragging');
+    }
+    document.body.classList.add('is-dragging');
+  }
   e.preventDefault();
+  if (dragCol){
+    // The column changes places with the one under the pointer.
+    const over = colAt(e.clientX, e.clientY);
+    if (over && over !== press.colEl){
+      const b = over.getBoundingClientRect();
+      if (e.clientX < b.left + b.width / 2) over.before(press.colEl); else over.after(press.colEl);
+    }
+    autoScroll(e.clientX);
+    return;
+  }
+  ghost.style.left = (e.clientX - press.dx) + 'px';
+  ghost.style.top = (e.clientY - press.dy) + 'px';
   document.querySelectorAll('.drop-target').forEach(x => x.classList.remove('drop-target'));
   document.querySelectorAll('.drop-line').forEach(x => x.remove());
-  const s = dropSpot(e);
-  if (!s) return;
-  s.el.classList.add('drop-target');
-  if (dragK && !s.el.classList.contains('collapsed')){
-    const line = document.createElement('div'); line.className = 'drop-line';
-    if (s.beforeEl) s.beforeEl.before(line); else s.el.appendChild(line);
+  ghost.style.display = 'none';
+  const s = cardSpot(e.clientX, e.clientY);
+  ghost.style.display = '';
+  if (s){
+    s.el.classList.add('drop-target');
+    if (!s.el.classList.contains('collapsed')){
+      const line = document.createElement('div'); line.className = 'drop-line';
+      if (s.beforeEl) s.beforeEl.before(line); else s.el.appendChild(line);
+    }
   }
+  autoScroll(e.clientX);
 });
-document.addEventListener('drop', e => {
-  if (!dragK && !dragCol) return;
-  e.preventDefault();
-  const s = dropSpot(e);
-  if (s && dragK) moveCard(dragK, s.col, s.before);
-  if (s && dragCol && s.col !== dragCol){
-    const from = board.cols.findIndex(c => c.id === dragCol), moving = board.cols[from];
-    board.cols.splice(from, 1);
-    let to = board.cols.findIndex(c => c.id === s.col);
-    const b = s.el.getBoundingClientRect();
-    if (e.clientX > b.left + b.width / 2) to += 1;
-    board.cols.splice(to, 0, moving);
+function autoScroll(x){
+  const cols = document.querySelector('.board__cols'); if (!cols) return;
+  const b = cols.getBoundingClientRect();
+  if (x < b.left + 40) cols.scrollLeft -= 18; else if (x > b.right - 40) cols.scrollLeft += 18;
+}
+function endDrag(e, cancel){
+  const p = press; press = null;
+  if (!p || !p.on){ return; }
+  justDragged = true; setTimeout(() => { justDragged = false; }, 0);
+  document.body.classList.remove('is-dragging');
+  if (dragCol){
+    const order = [...document.querySelectorAll('.col[data-col]')].map(c => c.dataset.col);
+    if (!cancel) board.cols = order.map(id => board.cols.find(c => c.id === id)).filter(Boolean);
+  } else if (dragK){
+    if (ghost) ghost.style.display = 'none';
+    const s = !cancel && cardSpot(e.clientX, e.clientY);
+    if (s) moveCard(dragK, s.col, s.before);
   }
+  if (ghost){ ghost.remove(); ghost = null; }
   dragK = dragCol = null;
-  save(); render();
-});
-document.addEventListener('dragend', () => { dragK = dragCol = null; render(); });
+  if (!cancel) save();
+  render();
+}
+document.addEventListener('mouseup', e => endDrag(e, false));
+window.addEventListener('blur', () => { if (press && press.on) endDrag({clientX: 0, clientY: 0}, true); press = null; });
 
 // MARK: Clicks and keys
 document.addEventListener('click', e => {
+  if (justDragged) return;
   const t = e.target;
   if (pop && !t.closest('.pop')) closePop();
   if (editing && !t.closest('.note-edit, .line-edit, .col__head .name[contenteditable]')){ commitEdit(false); return; }

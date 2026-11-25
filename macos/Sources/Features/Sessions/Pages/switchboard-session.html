@@ -1,32 +1,31 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>In this session</title>
-<link rel="stylesheet" href="switchboard-fizzy.css">
+<link rel="stylesheet" href="switchboard-tools.css">
 <style>
-html,body{margin:0;min-height:100%;background:var(--sbf-canvas)}
+html,body{margin:0;min-height:100%;background:var(--bg)}
 .sess{padding-bottom:28px}
 .chip{cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip:hover{filter:brightness(1.15)}
 .topic{position:relative}
-.topic--done .card__tab{max-width:calc(100% - 96px)}
 .topic .card__tab span:first-child{overflow:hidden;text-overflow:ellipsis}
-.step--fail{color:var(--sbf-needs)}
-.step--fail i{background:var(--sbf-needs);color:var(--sbf-ink-inverted)}
+.step--fail{color:var(--needs)}
+.step--fail i{background:var(--needs);color:var(--surface)}
 .step--fail i::before{content:"✗"}
-.now{font-size:14px;line-height:1.4;color:var(--sbf-ink-2)}
-.now b{color:var(--sbf-ink)}
-.check{display:flex;flex-direction:column;gap:8px;border-radius:var(--sbf-radius);padding:10px 12px;background:color-mix(in srgb,var(--sbf-needs) 10%,var(--sbf-raised));box-shadow:0 0 0 2px var(--sbf-needs)}
+.now{font-size:14px;line-height:1.4;color:var(--ink2)}
+.now b{color:var(--ink)}
+.check{display:flex;flex-direction:column;gap:8px;border-radius:9px;padding:10px 12px;background:color-mix(in srgb,var(--needs) 10%,var(--surface));box-shadow:0 0 0 2px var(--needs)}
 .check .t{font-size:15px;font-weight:800;line-height:1.3}
-.empty{font-size:13px;color:var(--sbf-ink-3);line-height:1.45}
+.empty{font-size:13px;color:var(--muted);line-height:1.45}
 details.links summary{cursor:pointer;list-style:none}
 details.links summary::-webkit-details-marker{display:none}
 .linklist{display:flex;flex-direction:column;gap:4px;margin-top:8px}
-.linklist a{font-size:12.5px;color:var(--sbf-ink-2);text-decoration:none;display:flex;gap:6px;align-items:center;min-width:0;cursor:pointer}
+.linklist a{font-size:12.5px;color:var(--ink2);text-decoration:none;display:flex;gap:6px;align-items:center;min-width:0;cursor:pointer}
 .linklist a span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.linklist a:hover{color:var(--sbf-ink)}
-.linklist small{color:var(--sbf-ink-4);font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;flex:none;width:52px}
+.linklist a:hover{color:var(--ink)}
+.linklist small{color:var(--faint);font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;flex:none;width:52px}
 .btn{cursor:pointer}
-.reading{font-size:12px;color:var(--sbf-ink-3)}
+.reading{font-size:12px;color:var(--muted)}
 </style></head>
 <body><div class="sess" id="app"></div>
 <script>
@@ -90,13 +89,15 @@ function items(t){
 function topic(r, t, i){
   const done = t.s === 'done';
   const cls = done ? 'topic--done' : t.s === 'you' ? 'topic--needs' : t.s === 'later' ? 'topic--wait' : 'topic--work';
-  const word = done ? '✓ Done' : t.s === 'you' ? '? Needs you' : t.s === 'later' ? '◷ Later' : '↻ Agent on it';
+  let word = done ? '✓ Done' : t.s === 'you' ? '? Needs you' : t.s === 'later' ? '◷ Later' : '↻ Agent on it';
   const pr = prOf(r, t, i === 0 && !done);
   const merged = pr && pr.s === 'MERGED';
+  if (merged) word = '✓ Merged';
+  const stc = done || merged ? 'done' : t.s === 'you' ? 'needs' : t.s === 'later' ? 'wait' : 'work';
   const stamp = done || merged ? `<div class="stamp">${merged ? 'Merged' : 'Done'}${merged && pr.ma ? `<small>${new Date(pr.ma).toLocaleDateString(undefined, {month: 'short', day: 'numeric'})}</small>` : ''}</div>` : '';
   const links = (t.l || []).map(u => chip(r, u, done)).join('');
   return `<article class="topic ${cls}">
-    <div class="card__tab"><span>${esc(t.t)}</span><span class="sep"></span><span>${word}</span></div>
+    <div class="card__tab"><span class="nm">${esc(t.t)}</span><span class="state state--${stc}">${word}</span></div>
     ${stamp}
     ${done ? '' : steps(r, pr, t.s === 'you')}
     ${done ? '' : items(t)}
@@ -122,11 +123,11 @@ function render(){
   }
   if (open.length) h += `<div class="sess__label">Doing now</div>` + open.map((t, i) => topic(r, t, i)).join('');
   if (done.length) h += `<div class="sess__label">Done in this session</div>` + done.map(t => topic(r, t, 9)).join('');
-  if ((r.bl || []).length) h += `<div class="sess__label">Later</div><ul class="items" style="--c:var(--sbf-violet)">${r.bl.map(x => `<li class="item"><i></i><span>${esc(x)}</span></li>`).join('')}</ul>`;
+  if ((r.bl || []).length) h += `<div class="sess__label">Later</div><ul class="items" style="--c:var(--accent)">${r.bl.map(x => `<li class="item"><i></i><span>${esc(x)}</span></li>`).join('')}</ul>`;
   if (r.bd){
     const last = topics[topics.length - 1];
     h += `<div class="drift"><span><b>✦ New topic:</b> ${esc(last ? last.t : 'the latest messages')}. It is not what this session started on.</span>
-      <div class="btn-row"><button class="btn btn--solid" style="--btn:var(--sbf-violet)" data-drift="doc">Start a Doc for it</button><button class="btn" style="--btn:var(--sbf-violet)" data-drift="split">Split into a new session</button></div></div>`;
+      <div class="btn-row"><button class="btn btn--solid" style="--btn:var(--accent)" data-drift="doc">Start a Doc for it</button><button class="btn" style="--btn:var(--accent)" data-drift="split">Split into a new session</button></div></div>`;
   }
   const lk = r.lk || [];
   if (lk.length){

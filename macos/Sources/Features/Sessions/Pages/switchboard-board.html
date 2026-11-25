@@ -1,45 +1,43 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Board</title>
-<link rel="stylesheet" href="switchboard-fizzy.css">
+<link rel="stylesheet" href="switchboard-tools.css">
 <style>
-html,body{margin:0;height:100%;background:var(--sbf-canvas)}
+html,body{margin:0;height:100%;background:var(--bg)}
 body{overflow:hidden}
 .board{height:100%;min-height:0}
 .board__cols{flex:1;min-height:0;align-items:stretch}
 .col{max-height:100%;overflow-y:auto;overflow-x:visible;padding-top:0}
 .col > *{flex-shrink:0}
-.col__head{position:sticky;top:0;z-index:3;cursor:grab;background:color-mix(in srgb,var(--col) 14%,var(--sbf-canvas));margin:0 -10px;padding-left:10px;padding-right:10px;border-radius:14px 14px 0 0}
-@media (max-width:760px){:root{--sbf-col-w:292px}}
+.col__head{position:sticky;top:0;z-index:3;cursor:grab;background:var(--sunk)}
 .col__head .name{outline:none;border-radius:4px;padding:0 3px}
-.col__head .name[contenteditable="true"]{background:var(--sbf-raised);cursor:text;text-transform:none;letter-spacing:0}
-.col__more{opacity:0;border:0;background:none;color:var(--sbf-ink-3);font:700 14px var(--sbf-font);cursor:pointer;padding:0 4px;border-radius:5px}
+.col__head .name[contenteditable="true"]{background:var(--surface);cursor:text;text-transform:none;letter-spacing:0}
+.col__more{opacity:0;border:0;background:none;color:var(--muted);font:700 14px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;cursor:pointer;padding:0 4px;border-radius:5px}
 .col:hover .col__more,.col__more:focus{opacity:1}
-.col__more:hover{color:var(--sbf-ink);background:var(--sbf-line)}
+.col__more:hover{color:var(--ink);background:var(--line2)}
 .col.drop-target{outline:2px dashed var(--col);outline-offset:-2px}
 .col.collapsed{cursor:pointer}
-.col__empty{font-size:12px;color:var(--sbf-ink-3);text-align:center;padding:14px 6px;border:1.5px dashed color-mix(in srgb,var(--col) 35%,transparent);border-radius:8px}
+.col__empty{font-size:12px;color:var(--muted);text-align:center;padding:14px 6px;border:1.5px dashed color-mix(in srgb,var(--col) 35%,transparent);border-radius:8px}
 .card{cursor:pointer}
 .card.dragging{opacity:.35}
-.card .card__more{position:absolute;top:4px;right:6px;opacity:0;border:0;background:none;color:var(--sbf-ink-3);font:800 15px var(--sbf-font);cursor:pointer;border-radius:5px;padding:0 5px;z-index:3}
+.card .card__more{position:absolute;top:4px;right:6px;opacity:0;border:0;background:none;color:var(--muted);font:800 15px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;cursor:pointer;border-radius:5px;padding:0 5px;z-index:3}
 .card:hover .card__more,.card__more:focus{opacity:1}
-.card__more:hover{background:var(--sbf-line);color:var(--sbf-ink)}
-.card:has(.bubble) .card__more{right:52px}
-.drop-line{height:3px;border-radius:2px;background:var(--col);margin:-6px 4px}
+.card__more:hover{background:var(--line2);color:var(--ink)}
+.drop-line{height:3px;border-radius:2px;background:var(--col);margin:-4px 4px}
 .chip{cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip:hover{filter:brightness(1.15)}
-textarea.note-edit,input.line-edit{font:13px/1.35 var(--sbf-font);color:var(--sbf-ink);background:var(--sbf-raised);border:1.5px solid var(--sbf-yellow);border-radius:6px;padding:6px 8px;resize:vertical;width:100%;box-sizing:border-box}
-input.line-edit{border-color:var(--sbf-violet)}
-.edit-hint{font-size:11px;color:var(--sbf-ink-3)}
-.pop{position:fixed;z-index:50;min-width:200px;max-width:320px;max-height:70vh;overflow:auto;background:var(--sbf-raised);color:var(--sbf-ink);border-radius:10px;box-shadow:0 0 0 1px var(--sbf-line),0 12px 32px oklch(0% 0 0/40%);padding:5px;font:13px var(--sbf-font)}
+textarea.note-edit,input.line-edit{font:13px/1.35 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:var(--ink);background:var(--surface);border:1.5px solid var(--needs);border-radius:6px;padding:6px 8px;resize:vertical;width:100%;box-sizing:border-box}
+input.line-edit{border-color:var(--accent)}
+.edit-hint{font-size:11px;color:var(--muted)}
+.pop{position:fixed;z-index:50;min-width:200px;max-width:320px;max-height:70vh;overflow:auto;background:var(--surface);color:var(--ink);border-radius:10px;box-shadow:0 0 0 1px var(--line2),0 12px 32px oklch(0% 0 0/40%);padding:5px;font:13px -apple-system,BlinkMacSystemFont,system-ui,sans-serif}
 .pop button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:none;color:inherit;font:inherit;padding:6px 9px;border-radius:6px;cursor:pointer}
-.pop button:hover,.pop button:focus{background:color-mix(in srgb,var(--sbf-blue) 22%,transparent);outline:none}
-.pop .cap{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sbf-ink-3);padding:6px 9px 3px}
-.pop hr{border:0;border-top:1px solid var(--sbf-line);margin:4px 2px}
+.pop button:hover,.pop button:focus{background:color-mix(in srgb,var(--accent) 22%,transparent);outline:none}
+.pop .cap{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:6px 9px 3px}
+.pop hr{border:0;border-top:1px solid var(--line2);margin:4px 2px}
 .pop .sw{display:flex;gap:6px;padding:4px 9px 6px;flex-wrap:wrap}
-.pop .sw button{width:22px;height:22px;padding:0;border-radius:50%;background:var(--c);justify-content:center;color:var(--sbf-ink-inverted);font-weight:900}
+.pop .sw button{width:22px;height:22px;padding:0;border-radius:50%;background:var(--c);justify-content:center;color:var(--surface);font-weight:900}
 .pop .check{width:14px;flex:none;text-align:center}
-.board__hint{font-size:12px;color:var(--sbf-ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.board__hint{margin-right:auto;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .board__add{white-space:nowrap;flex:none;cursor:pointer}
 .board__bar .board__spacer{display:none}
 </style></head>
@@ -160,7 +158,7 @@ function cardHTML({r, c}, col){
   let bubble = '';
   if (col !== board.cols[0] && c.at){
     const [n, unit] = span(nowT - c.at);
-    if (nowT - c.at >= 3600) bubble = `<div class="bubble" title="In ${esc(col.name)} for ${n} ${unit}"><span><small>${esc(col.name.slice(0, 8))}</small><b>${n}</b><small>${unit}</small></span></div>`;
+    if (nowT - c.at >= 3600) bubble = `<span class="bubble" title="In ${esc(col.name)} for ${n} ${unit}"><span><b>${n}</b><small>${unit}</small></span></span>`;
   }
   let note = c.note ? `<div class="card__note">${esc(c.note)}</div>` : '';
   if (editing && editing.k === r.k && editing.what === 'note')
@@ -169,8 +167,7 @@ function cardHTML({r, c}, col){
   if (editing && editing.k === r.k && editing.what === 'linear')
     lin = `<input class="line-edit" placeholder="Paste a Linear issue or project link" value="${esc(c.linear || '')}"><div class="edit-hint">Return saves · empty removes it · Esc: cancel</div>`;
   return `<article class="card ${st === 'off' ? 'card--off' : ''} ${st === 'needs' ? 'needs' : ''}" data-k="${esc(r.k)}" draggable="true" title="Click to go to “${esc(r.n)}”. Drag it to another column.">
-    <div class="card__tab"><span>${esc(r.n)}</span><span class="sep"></span><span>${word}</span></div>
-    ${bubble}
+    <div class="card__tab"><span class="nm">${esc(r.n)}</span><span class="state state--${st === 'done' ? 'done' : st}">${word}</span>${bubble}</div>
     <button class="card__more" data-cardmenu="${esc(r.k)}" title="Note, waits for, Linear, remove" aria-label="More for ${esc(r.n)}">⋯</button>
     <h3 class="card__title">${esc(title)}</h3>
     ${next ? `<div class="card__next">${next}</div>` : ''}
@@ -265,7 +262,7 @@ function colMenu(id, x, y){
   const col = board.cols.find(c => c.id === id);
   openPop(x, y, `
     <button data-a="rename">Rename</button>
-    <div class="sw">${COLORS.map(cl => `<button data-a="color" data-c="${cl}" style="--c:var(--sbf-${cl})" title="${cl}" aria-label="Color ${cl}">${col.color === cl ? '✓' : ''}</button>`).join('')}</div>
+    <div class="sw">${COLORS.map(cl => `<button data-a="color" data-c="${cl}" style="--c:var(--c-${cl})" title="${cl}" aria-label="Color ${cl}">${col.color === cl ? '✓' : ''}</button>`).join('')}</div>
     <button data-a="fold">Fold it</button>
     ${board.cols.length > 1 ? `<hr><button data-a="remove">Remove the column (its cards go to ${esc(board.cols.find(c => c.id !== id).name)})</button>` : ''}`,
     a => {

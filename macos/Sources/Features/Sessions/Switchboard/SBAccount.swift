@@ -33,6 +33,8 @@ final class SBAccount: NSObject, ObservableObject {
     @Published private(set) var lastReport: Date?
 
     private var apiKey: String?
+    /// The mobile API key, for the phone's server on another machine (SBServe).
+    var currentKey: String? { apiKey }
     private var timer: Timer?
     private var authSession: ASWebAuthenticationSession?
 

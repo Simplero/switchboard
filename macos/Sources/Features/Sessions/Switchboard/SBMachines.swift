@@ -24,6 +24,9 @@ enum SBMachines {
         var tmux: String? = nil
         /// Claude's projects folder there, from its home (checks use their own).
         var projects: String? = nil
+        /// false: no server for the phone there (SBServe). Its port, when not 4480.
+        var serve: Bool? = nil
+        var serve_port: Int? = nil
         var host: String { ssh ?? name }
     }
 
@@ -356,7 +359,7 @@ echo "WT=$wt"; echo "BRANCH=$b"
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 12
+    static let helperVersion = 13
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -440,9 +443,11 @@ stop)
   alive "$id" && t kill-session -t "=sb-$id"
   gone "$id"
   rm -f "$STATE/run-$id.sh" ;;
-attach)
+attach|start)
+  # start: the same, with no terminal (the phone starts a session here while the Mac is away).
   id="$1"; login="$2"; dir="$3"; mode="$4"; first="${5:-}"
   name="sb-$id"
+  if [ "$cmd" = start ] && alive "$id"; then echo "It runs already."; exit 0; fi
   if alive "$id"; then
     if [ "$(t show-environment -t "=$name" SB_LOGIN 2>/dev/null)" = "SB_LOGIN=$login" ]; then
       infocmp "${TERM:-dumb}" >/dev/null 2>&1 || export TERM=xterm-256color
@@ -478,10 +483,15 @@ attach)
     fi
   } > "$run"
   chmod +x "$run"
+  if [ "$cmd" = start ]; then
+    t new-session -d -x 120 -y 40 -s "$name" -e "SB_LOGIN=$login" "bash -l $(printf %q "$run")"
+    sleep 1; alive "$id" || { echo "Claude did not start on $(hostname)."; exit 4; }
+    exit 0
+  fi
   tmux -u -L "$SOCK" -f "$CONF" new-session -s "$name" -e "SB_LOGIN=$login" "bash -l $(printf %q "$run")"
   alive "$id" && exit 75
   exit 0 ;;
-*) echo "usage: switchboard-remote attach|stop|list|receive|pack|gitinfo|version"; exit 2 ;;
+*) echo "usage: switchboard-remote attach|start|stop|list|receive|pack|gitinfo|version"; exit 2 ;;
 esac
 """#
 }

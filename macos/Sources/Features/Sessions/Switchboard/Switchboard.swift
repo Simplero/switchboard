@@ -321,10 +321,47 @@ final class Switchboard {
             for m in machines {
                 let st = await SBMachines.prepare(m)
                 remoteRunning[m.name] = st.ok ? await SBMachines.running(m) : nil
+                guard st.ok, let home = st.home else { continue }
+                await SBServe.sync(m, home: home)
+                await adoptStarted(m, home: home)
             }
             remoteLooking = false
             publish()
         }
+    }
+
+    /// Sessions the phone started on a machine while this Mac was away (the server there,
+    /// SBServe): they come into the sidebar, not running here (a click shows them).
+    private func adoptStarted(_ m: SBMachines.Machine, home: String) async {
+        guard let running = remoteRunning[m.name] else { return }
+        let known = Set(reg.sessions.values.compactMap(\.session_id))
+        let unknown = running.subtracting(known)
+        guard !unknown.isEmpty else { return }
+        let started = await SBServe.startedThere(m, home: home)
+        for sid in unknown {
+            guard let info = started[sid] else { continue }
+            let k = "claude:" + sid
+            guard reg.sessions[k] == nil else { continue }
+            var e = SBEntry(key: k, agent: "claude")
+            e.session_id = sid
+            e.machine = m.name
+            let folder = info["cwd"] as? String ?? "~"
+            e.cwd = folder
+            e.name = (folder as NSString).lastPathComponent.isEmpty ? "Session" : (folder as NSString).lastPathComponent
+            e.custom_name = false
+            e.login_dir = info["login"] as? String ?? "~/.claude"
+            e.cls = defaultClass(folder)
+            e.labels = []
+            e.first_seen = now
+            e.last_activity = info["at"] as? Double ?? now
+            e.open = false
+            e.backend = "ghostty"
+            e.state = "closed"
+            reg.sessions[k] = e
+            SessionSwitchLog.did("“\(e.name ?? sid)” was started on \(m.name) from the phone: it is in the sidebar now")
+        }
+        save()
+        publish()
     }
 
     /// The work tree each open Claude session works in: the slot its Claude claimed (it may

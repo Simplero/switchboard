@@ -9,6 +9,7 @@
   --ink:#17171A; --ink2:#3A3A42; --muted:#5A5A62; --faint:#A0A0A7;
   --accent:#2D5BE3; --accent-soft:#E7EDFD; --sel:#3B5BDB;
   --needs:#C25A12; --needs-soft:#FCEFE4; --work:#2D5BE3; --done:#1E7A4C;
+  --c-blue:#2D5BE3; --c-yellow:#B7791F; --c-violet:#6E4BD8; --c-pink:#C2357A; --c-aqua:#1B8A9C; --c-lime:#5E8A12; --c-gray:#7A7A82;
 }
 @media (prefers-color-scheme: dark){
   :root{
@@ -16,6 +17,7 @@
     --ink:#EDEDF0; --ink2:#C9C9CF; --muted:#A3A3AA; --faint:#606068;
     --accent:#7FA2FF; --accent-soft:#232B45; --sel:#3B5BDB;
     --needs:#F2A15C; --needs-soft:#3A2618; --work:#7FA2FF; --done:#5BC98E;
+    --c-blue:#7FA2FF; --c-yellow:#E5B85C; --c-violet:#B39BFF; --c-pink:#F28CB8; --c-aqua:#6FCFDC; --c-lime:#A9D267; --c-gray:#8A8A92;
   }
 }
 *{box-sizing:border-box}
@@ -113,6 +115,12 @@ button.chip.srv:hover{border-color:var(--accent);color:var(--ink)}
    session that was here does not close or archive the one that took its place. */
 .donebtn[disabled]{opacity:.45;cursor:default}
 .donebtn[disabled]:hover{border-color:var(--line2);color:var(--ink2)}
+/* The Board column the session is in (⌘B): its dot and its name; click to move it. */
+.stage{max-width:190px}
+.stage .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--col,var(--c-gray))}
+.stage .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.stage.off{color:var(--muted)}
+.stage.off .dot{background:transparent;border:1.5px solid var(--faint)}
 .pinned{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--muted);white-space:nowrap}
 svg{flex-shrink:0}
 .acct{margin-left:auto;display:flex;align-items:center;gap:10px;min-width:0}
@@ -314,6 +322,17 @@ function placeHTML(s){
   return where + md + wt + diff + srv;
 }
 
+// The Board column of the session (⌘B), as a button: click it to move the session to another
+// column. A running session without a card is in the first column, as on the Board.
+function stageHTML(s){
+  const b = ctx.board;
+  if (!b || !(b.cols || []).length || s.a === 'shell' || s.pn != null) return '';
+  const c = (b.cards || {})[s.k];
+  const col = c === '' ? null : b.cols.find(x => x.id === c) || b.cols[0];
+  const tip = col ? `On the Board (⌘B) in ${col.name}. Click to move it to another column.` : 'Not on the Board (⌘B). Click to put it in a column.';
+  return `<button class="donebtn stage${col ? '' : ' off'}" data-act="stage" data-k="${esc(s.k)}" data-col="${esc(col ? col.id : '')}" title="${esc(tip)}"${col ? ` style="--col:var(--c-${esc(col.color)})"` : ''}><span class="dot"></span><span class="nm">${col ? esc(col.name) : 'Not on the Board'}</span>${ic('chev',9,2.6)}</button>`;
+}
+
 function render(){
   // The session of this window: the first Claude session in any of its tabs, so a
   // new tab (a shell, a server) keeps the same panel above it.
@@ -393,7 +412,7 @@ function render(){
   const u = ctx.update && ctx.update.running < 24 ? ctx.update : null;
   // A pin stays (Chief of staff, lazygit): no Done. Unpin it first (right-click it in the sidebar).
   const done = s && s.pn != null ? `<span class="pinned" title="Pinned: it stays in the Pinned row at the top of the sidebar. Right-click it there to unpin it.">${ic('pin',11,2.4)} Pinned</span>`
-    : s ? (s.a === 'shell' ? '' : `<button class="donebtn" data-act="close" data-k="${esc(s.k)}"${wait} title="Close it: Claude stops, and the session waits under Not running in the sidebar until you archive it. Click it there to resume it.">${ic('moon',11,2.6)} Close</button>`)
+    : s ? stageHTML(s) + (s.a === 'shell' ? '' : `<button class="donebtn" data-act="close" data-k="${esc(s.k)}"${wait} title="Close it: Claude stops, and the session waits under Not running in the sidebar until you archive it. Click it there to resume it.">${ic('moon',11,2.6)} Close</button>`)
       + `<button class="donebtn" data-act="done" data-k="${esc(s.k)}"${wait} title="${s.a === 'shell' ? 'Close this window and its tabs.' : 'We are done with it: close this session (Claude and every tab in this window) and move it to the Archive. It is under Archive in the sidebar; click it there to resume it.'}">${ic('check',11,2.6)} ${s.a === 'shell' ? 'Close' : 'Archive'}</button>` : '';
   $('#tabs').innerHTML = tabs.map(x => `<button class="tab" data-tab="${x.id}" aria-selected="${!!x.selected}"><span>${esc(tabTitle(x.title))}</span>${tabs.length > 1 ? `<span class="x" data-close="${x.id}" title="Close tab">✕</span>` : ''}</button>`).join('')
     + `<button class="addtab" data-act="newtab" title="New tab in this window (⌘T)">+</button>`
@@ -423,6 +442,11 @@ document.addEventListener('click', async e => {
   if ((act === 'done' || act === 'close') && !armed(t.closest('[data-act]').dataset.k)) return;
   if (act === 'done'){ bridge('op', {o: {op: 'done', k: t.closest('[data-act]').dataset.k}}); return; }
   if (act === 'close'){ bridge('op', {o: {op: 'close', k: t.closest('[data-act]').dataset.k}}); return; }
+  if (act === 'stage'){
+    const btn = t.closest('[data-act]'), r = btn.getBoundingClientRect();
+    bridge('stageMenu', {k: btn.dataset.k, col: btn.dataset.col, x: r.left, y: r.bottom + 4});
+    return;
+  }
   if (act === 'login'){
     const btn = t.closest('[data-act]'), r = btn.getBoundingClientRect();
     bridge('loginMenu', {k: btn.dataset.k, ld: btn.dataset.ld, x: r.left, y: r.bottom + 4});

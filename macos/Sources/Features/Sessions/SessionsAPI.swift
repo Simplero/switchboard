@@ -313,6 +313,11 @@ final class SessionsAPI {
             default: return (400, ["error": "unknown check"])
             }
             return (200, ["ok": true])
+        case ("POST", "/sb/boardmove"):
+            // For checks: what the panel's Board menu does. {"k", "col"}; no col takes it off.
+            guard let k = req.json["k"] as? String else { return (400, ["error": "k"]) }
+            SBBoard.shared.move(k, to: req.json["col"] as? String)
+            return (200, ["board": SBBoard.shared.summary])
         case ("POST", "/sb/restart"):
             // For checks: what "Restart to update" does, without the question.
             Task { @MainActor in SessionsVersion.shared.restart(confirm: false) }

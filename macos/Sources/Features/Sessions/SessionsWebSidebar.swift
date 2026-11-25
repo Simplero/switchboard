@@ -117,7 +117,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 tabs.append(["id": w.windowNumber, "title": title, "selected": w === selected])
             }
         }
-        var ctx: [String: Any] = ["surfaces": surfaces, "tabs": tabs]
+        var ctx: [String: Any] = ["surfaces": surfaces, "tabs": tabs, "board": SBBoard.shared.summary]
         let v = SessionsVersion.shared
         if v.updateAvailable { ctx["update"] = ["running": v.runningBuild, "installed": v.installedBuild] }
         guard let data = try? JSONSerialization.data(withJSONObject: ctx, options: [.sortedKeys]),
@@ -330,6 +330,30 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 }
                 if dir == current { i.action = nil }
                 menu.addItem(i)
+            }
+            let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
+            let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
+            menu.popUp(positioning: nil, at: point, in: webView)
+        case "stageMenu":
+            // The panel's Board button: move this session to another column of the Board (⌘B)
+            // without leaving it.
+            guard let k = body["k"] as? String else { return }
+            let now = body["col"] as? String ?? ""
+            menuActions = []
+            let menu = NSMenu()
+            let head = NSMenuItem(title: "Move it on the Board to:", action: nil, keyEquivalent: "")
+            head.isEnabled = false
+            menu.addItem(head)
+            for c in SBBoard.shared.columns {
+                guard let id = c["id"] else { continue }
+                let i = item(c["name"] ?? "Column", checked: id == now) { SBBoard.shared.move(k, to: id) }
+                if id == now { i.action = nil }
+                menu.addItem(i)
+            }
+            menu.addItem(.separator())
+            if !now.isEmpty { menu.addItem(item("Take it off the Board") { SBBoard.shared.move(k, to: nil) }) }
+            if SessionsDocPanes.shared.tool != SBToolPage.Kind.board.rawValue {
+                menu.addItem(item("Show the Board  ⌘B") { SessionsDocPanes.shared.toggle(.board) })
             }
             let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
             let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)

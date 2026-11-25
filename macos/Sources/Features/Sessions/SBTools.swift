@@ -146,6 +146,56 @@ final class SBBoard {
         if let d = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]) {
             SBFiles.queue.async { _ = SBFiles.writeAtomic(d, Self.path) }
         }
+        // The panel above the terminal shows the column of its session.
+        SessionsWeb.banner.pushBannerContext()
+    }
+
+    /// The Pinned column is the page's own (it shows the pins); a card cannot go there.
+    static let pinned = "__pinned"
+
+    /// The columns a card can go to, in the Board's order: [id, name, color].
+    var columns: [[String: String]] {
+        ((json["cols"] as? [[String: Any]]) ?? []).compactMap { c in
+            guard let id = c["id"] as? String, id != Self.pinned else { return nil }
+            return ["id": id, "name": c["name"] as? String ?? "Column", "color": c["color"] as? String ?? "gray"]
+        }
+    }
+
+    /// For the panel: the columns, and each card's column ("" = taken off the Board). A running
+    /// session without a card is in the first column, as on the Board.
+    var summary: [String: Any] {
+        let cols = columns, ids = Set(cols.compactMap { $0["id"] })
+        var cards: [String: String] = [:]
+        for (k, v) in (json["cards"] as? [String: Any]) ?? [:] {
+            guard let c = v as? [String: Any] else { continue }
+            if c["hidden"] as? Bool == true { cards[k] = ""; continue }
+            if let col = c["col"] as? String, ids.contains(col) { cards[k] = col }
+        }
+        return ["cols": cols, "cards": cards]
+    }
+
+    /// Put a session's card at the end of a column (nil: take it off the Board), as a drag on
+    /// the Board does.
+    func move(_ k: String, to col: String?) {
+        var state = json
+        var cards = (state["cards"] as? [String: Any]) ?? [:]
+        let home = columns.first?["id"] ?? ""
+        var c = (cards[k] as? [String: Any]) ?? ["col": home, "at": Int(Date().timeIntervalSince1970)]
+        if let col {
+            let last = cards.values.compactMap { $0 as? [String: Any] }
+                .filter { ($0["col"] as? String) == col && ($0["hidden"] as? Bool) != true }
+                .compactMap { ($0["pos"] as? NSNumber)?.doubleValue }.max() ?? -1
+            if (c["col"] as? String) != col || c["hidden"] as? Bool == true { c["at"] = Int(Date().timeIntervalSince1970) }
+            c["col"] = col
+            c["pos"] = last + 1
+            c["hidden"] = false
+        } else {
+            c["hidden"] = true
+        }
+        cards[k] = c
+        state["cards"] = cards
+        save(state)
+        SessionsDocPanes.shared.pushTools()
     }
 }
 

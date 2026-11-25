@@ -55,7 +55,7 @@ input.line-edit{border-color:var(--accent)}
 </style></head>
 <body><div id="app" class="board">
   <div class="board__bar">
-    <label class="bsearch"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" placeholder="Find a session: name, what it works on, a note…" autocomplete="off" spellcheck="false"><kbd id="qk">/</kbd></label>
+    <label class="bsearch"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" placeholder="Find a session by its title…" autocomplete="off" spellcheck="false"><kbd id="qk">/</kbd></label>
     <div class="bfilters" id="filters"></div>
     <span class="board__hint" id="hint"></span>
     <button class="board__add" data-addcol>+ Column</button>
@@ -197,18 +197,17 @@ function cardHTML({r, c}, col){
   </article>`;
 }
 
-// Find and filter: words match the name, what it works on, the next step, your note, the folder,
-// the branch and its topics; the buttons keep only sessions in that state.
+// Find and filter: words match the card's titles only (the session's name and the line under it);
+// the buttons keep only sessions in that state.
 const FILTERS = [['all', 'All'], ['needs', '? Needs you'], ['work', '↻ Working'], ['done', '✓ Answered'], ['off', '⏾ Off']];
 let filter = 'all', words = [];
 try { filter = localStorage.getItem('boardFilter') || 'all'; } catch (e) {}
 const filtering = () => filter !== 'all' || words.length > 0;
 function matches(x){
-  const r = x.r, c = x.c;
+  const r = x.r;
   if (filter !== 'all' && stateOf(r)[0] !== filter) return false;
   if (!words.length) return true;
-  const hay = [r.n, r.gl, r.t, r.ns, r.bn, r.cwd, r.br, r.m, c.note, (r.bc || [])[0], ...(r.bt || []).map(t => t.t + ' ' + (t.x || ''))]
-    .filter(Boolean).join(' \n ').toLowerCase();
+  const hay = [r.n, r.gl || r.t].filter(Boolean).join(' \n ').toLowerCase();
   return words.every(w => hay.includes(w));
 }
 function render(){

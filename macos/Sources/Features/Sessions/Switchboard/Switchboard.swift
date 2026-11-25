@@ -1073,10 +1073,12 @@ final class Switchboard {
         guard !words.isEmpty else { return [] }
         var hits: [(Int, Int, Double, SBEntry)] = []
         for e in reg.sessions.values {
-            let sm = e.summary
-            let hay = [e.name, e.tab_title, sm?.title, sm?.said, sm?.next_step, (e.labels ?? []).joined(separator: " "), e.cls,
-                       SBLogins.short(e.login_dir), e.cwd, e.branch, e.session_id, e.last_message]
-                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ").lowercased()
+            // Titles only: the session's name, its summary title and what its brief says it works on
+            // (the lines its sidebar row and its Board card show). The words inside the conversation
+            // are the next step: "Search inside all conversations" (⌘↩).
+            let goal = e.session_id.flatMap { briefs[$0]?.goal }
+            let hay = [e.name, e.summary?.title, goal]
+                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " \n ").lowercased()
             guard words.allSatisfy({ hay.contains($0) }) else { continue }
             let nameHit = words.allSatisfy { (e.name ?? "").lowercased().contains($0) }
             hits.append((e.isOpen ? 0 : 1, nameHit ? 0 : 1, -(e.last_activity ?? e.closed_at ?? 0), e))

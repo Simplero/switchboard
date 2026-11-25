@@ -262,6 +262,7 @@ final class SBRemote {
         case "new": newSession(c, msg)
         case "put": put(c, msg)
         case "op": op(c, msg)
+        case "search": search(c, msg)
         default: reply(c, msg, ok: false, "Unknown request “\(t)”.")
         }
     }
@@ -710,7 +711,30 @@ final class SBRemote {
     }
 
     /// The sidebar's actions the phone offers. Nothing here moves the Mac's window.
-    static let ops: Set<String> = ["open", "done", "park", "close", "ack", "rename", "switch"]
+    static let ops: Set<String> = ["open", "done", "park", "close", "ack", "rename", "switch", "resume_conv"]
+
+    /// The phone's search, as ⌘O on the Mac: sessions by their titles, also the ones in the Archive
+    /// (the list the phone has leaves those out). With "deep": also every conversation on this Mac
+    /// that says the words ("Search inside all conversations"), with the words around the match.
+    private func search(_ c: Client, _ msg: [String: Any]) {
+        let q = (msg["q"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let deep = msg["deep"] as? Bool == true
+        func lean(_ r: [String: Any]) -> [String: Any] {
+            var r = r
+            for k in ["bt", "bl", "lk", "pr", "op"] { r.removeValue(forKey: k) }
+            return r
+        }
+        Task { @MainActor in
+            guard !q.isEmpty else { return reply(c, msg, ok: true, "", extra: ["s": [], "conv": []]) }
+            let rows = Switchboard.shared.search(q, limit: 40).map(lean)
+            var conv: [[String: Any]] = []
+            if deep {
+                let r = await Switchboard.shared.searchConversations(q)
+                conv = ((r["conv"] as? [[String: Any]]) ?? []).prefix(40).map(lean)
+            }
+            reply(c, msg, ok: true, "", extra: ["s": rows, "conv": conv])
+        }
+    }
 
     private func op(_ c: Client, _ msg: [String: Any]) {
         let name = msg["op"] as? String ?? ""

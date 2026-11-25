@@ -64,6 +64,9 @@ enum SBServe {
         ExecStart=/usr/bin/env python3 %h/.local/bin/switchboard-serve %h/\(confPath(m))
         Restart=always
         RestartSec=10
+        # Only this server stops with the service: a tmux server it started (a session the phone
+        # started here) keeps running, with every Claude in it.
+        KillMode=process
 
         [Install]
         WantedBy=default.target

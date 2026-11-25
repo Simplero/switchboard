@@ -422,7 +422,7 @@ _paths = {}
 
 def transcript_path(sid):
     hit = _paths.get(sid)
-    if hit and os.path.exists(hit[0]):
+    if hit and hit[0] and os.path.exists(hit[0]):
         return hit[0]
     if hit and time.time() - hit[1] < 10:
         return None
@@ -488,8 +488,13 @@ def live_sessions():
     return got
 
 
+def pane(sid):
+    """The pane of a session ("=name" alone is a session, not a pane, for tmux)."""
+    return "=sb-" + sid + ":"
+
+
 def screen_of(sid):
-    code, out = tmux("capture-pane", "-p", "-t", "=sb-" + sid)
+    code, out = tmux("capture-pane", "-p", "-t", pane(sid))
     return out.rstrip("\n") if code == 0 else None
 
 
@@ -518,6 +523,15 @@ def rows():
     logins = {l.get("d"): l.get("lg") for l in conf().get("logins") or raw.get("logins") or []}
     out = []
     for sid, activity in live_sessions().items():
+        try:
+            out.append(row_of(sid, activity, macrows, raw, started, names, logins))
+        except Exception as e:
+            log("row", sid, e)
+    return out, raw
+
+
+def row_of(sid, activity, macrows, raw, started, names, logins):
+    if True:
         k = "claude:" + sid
         mac = macrows.get(k) or {}
         screen = screen_of(sid) or ""
@@ -550,8 +564,7 @@ def rows():
                     row[f] = mac[f]
         else:
             row["st"] = "info"
-        out.append(row)
-    return out, raw
+        return row
 
 
 # MARK: WebSocket (RFC 6455), just what the phone needs
@@ -714,9 +727,11 @@ class Phone:
     async def send(self, obj):
         await send_frame(self.writer, self.lock, 1, json.dumps(obj).encode())
 
-    async def reply(self, msg, ok, text, **extra):
-        r = {"t": "r", "id": msg.get("id"), "ok": ok, "text": text}
-        r.update(extra)
+    async def reply(self, msg, ok, message, **extra):
+        if msg.get("id") is None:
+            return
+        r = dict(extra)
+        r.update({"t": "r", "id": msg.get("id"), "ok": ok, "msg": message})
         await self.send(r)
 
     async def serve(self):
@@ -729,7 +744,13 @@ class Phone:
                 except ValueError:
                     continue
                 if isinstance(msg, dict):
-                    await self.handle(msg)
+                    try:
+                        await self.handle(msg)
+                    except Closed:
+                        raise
+                    except Exception as e:
+                        log("request", msg.get("t"), repr(e))
+                        await self.reply(msg, False, "Something went wrong on this machine.")
         except (Closed, asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError, asyncio.LimitOverrunError):
             pass
         finally:
@@ -882,9 +903,9 @@ class Phone:
             return await self.reply(msg, False, "That session is not running. Reopen it first.")
         for n in msg.get("keys") or []:
             if n in KEYS:
-                tmux("send-keys", "-t", "=sb-" + sid, KEYS[n])
+                tmux("send-keys", "-t", pane(sid), KEYS[n])
             elif isinstance(n, str) and len(n) == 1 and n.isascii() and n.isalnum():
-                tmux("send-keys", "-t", "=sb-" + sid, "-l", n)
+                tmux("send-keys", "-t", pane(sid), "-l", n)
             else:
                 return await self.reply(msg, False, f"Unknown key “{n}”.")
         await self.reply(msg, True, "Sent.")
@@ -978,10 +999,10 @@ def paste(sid, text):
     buf = "sbphone-" + uuid.uuid4().hex[:8]
     if tmux("load-buffer", "-b", buf, "-", input=text.encode())[0] != 0:
         return False
-    if tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", "=sb-" + sid)[0] != 0:
+    if tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", pane(sid))[0] != 0:
         return False
     time.sleep(0.2)
-    return tmux("send-keys", "-t", "=sb-" + sid, "Enter")[0] == 0
+    return tmux("send-keys", "-t", pane(sid), "Enter")[0] == 0
 
 
 PHONES = set()

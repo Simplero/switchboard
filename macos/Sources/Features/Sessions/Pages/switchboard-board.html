@@ -57,6 +57,20 @@ input.line-edit{border-color:var(--accent)}
 .spin{animation:spin 1.2s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion: reduce){.spin{animation:none}}
 .state--new{color:var(--needs);background:var(--needs-soft)}
+/* A card reads like a sidebar row: the state's icon on the left (the spinner while it works),
+   the name, then the state's word and what it does now. The name keeps its size; the rest is smaller. */
+.board .card{flex-direction:row;align-items:flex-start;gap:8px;padding:9px 11px}
+.card__ico{flex:none;width:14px;display:flex;justify-content:center;padding-top:4px}
+.card__ico svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.card__body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.card__line{font-size:13px;line-height:1.4;color:var(--ink2)}
+.card__line .word{font-weight:700}
+.card__line b{font-weight:700}
+.board .card__title{font-size:13.5px;font-weight:500;color:var(--ink2);line-height:1.4}
+.board .card__note{font-size:12.5px}
+.board .card__meta{font-size:11.5px}
+.board .chip{font-size:12px;height:22px}
+.board .chip svg{width:11px;height:11px}
 /* The keyboard's place: a thick ring and a marker on the left, not color alone. */
 .card{scroll-margin:48px 0 8px}
 .card.kb,.col__head.kb,.col.collapsed.kb{box-shadow:0 0 0 2.5px var(--accent);border-radius:9px}
@@ -149,15 +163,15 @@ const rowOf = k => rows.find(r => r.k === k);
 // the agent works) and its word; a new answer (after you last looked) has the bell.
 function stateOf(r){
   const st = (r.u && NEEDS.has(r.st)) ? 'urgent' : (r.st || 'info');
-  const badge = (cls, icon, word, spin) => `<span class="state state--${cls}">${ic(icon, spin ? 'spin' : '')}${word}</span>`;
-  if (!r.o) return ['off', badge('off', 'moon', 'Off')];
-  if (st === 'working' || st === 'reading') return ['work', badge('work', LOOK[st][0], LOOK[st][1], st === 'working')];
-  if (st === 'urgent' || NEEDS.has(st)) return ['needs', badge('needs', LOOK[st][0], LOOK[st][1])];
+  // [filter group, icon, word, color, spins]
+  if (!r.o) return ['off', 'moon', 'Off', '--muted'];
+  if (st === 'working' || st === 'reading') return ['work', LOOK[st][0], LOOK[st][1], st === 'working' ? '--work' : '--muted', st === 'working'];
+  if (st === 'urgent' || NEEDS.has(st)) return ['needs', LOOK[st][0], LOOK[st][1], '--needs'];
   // (Only once the Mac has a time you last looked at it: before that, nothing counts as new.)
   const fresh = r.a !== 'shell' && r.vs > 0 && r.fa > r.vs && (st === 'done' || st === 'info');
-  if (fresh) return ['needs', badge('new', 'bell', st === 'done' ? 'New: done' : 'New answer')];
+  if (fresh) return ['needs', 'bell', st === 'done' ? 'New: done' : 'New answer', '--needs'];
   const [icon, word] = LOOK[st] || LOOK.info;
-  return ['done', badge(st === 'parked' || st === 'shell' ? 'wait' : 'done', icon, word)];
+  return ['done', icon, word, st === 'done' || st === 'handled' ? '--done' : '--muted'];
 }
 function ago(t){
   const s = Math.max(0, nowT - t);
@@ -210,19 +224,20 @@ function linearLabel(u){
 }
 
 function cardHTML({r, c, pinned}, col){
-  const [st, badge] = stateOf(r);
+  const [st, icon, word, color, spins] = stateOf(r);
   const title = r.gl || r.t || r.n;
   let next = '';
-  // While it works: what the agent does now, all of it, as the sidebar shows it.
-  if (st === 'work' && r.wl) next = `<b>Now:</b> ${esc(r.wl.replace(/^[^\p{L}\p{N}(]+/u, ''))}`;
+  // As in the sidebar: the state's word, then what the agent does now (all of it), else what is next.
+  if (st === 'work' && r.wl) next = esc(r.wl.replace(/^[^\p{L}\p{N}(]+/u, ''));
   else if (r.bc && r.bc[0]) next = `<b>Check:</b> ${esc(r.bc[0])}`;
-  else if (r.ns) next = `<b>Next:</b> ${esc(r.ns)}`;
-  else if (r.bn) next = `<b>Now:</b> ${esc(r.bn)}`;
+  else if (r.ns) next = esc(r.ns);
+  else if (r.bn) next = esc(r.bn);
   const chips = linksOf(r).map(u => { const [k, t] = linkLabel(r, u); return `<span class="chip" data-link="${esc(u)}" title="${esc(u)}">${I[k]}${esc(t)}</span>`; });
   for (const w of c.waits || []){ const o = rowOf(w); chips.push(`<span class="chip chip--wait" data-open="${esc(w)}" title="Waits for this session">${I.wait}Waits for ${esc(o ? o.n : 'a closed session')}</span>`); }
   if (c.linear) chips.push(`<span class="chip chip--linear" data-link="${esc(c.linear)}" title="${esc(c.linear)}">${I.lin}${esc(linearLabel(c.linear))}</span>`);
   const meta = [];
-  meta.push(st === 'work' ? 'Working' : r.o ? 'Updated ' + ago(r.la) : 'Off since ' + ago(r.ca || r.la).replace(' ago', '').replace('yesterday', 'yesterday'));
+  // (While it works, the line above already says so.)
+  if (st !== 'work') meta.push(r.o ? 'Updated ' + ago(r.la) : 'Off since ' + ago(r.ca || r.la).replace(' ago', '').replace('yesterday', 'yesterday'));
   const pr = (r.pr || [])[0];
   if (pr) meta.push(pr.s === 'MERGED' ? `PR #${pr.n} merged` : pr.s === 'CLOSED' ? `PR #${pr.n} closed` : pr.ci === 'fail' ? `PR #${pr.n} · CI failed` : pr.ci === 'pending' ? `PR #${pr.n} · CI running` : `PR #${pr.n} · CI passed`);
   if (r.m) meta.push(r.m);
@@ -240,13 +255,16 @@ function cardHTML({r, c, pinned}, col){
   if (editing && editing.k === r.k && editing.what === 'linear')
     lin = `<input class="line-edit" placeholder="Paste a Linear issue or project link" value="${esc(c.linear || '')}"><div class="edit-hint">Return saves · empty removes it · Esc: cancel</div>`;
   return `<article class="card ${st === 'off' ? 'card--off' : ''} ${st === 'needs' ? 'needs' : ''}" data-k="${esc(r.k)}" ${pinned ? 'data-pinned' : ''} title="${pinned ? `Click to go to “${esc(r.n)}”. Pinned: it stays in Pinned while it is pinned in the sidebar.` : `Click to go to “${esc(r.n)}”. Drag it to another column.`}">
-    <div class="card__tab"><span class="nm">${esc(r.n)}</span>${badge}${bubble}</div>
+    <span class="card__ico" style="color:var(${color})">${ic(icon, spins ? 'spin' : '')}</span>
+    <div class="card__body">
+      <div class="card__tab"><span class="nm">${esc(r.n)}</span>${bubble}</div>
+      <div class="card__line"><span class="word" style="color:var(${color})">${esc(word)}</span>${next ? ' · ' + next : ''}</div>
+      ${title && title !== r.n ? `<h3 class="card__title">${esc(title)}</h3>` : ''}
+      ${note}${lin}
+      ${chips.length ? `<div class="card__links">${chips.join('')}</div>` : ''}
+      ${meta.length ? `<div class="card__meta">${meta.map(m => `<span>${esc(m)}</span>`).join('')}</div>` : ''}
+    </div>
     <button class="card__more" data-cardmenu="${esc(r.k)}" title="Note, waits for, Linear, remove" aria-label="More for ${esc(r.n)}">⋯</button>
-    <h3 class="card__title">${esc(title)}</h3>
-    ${next ? `<div class="card__next">${next}</div>` : ''}
-    ${note}${lin}
-    ${chips.length ? `<div class="card__links">${chips.join('')}</div>` : ''}
-    <div class="card__meta">${meta.map(m => `<span>${esc(m)}</span>`).join('')}</div>
   </article>`;
 }
 

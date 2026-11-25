@@ -463,7 +463,7 @@ final class Switchboard {
                   let size = transcriptSizes[sid], size > 0 else { continue }
             if e.state == "working" || e.screen == "working" { continue }
             if now - (failedBriefs[sid] ?? 0) < 300 { continue }
-            if let b = briefs[sid] {
+            if let b = briefs[sid], b.topics != nil {   // one from before topics: read it again
                 let focused = e.surface_id != nil && e.surface_id == focusedSF
                 if size - b.size < 2000 || now - b.at < (focused ? 90 : 900) { continue }
             }
@@ -936,10 +936,31 @@ final class Switchboard {
             [l.kind, l.url, SBLinks.label(l), l.kind == "artifact" ? (l.login.map { SBLogins.short($0) } ?? "") : ""]
         }
         let br = sid.flatMap { briefs[$0] }
+        // Its pull requests: the one of its branch, then the ones its brief links to.
+        var prs: [[String: Any]] = []
+        if e.isOpen {
+            var seen = Set<String>()
+            func add(_ key: String) {
+                prKeys.insert(key)
+                if let p = SBPRs.cached(key), seen.insert(p.url).inserted { prs.append(p.json) }
+            }
+            if e.machine == nil, let wk = worktreeOf[e.key], let w = worktrees[wk]?.info, !w.shared, !w.branch.isEmpty,
+               let slug = SBPRs.repo(of: w.top) {
+                add(SBPRs.branchKey(slug, w.branch))
+            }
+            let urls = (br?.topics ?? []).flatMap(\.links) + [br?.checkURL].compactMap { $0 }
+            for u in urls { if let p = SBPRs.parsePR(u) { add(SBPRs.prKey(p.slug, p.number)) } }
+        }
         return [
             "k": e.key, "n": name, "c": e.cls ?? "Work", "lb": e.labels ?? [],
             "lk": lk, "gl": br?.goal ?? "", "op": (br?.open ?? []).map { [$0.who ?? "", $0.text] },
             "bp": sid.map { pendingBriefs.contains($0) } ?? false,
+            // In this session (⌘I) and the panel: where it stands, what to check, its topics.
+            "bn": br?.now ?? "", "bc": br?.check.map { [$0, br?.checkURL ?? ""] as Any } ?? NSNull(),
+            "bt": (br?.topics ?? []).map { t in
+                ["t": t.title, "s": t.state, "d": t.done, "o": t.open.map { [$0.who ?? "", $0.text] }, "l": t.links] as [String: Any]
+            },
+            "bl": br?.later ?? [], "bd": br?.drift == true, "ba": Int(br?.at ?? 0), "pr": prs,
             "lg": e.agent == "shell" ? NSNull() as Any : SBLogins.short(e.login_dir) as Any, "ld": n(e.login_dir), "a": n(e.agent),
             "st": st, "u": s?.urgent == true, "ns": String(ns.prefix(160)), "t": String((s?.title ?? "").prefix(60)),
             "sd": String((s?.said ?? "").prefix(300)), "lm": String((e.last_message ?? "").prefix(300)),
@@ -965,7 +986,12 @@ final class Switchboard {
         ]
     }
 
+    /// The pull requests the last payload asked about (SBPRs looks at them again when due).
+    private var prKeys = Set<String>()
+
     func payloadObject() -> [String: Any] {
+        prKeys = []
+        defer { SBPRs.refresh(Array(prKeys)) }
         let sess = reg.sessions.values.sorted { ($0.last_activity ?? 0) > ($1.last_activity ?? 0) }
         let live = sess.filter(\.isOpen)
         // Pins are always there, running or not.
@@ -1011,6 +1037,7 @@ final class Switchboard {
         let json = String(decoding: data, as: UTF8.self)
         SessionsWeb.shared.setData(json)
         SessionsWeb.banner.setData(json)
+        SessionsDocPanes.shared.pushTools()
     }
 
     /// The current data as JSON, for a page that just loaded.

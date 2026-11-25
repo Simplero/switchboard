@@ -12,6 +12,8 @@ final class SessionsDocPanes: ObservableObject {
 
     /// Session id (TerminalController.sessionsWorkspace) → its page.
     @Published private(set) var pages: [String: DocPage] = [:]
+    /// A page of Switchboard's own in the pane, over the Doc (SBTools): "board" or "session".
+    @Published var tool: String?
 
     /// Simplero Docs: the share host, and Docs in the admin.
     nonisolated static func isDoc(_ url: URL) -> Bool {

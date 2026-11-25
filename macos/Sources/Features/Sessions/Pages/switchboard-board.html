@@ -1,0 +1,377 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Board</title>
+<link rel="stylesheet" href="switchboard-fizzy.css">
+<style>
+html,body{margin:0;height:100%;background:var(--sbf-canvas)}
+body{overflow:hidden}
+.board{height:100%;min-height:0}
+.board__cols{flex:1;min-height:0;align-items:stretch}
+.col{max-height:100%;overflow-y:auto;overflow-x:visible;padding-top:0}
+.col > *{flex-shrink:0}
+.col__head{position:sticky;top:0;z-index:3;cursor:grab;background:color-mix(in srgb,var(--col) 14%,var(--sbf-canvas));margin:0 -10px;padding-left:10px;padding-right:10px;border-radius:14px 14px 0 0}
+@media (max-width:760px){:root{--sbf-col-w:292px}}
+.col__head .name{outline:none;border-radius:4px;padding:0 3px}
+.col__head .name[contenteditable="true"]{background:var(--sbf-raised);cursor:text;text-transform:none;letter-spacing:0}
+.col__more{opacity:0;border:0;background:none;color:var(--sbf-ink-3);font:700 14px var(--sbf-font);cursor:pointer;padding:0 4px;border-radius:5px}
+.col:hover .col__more,.col__more:focus{opacity:1}
+.col__more:hover{color:var(--sbf-ink);background:var(--sbf-line)}
+.col.drop-target{outline:2px dashed var(--col);outline-offset:-2px}
+.col.collapsed{cursor:pointer}
+.col__empty{font-size:12px;color:var(--sbf-ink-3);text-align:center;padding:14px 6px;border:1.5px dashed color-mix(in srgb,var(--col) 35%,transparent);border-radius:8px}
+.card{cursor:pointer}
+.card.dragging{opacity:.35}
+.card .card__more{position:absolute;top:4px;right:6px;opacity:0;border:0;background:none;color:var(--sbf-ink-3);font:800 15px var(--sbf-font);cursor:pointer;border-radius:5px;padding:0 5px;z-index:3}
+.card:hover .card__more,.card__more:focus{opacity:1}
+.card__more:hover{background:var(--sbf-line);color:var(--sbf-ink)}
+.card:has(.bubble) .card__more{right:52px}
+.drop-line{height:3px;border-radius:2px;background:var(--col);margin:-6px 4px}
+.chip{cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip:hover{filter:brightness(1.15)}
+textarea.note-edit,input.line-edit{font:13px/1.35 var(--sbf-font);color:var(--sbf-ink);background:var(--sbf-raised);border:1.5px solid var(--sbf-yellow);border-radius:6px;padding:6px 8px;resize:vertical;width:100%;box-sizing:border-box}
+input.line-edit{border-color:var(--sbf-violet)}
+.edit-hint{font-size:11px;color:var(--sbf-ink-3)}
+.pop{position:fixed;z-index:50;min-width:200px;max-width:320px;max-height:70vh;overflow:auto;background:var(--sbf-raised);color:var(--sbf-ink);border-radius:10px;box-shadow:0 0 0 1px var(--sbf-line),0 12px 32px oklch(0% 0 0/40%);padding:5px;font:13px var(--sbf-font)}
+.pop button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:none;color:inherit;font:inherit;padding:6px 9px;border-radius:6px;cursor:pointer}
+.pop button:hover,.pop button:focus{background:color-mix(in srgb,var(--sbf-blue) 22%,transparent);outline:none}
+.pop .cap{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--sbf-ink-3);padding:6px 9px 3px}
+.pop hr{border:0;border-top:1px solid var(--sbf-line);margin:4px 2px}
+.pop .sw{display:flex;gap:6px;padding:4px 9px 6px;flex-wrap:wrap}
+.pop .sw button{width:22px;height:22px;padding:0;border-radius:50%;background:var(--c);justify-content:center;color:var(--sbf-ink-inverted);font-weight:900}
+.pop .check{width:14px;flex:none;text-align:center}
+.board__hint{font-size:12px;color:var(--sbf-ink-3)}
+</style></head>
+<body><div id="app" class="board"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const bridge = (type, d = {}) => { try { window.webkit.messageHandlers.sessions.postMessage({type, ...d}) } catch (e) {} };
+const I = {
+  doc: '<svg viewBox="0 0 24 24"><path d="M14 3H6v18h12V7zM14 3v4h4"/></svg>',
+  pr: '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4"/></svg>',
+  web: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg>',
+  lin: '<svg viewBox="0 0 24 24"><path d="M4 14l6 6M4 9l11 11M6 5l13 13M11 4l9 9"/></svg>',
+  wait: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+};
+const COLORS = ['blue', 'yellow', 'violet', 'pink', 'aqua', 'lime', 'gray'];
+const NEEDS = new Set(['permission', 'question', 'review', 'heads_up']);
+
+let rows = [], board = {cols: [], cards: {}, collapsed: []}, nowT = Date.now() / 1000;
+let editing = null;   // {k, what: 'note'|'linear'} or {col}
+
+window.SB = {
+  setData(p, extra){
+    rows = (p && p.s) || [];
+    if (extra && extra.board && !editing && !dragK && !dragCol) board = structuredClone(extra.board);
+    if (extra && extra.now) nowT = extra.now;
+    rekey();
+    if (!editing && !dragK && !dragCol) render();
+  }
+};
+
+// A session whose key changed (its conversation id arrived) keeps its card.
+function rekey(){
+  let changed = false;
+  for (const r of rows){
+    if (r.was && board.cards[r.was] && !board.cards[r.k]){ board.cards[r.k] = board.cards[r.was]; delete board.cards[r.was]; changed = true; }
+  }
+  if (changed) save();
+}
+const save = () => bridge('board', {board});
+const rowOf = k => rows.find(r => r.k === k);
+
+function stateOf(r){
+  if (!r.o) return ['off', '⏾ Off', 'Not running'];
+  if (r.st === 'working') return ['work', '↻ Working', 'Working'];
+  if (r.u || NEEDS.has(r.st)) return ['needs', '? Needs you', 'Needs you'];
+  return ['done', '✓ Answered', 'Answered'];
+}
+function ago(t){
+  const s = Math.max(0, nowT - t);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  if (s < 172800) return 'yesterday';
+  return Math.floor(s / 86400) + ' days ago';
+}
+function span(s){
+  if (s < 3600) return [Math.max(1, Math.floor(s / 60)), 'min'];
+  if (s < 86400) return [Math.floor(s / 3600), Math.floor(s / 3600) === 1 ? 'hour' : 'hours'];
+  return [Math.floor(s / 86400), Math.floor(s / 86400) === 1 ? 'day' : 'days'];
+}
+
+// The sessions on the board: every running one (not the pins), and every one you put on it.
+function cardsOf(){
+  const out = [];
+  const first = board.cols[0] && board.cols[0].id;
+  for (const r of rows){
+    if (r.ar || r.k.startsWith('conv:')) continue;
+    const c = board.cards[r.k];
+    if (c && c.hidden) continue;
+    if (!c && !(r.o && r.pn == null && r.a !== 'shell')) continue;
+    out.push({r, c: c || {col: first, pos: null}});
+  }
+  return out;
+}
+
+function linkLabel(r, u){
+  const l = (r.lk || []).find(x => x[1] === u);
+  if (l && l[2]) return [l[0] === 'doc' ? 'doc' : 'web', l[2]];
+  const pr = (r.pr || []).find(p => p.u === u);
+  if (pr || /\/pull\/\d+/.test(u)) return ['pr', 'PR #' + (pr ? pr.n : u.match(/\/pull\/(\d+)/)[1])];
+  if (/doc\.simplero\.me|\/admin\/docs/.test(u)) return ['doc', 'Doc'];
+  try { const x = new URL(u); return ['web', (x.host.split('.')[0] + x.pathname).replace(/\/$/, '').slice(0, 40)]; } catch (e) { return ['web', u.slice(0, 40)]; }
+}
+function linksOf(r){
+  const urls = [];
+  if (r.bc && r.bc[1]) urls.push(r.bc[1]);
+  for (const t of r.bt || []) if (t.s !== 'done') for (const u of t.l || []) urls.push(u);
+  if (!urls.length){ const d = (r.lk || []).find(l => l[0] === 'doc'); if (d) urls.push(d[1]); }
+  return [...new Set(urls)].slice(0, 2);
+}
+function linearLabel(u){
+  const m = u.match(/issue\/([A-Z]+-\d+)/) || u.match(/project\/([^/?#]+)/);
+  return m ? m[1].replace(/-[0-9a-f]{8,}$/, '').replace(/-/g, ' ').replace(/^(\w+ \d+)$/, s => s.replace(' ', '-')) : 'Linear';
+}
+
+function cardHTML({r, c}, col){
+  const [st, word] = stateOf(r);
+  const title = r.gl || r.t || r.n;
+  let next = '';
+  if (r.bc && r.bc[0]) next = `<b>Check:</b> ${esc(r.bc[0])}`;
+  else if (st === 'work' && r.wl) next = `<b>Now:</b> ${esc(r.wl.replace(/^\S+\s+/, '').replace(/\s*\(.*$/, ''))}`;
+  else if (r.ns) next = `<b>Next:</b> ${esc(r.ns)}`;
+  else if (r.bn) next = `<b>Now:</b> ${esc(r.bn)}`;
+  const chips = linksOf(r).map(u => { const [k, t] = linkLabel(r, u); return `<span class="chip" data-link="${esc(u)}" title="${esc(u)}">${I[k]}${esc(t)}</span>`; });
+  for (const w of c.waits || []){ const o = rowOf(w); chips.push(`<span class="chip chip--wait" data-open="${esc(w)}" title="Waits for this session">${I.wait}Waits for ${esc(o ? o.n : 'a closed session')}</span>`); }
+  if (c.linear) chips.push(`<span class="chip chip--linear" data-link="${esc(c.linear)}" title="${esc(c.linear)}">${I.lin}${esc(linearLabel(c.linear))}</span>`);
+  const meta = [];
+  meta.push(st === 'work' ? 'Working' : r.o ? 'Updated ' + ago(r.la) : 'Off since ' + ago(r.ca || r.la).replace(' ago', '').replace('yesterday', 'yesterday'));
+  const pr = (r.pr || [])[0];
+  if (pr) meta.push(pr.s === 'MERGED' ? `PR #${pr.n} merged` : pr.s === 'CLOSED' ? `PR #${pr.n} closed` : pr.ci === 'fail' ? `PR #${pr.n} · CI failed` : pr.ci === 'pending' ? `PR #${pr.n} · CI running` : `PR #${pr.n} · CI passed`);
+  if (r.m) meta.push(r.m);
+  const slot = r.wt && r.wt.top && r.wt.top.match(/Simplero-(\d+)$/);
+  if (slot) meta.push('Slot ' + slot[1]);
+  let bubble = '';
+  if (col !== board.cols[0] && c.at){
+    const [n, unit] = span(nowT - c.at);
+    if (nowT - c.at >= 3600) bubble = `<div class="bubble" title="In ${esc(col.name)} for ${n} ${unit}"><span><small>${esc(col.name.slice(0, 8))}</small><b>${n}</b><small>${unit}</small></span></div>`;
+  }
+  let note = c.note ? `<div class="card__note">${esc(c.note)}</div>` : '';
+  if (editing && editing.k === r.k && editing.what === 'note')
+    note = `<textarea class="note-edit" rows="3" placeholder="A note for yourself">${esc(c.note || '')}</textarea><div class="edit-hint">Return saves · Shift-Return: new line · Esc: cancel</div>`;
+  let lin = '';
+  if (editing && editing.k === r.k && editing.what === 'linear')
+    lin = `<input class="line-edit" placeholder="Paste a Linear issue or project link" value="${esc(c.linear || '')}"><div class="edit-hint">Return saves · empty removes it · Esc: cancel</div>`;
+  return `<article class="card ${st === 'off' ? 'card--off' : ''} ${st === 'needs' ? 'needs' : ''}" data-k="${esc(r.k)}" draggable="true" title="Click to go to “${esc(r.n)}”. Drag it to another column.">
+    <div class="card__tab"><span>${esc(r.n)}</span><span class="sep"></span><span>${word}</span></div>
+    ${bubble}
+    <button class="card__more" data-cardmenu="${esc(r.k)}" title="Note, waits for, Linear, remove" aria-label="More for ${esc(r.n)}">⋯</button>
+    <h3 class="card__title">${esc(title)}</h3>
+    ${next ? `<div class="card__next">${next}</div>` : ''}
+    ${note}${lin}
+    ${chips.length ? `<div class="card__links">${chips.join('')}</div>` : ''}
+    <div class="card__meta">${meta.map(m => `<span>${esc(m)}</span>`).join('')}</div>
+  </article>`;
+}
+
+function render(){
+  const all = cardsOf();
+  const byCol = Object.fromEntries(board.cols.map(c => [c.id, []]));
+  for (const x of all) (byCol[x.c.col] || byCol[board.cols[0].id]).push(x);
+  for (const id in byCol) byCol[id].sort((a, b) => (a.c.pos ?? -1e9 + 0) - (b.c.pos ?? -1e9 + 0) || (b.r.la - a.r.la));
+  const collapsed = new Set(board.collapsed || []);
+  const cols = board.cols.map(col => {
+    const list = byCol[col.id];
+    if (collapsed.has(col.id))
+      return `<section class="col col--${esc(col.color)} collapsed" data-col="${esc(col.id)}" style="--n:${list.length}" title="${esc(col.name)}: ${list.length}. Click to open it."><div class="col__pill"><b>${list.length}</b><span>${esc(col.name)}</span></div></section>`;
+    const nameEdit = editing && editing.col === col.id;
+    return `<section class="col col--${esc(col.color)}" data-col="${esc(col.id)}">
+      <div class="col__head" draggable="${nameEdit ? 'false' : 'true'}" data-colhead="${esc(col.id)}" title="Drag to move the column. Double-click the name to rename it."><span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
+      ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">Drag a session here.</div>`}
+    </section>`;
+  }).join('');
+  $('#app').innerHTML = `<div class="board__bar"><span class="board__hint">${all.length} session${all.length === 1 ? '' : 's'} · drag a card to park it</span><span class="board__spacer"></span><button class="board__add" data-addcol>+ Column</button></div><div class="board__cols">${cols}</div>`;
+  if (editing){
+    const f = editing.col ? $('.col__head .name[contenteditable]') : $('.note-edit, .line-edit');
+    if (f){ f.focus(); if (editing.col){ const r = document.createRange(); r.selectNodeContents(f); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } else if (f.setSelectionRange) f.setSelectionRange(f.value.length, f.value.length); }
+  }
+}
+
+// MARK: Edits
+function setCard(k, f){
+  const c = board.cards[k] || {col: board.cols[0].id, pos: null, at: Math.floor(Date.now() / 1000)};
+  f(c);
+  board.cards[k] = c;
+}
+function commitEdit(cancel){
+  const e = editing; editing = null;
+  if (!e || cancel){ render(); return; }
+  if (e.col){
+    const n = ($('.col__head .name[contenteditable]')?.textContent || '').trim();
+    const col = board.cols.find(c => c.id === e.col);
+    if (col && n) col.name = n.slice(0, 40);
+  } else if (e.what === 'note'){
+    const v = ($('.note-edit')?.value || '').trim();
+    setCard(e.k, c => { c.note = v; });
+  } else if (e.what === 'linear'){
+    const v = ($('.line-edit')?.value || '').trim();
+    setCard(e.k, c => { c.linear = /^https?:\/\//.test(v) ? v : ''; });
+  }
+  save(); render();
+}
+
+// MARK: Menus
+let pop = null;
+function closePop(){ if (pop){ pop.remove(); pop = null; } }
+function openPop(x, y, html, onClick){
+  closePop();
+  pop = document.createElement('div');
+  pop.className = 'pop';
+  pop.innerHTML = html;
+  document.body.appendChild(pop);
+  const r = pop.getBoundingClientRect();
+  pop.style.left = Math.max(6, Math.min(x, innerWidth - r.width - 6)) + 'px';
+  pop.style.top = Math.max(6, Math.min(y, innerHeight - r.height - 6)) + 'px';
+  pop.addEventListener('click', e => { const b = e.target.closest('button[data-a]'); if (b){ e.stopPropagation(); const a = b.dataset; closePop(); onClick(a); } });
+  pop.querySelector('button')?.focus();
+}
+function cardMenu(k, x, y){
+  const r = rowOf(k), c = board.cards[k] || {};
+  const others = rows.filter(o => o.k !== k && !o.ar && !o.k.startsWith('conv:') && (o.o || board.cards[o.k]) && o.pn == null).slice(0, 30);
+  const waits = new Set(c.waits || []);
+  openPop(x, y, `
+    <button data-a="note">✎ ${c.note ? 'Edit the note' : 'Add a note'}</button>
+    <button data-a="linear">${I.lin.replace('<svg', '<svg width="13" height="13" style="stroke:currentColor;fill:none;stroke-width:2"')} ${c.linear ? 'Change the Linear link' : 'Link to Linear'}</button>
+    <div class="cap">Waits for</div>
+    ${others.length ? others.map(o => `<button data-a="wait" data-k="${esc(o.k)}"><span class="check">${waits.has(o.k) ? '✓' : ''}</span>${esc(o.n)}</button>`).join('') : '<div class="cap" style="text-transform:none;font-weight:500">No other sessions.</div>'}
+    <div class="cap">Move to</div>
+    ${board.cols.map(col => `<button data-a="move" data-col="${esc(col.id)}"><span class="check">${(c.col || board.cols[0].id) === col.id ? '✓' : ''}</span>${esc(col.name)}</button>`).join('')}
+    <hr><button data-a="hide">Remove from the board</button>`,
+    a => {
+      if (a.a === 'note' || a.a === 'linear'){ editing = {k, what: a.a}; render(); return; }
+      if (a.a === 'wait') setCard(k, c => { const s = new Set(c.waits || []); s.has(a.k) ? s.delete(a.k) : s.add(a.k); c.waits = [...s]; });
+      if (a.a === 'move') moveCard(k, a.col, null);
+      if (a.a === 'hide') setCard(k, c => { c.hidden = true; });
+      save(); render();
+    });
+}
+function colMenu(id, x, y){
+  const col = board.cols.find(c => c.id === id);
+  openPop(x, y, `
+    <button data-a="rename">Rename</button>
+    <div class="sw">${COLORS.map(cl => `<button data-a="color" data-c="${cl}" style="--c:var(--sbf-${cl})" title="${cl}" aria-label="Color ${cl}">${col.color === cl ? '✓' : ''}</button>`).join('')}</div>
+    <button data-a="fold">Fold it</button>
+    ${board.cols.length > 1 ? `<hr><button data-a="remove">Remove the column (its cards go to ${esc(board.cols.find(c => c.id !== id).name)})</button>` : ''}`,
+    a => {
+      if (a.a === 'rename'){ editing = {col: id}; render(); return; }
+      if (a.a === 'color') col.color = a.c;
+      if (a.a === 'fold') board.collapsed = [...new Set([...(board.collapsed || []), id])];
+      if (a.a === 'remove'){
+        const to = board.cols.find(c => c.id !== id).id;
+        for (const k in board.cards) if (board.cards[k].col === id) board.cards[k].col = to;
+        board.cols = board.cols.filter(c => c.id !== id);
+        board.collapsed = (board.collapsed || []).filter(c => c !== id);
+      }
+      save(); render();
+    });
+}
+
+// MARK: Drag and drop
+let dragK = null, dragCol = null;
+function moveCard(k, colId, before){
+  const list = cardsOf().filter(x => (x.c.col || board.cols[0].id) === colId && x.r.k !== k)
+    .sort((a, b) => (a.c.pos ?? -1e9) - (b.c.pos ?? -1e9) || (b.r.la - a.r.la));
+  const i = before ? list.findIndex(x => x.r.k === before) : list.length;
+  const at = i < 0 ? list.length : i;
+  list.splice(at, 0, {r: {k}});
+  list.forEach((x, n) => setCard(x.r.k, c => { c.pos = n; }));
+  setCard(k, c => { if (c.col !== colId) c.at = Math.floor(Date.now() / 1000); c.col = colId; c.hidden = false; });
+}
+document.addEventListener('dragstart', e => {
+  const head = e.target.closest && e.target.closest('[data-colhead]');
+  if (head){ dragCol = head.dataset.colhead; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'col'); return; }
+  const card = e.target.closest && e.target.closest('.card[data-k]');
+  if (!card) return;
+  dragK = card.dataset.k;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragK);
+  setTimeout(() => card.classList.add('dragging'), 0);
+});
+function dropSpot(e){
+  const col = e.target.closest && e.target.closest('.col[data-col]');
+  if (!col) return null;
+  if (col.classList.contains('collapsed')) return {col: col.dataset.col, before: null, el: col};
+  const cards = [...col.querySelectorAll('.card[data-k]')].filter(c => c.dataset.k !== dragK);
+  const before = cards.find(c => { const b = c.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; });
+  return {col: col.dataset.col, before: before ? before.dataset.k : null, el: col, beforeEl: before};
+}
+document.addEventListener('dragover', e => {
+  if (!dragK && !dragCol) return;
+  e.preventDefault();
+  document.querySelectorAll('.drop-target').forEach(x => x.classList.remove('drop-target'));
+  document.querySelectorAll('.drop-line').forEach(x => x.remove());
+  const s = dropSpot(e);
+  if (!s) return;
+  s.el.classList.add('drop-target');
+  if (dragK && !s.el.classList.contains('collapsed')){
+    const line = document.createElement('div'); line.className = 'drop-line';
+    if (s.beforeEl) s.beforeEl.before(line); else s.el.appendChild(line);
+  }
+});
+document.addEventListener('drop', e => {
+  if (!dragK && !dragCol) return;
+  e.preventDefault();
+  const s = dropSpot(e);
+  if (s && dragK) moveCard(dragK, s.col, s.before);
+  if (s && dragCol && s.col !== dragCol){
+    const from = board.cols.findIndex(c => c.id === dragCol), moving = board.cols[from];
+    board.cols.splice(from, 1);
+    let to = board.cols.findIndex(c => c.id === s.col);
+    const b = s.el.getBoundingClientRect();
+    if (e.clientX > b.left + b.width / 2) to += 1;
+    board.cols.splice(to, 0, moving);
+  }
+  dragK = dragCol = null;
+  save(); render();
+});
+document.addEventListener('dragend', () => { dragK = dragCol = null; render(); });
+
+// MARK: Clicks and keys
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (pop && !t.closest('.pop')) closePop();
+  if (editing && !t.closest('.note-edit, .line-edit, .col__head .name[contenteditable]')){ commitEdit(false); return; }
+  if (t.closest('[data-addcol]')){
+    const used = new Set(board.cols.map(c => c.color));
+    const id = 'c' + Date.now().toString(36);
+    board.cols.push({id, name: 'New column', color: COLORS.find(c => !used.has(c)) || 'gray'});
+    editing = {col: id}; save(); render();
+    $('.board__cols').scrollLeft = 1e6;
+    return;
+  }
+  const cm = t.closest('[data-colmenu]'); if (cm){ e.stopPropagation(); const r = cm.getBoundingClientRect(); colMenu(cm.dataset.colmenu, r.left, r.bottom + 4); return; }
+  const km = t.closest('[data-cardmenu]'); if (km){ e.stopPropagation(); const r = km.getBoundingClientRect(); cardMenu(km.dataset.cardmenu, r.left - 160, r.bottom + 4); return; }
+  const coll = t.closest('.col.collapsed[data-col]'); if (coll){ board.collapsed = (board.collapsed || []).filter(c => c !== coll.dataset.col); save(); render(); return; }
+  const ln = t.closest('[data-link]'); if (ln){ bridge('link', {url: ln.dataset.link}); return; }
+  const op = t.closest('[data-open]'); if (op){ bridge('open', {k: op.dataset.open}); return; }
+  if (t.closest('.col__head, .note-edit, .line-edit, .pop')) return;
+  const card = t.closest('.card[data-k]'); if (card) bridge('open', {k: card.dataset.k});
+});
+document.addEventListener('dblclick', e => {
+  const h = e.target.closest('[data-colhead]');
+  if (h && !editing){ editing = {col: h.dataset.colhead}; render(); }
+});
+document.addEventListener('contextmenu', e => {
+  const card = e.target.closest('.card[data-k]');
+  if (card){ e.preventDefault(); cardMenu(card.dataset.k, e.clientX, e.clientY); return; }
+  const col = e.target.closest('.col[data-col]:not(.collapsed)');
+  if (col){ e.preventDefault(); colMenu(col.dataset.col, e.clientX, e.clientY); }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape'){ if (pop){ closePop(); return; } if (editing){ commitEdit(true); return; } }
+  if (e.key === 'Enter' && editing && !(editing.what === 'note' && e.shiftKey)){ e.preventDefault(); commitEdit(false); }
+});
+bridge('ready');
+</script>
+</body></html>

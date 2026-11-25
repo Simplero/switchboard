@@ -438,7 +438,11 @@ final class SBRemote {
     /// changed and the keys that left the list. Nil when nothing changed.
     private func sessionsMessage(for c: Client, payload: [String: Any]? = nil) -> [String: Any]? {
         let p = payload ?? Switchboard.shared.payloadObject()
-        let rows = ((p["s"] as? [[String: Any]]) ?? []).filter { $0["ar"] as? Bool != true }.prefix(150)
+        let rows = ((p["s"] as? [[String: Any]]) ?? []).filter { $0["ar"] as? Bool != true }.prefix(150).map { r -> [String: Any] in
+            var r = r
+            for k in ["bt", "bl", "lk"] { r.removeValue(forKey: k) }
+            return r
+        }
         var use: [String: Any] = [:]
         for (d, u) in (p["use"] as? [String: Any]) ?? [:] {
             guard var u = u as? [String: Any] else { continue }

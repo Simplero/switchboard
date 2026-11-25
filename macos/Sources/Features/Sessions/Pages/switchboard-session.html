@@ -1,0 +1,158 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>In this session</title>
+<link rel="stylesheet" href="switchboard-fizzy.css">
+<style>
+html,body{margin:0;min-height:100%;background:var(--sbf-canvas)}
+.sess{padding-bottom:28px}
+.chip{cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip:hover{filter:brightness(1.15)}
+.topic{position:relative}
+.topic--done .card__tab{max-width:calc(100% - 96px)}
+.topic .card__tab span:first-child{overflow:hidden;text-overflow:ellipsis}
+.step--fail{color:var(--sbf-needs)}
+.step--fail i{background:var(--sbf-needs);color:var(--sbf-ink-inverted)}
+.step--fail i::before{content:"✗"}
+.now{font-size:14px;line-height:1.4;color:var(--sbf-ink-2)}
+.now b{color:var(--sbf-ink)}
+.check{display:flex;flex-direction:column;gap:8px;border-radius:var(--sbf-radius);padding:10px 12px;background:color-mix(in srgb,var(--sbf-needs) 10%,var(--sbf-raised));box-shadow:0 0 0 2px var(--sbf-needs)}
+.check .t{font-size:15px;font-weight:800;line-height:1.3}
+.empty{font-size:13px;color:var(--sbf-ink-3);line-height:1.45}
+details.links summary{cursor:pointer;list-style:none}
+details.links summary::-webkit-details-marker{display:none}
+.linklist{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.linklist a{font-size:12.5px;color:var(--sbf-ink-2);text-decoration:none;display:flex;gap:6px;align-items:center;min-width:0;cursor:pointer}
+.linklist a span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.linklist a:hover{color:var(--sbf-ink)}
+.linklist small{color:var(--sbf-ink-4);font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;flex:none;width:52px}
+.btn{cursor:pointer}
+.reading{font-size:12px;color:var(--sbf-ink-3)}
+</style></head>
+<body><div class="sess" id="app"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const bridge = (type, d = {}) => { try { window.webkit.messageHandlers.sessions.postMessage({type, ...d}) } catch (e) {} };
+const I = {
+  doc: '<svg viewBox="0 0 24 24"><path d="M14 3H6v18h12V7zM14 3v4h4"/></svg>',
+  pr: '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4"/></svg>',
+  web: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg>',
+};
+const NEEDS = new Set(['permission', 'question', 'review', 'heads_up']);
+let rows = [], front = '', pinnedK = null;
+
+window.SB = {
+  setData(p, extra){
+    rows = (p && p.s) || [];
+    front = (extra && extra.front) || '';
+    render();
+  }
+};
+
+function stateOf(r){
+  if (!r.o) return ['off', '⏾ Off'];
+  if (r.st === 'working') return ['work', '↻ Working'];
+  if (r.u || NEEDS.has(r.st)) return ['needs', '? Needs you'];
+  return ['done', '✓ Answered'];
+}
+function linkLabel(r, u){
+  const l = (r.lk || []).find(x => x[1] === u);
+  if (l && l[2]) return [l[0] === 'doc' ? 'doc' : 'web', l[2]];
+  const m = u.match(/\/pull\/(\d+)/);
+  if (m) return ['pr', 'PR #' + m[1]];
+  if (/doc\.simplero\.me|\/admin\/docs/.test(u)) return ['doc', 'Doc'];
+  try { const x = new URL(u); return ['web', (x.host.split('.')[0] + x.pathname).replace(/\/$/, '').slice(0, 40)]; } catch (e) { return ['web', u.slice(0, 40)]; }
+}
+const chip = (r, u, quiet) => { const [k, t] = linkLabel(r, u); return `<span class="chip ${quiet ? 'chip--quiet' : ''}" data-link="${esc(u)}" title="${esc(u)}">${I[k]}${esc(t)}</span>`; };
+
+// The steps of a topic's pull request: PR › CI › your check › merged. (Simplero's deploys are
+// not on GitHub, so "deployed" is only what the session itself says.)
+function prOf(r, t, first){
+  const prs = r.pr || [];
+  for (const u of t.l || []) { const p = prs.find(x => x.u === u); if (p) return p; }
+  return first ? prs[0] : null;
+}
+function steps(r, pr, waitsForYou){
+  if (!pr) return '';
+  const merged = pr.s === 'MERGED', closed = pr.s === 'CLOSED';
+  const ci = pr.ci === 'pass' ? 'step--done' : pr.ci === 'fail' ? 'step--fail' : pr.ci === 'pending' ? 'step--now' : '';
+  const s = [`<span class="step step--done" data-link="${esc(pr.u)}" style="cursor:pointer" title="${esc(pr.t)}"><i></i>PR #${pr.n}</span>`];
+  s.push(`<span class="step ${merged ? 'step--done' : ci}"><i></i>CI${pr.ci === 'fail' && !merged ? ' failed' : pr.ci === 'pending' && !merged ? ' running' : ''}</span>`);
+  if (!merged && !closed) s.push(`<span class="step ${waitsForYou ? 'step--now' : ''}"><i></i>Your check</span>`);
+  s.push(`<span class="step ${merged ? 'step--done' : ''}"><i></i>${closed ? 'Closed' : 'Merged'}</span>`);
+  return `<div class="steps">${s.join('<span class="arrow">›</span>')}</div>`;
+}
+function items(t){
+  const out = (t.d || []).map(x => `<li class="item item--done"><i></i><span>${esc(x)}</span></li>`);
+  for (const [who, text] of t.o || []) out.push(`<li class="item"><i></i><span>${who === 'you' ? '<span class="who who--you">You</span>' : who === 'agent' ? '<span class="who who--agent">Agent</span>' : ''}${esc(text)}</span></li>`);
+  return out.length ? `<ul class="items">${out.join('')}</ul>` : '';
+}
+function topic(r, t, i){
+  const done = t.s === 'done';
+  const cls = done ? 'topic--done' : t.s === 'you' ? 'topic--needs' : t.s === 'later' ? 'topic--wait' : 'topic--work';
+  const word = done ? '✓ Done' : t.s === 'you' ? '? Needs you' : t.s === 'later' ? '◷ Later' : '↻ Agent on it';
+  const pr = prOf(r, t, i === 0 && !done);
+  const merged = pr && pr.s === 'MERGED';
+  const stamp = done || merged ? `<div class="stamp">${merged ? 'Merged' : 'Done'}${merged && pr.ma ? `<small>${new Date(pr.ma).toLocaleDateString(undefined, {month: 'short', day: 'numeric'})}</small>` : ''}</div>` : '';
+  const links = (t.l || []).map(u => chip(r, u, done)).join('');
+  return `<article class="topic ${cls}">
+    <div class="card__tab"><span>${esc(t.t)}</span><span class="sep"></span><span>${word}</span></div>
+    ${stamp}
+    ${done ? '' : steps(r, pr, t.s === 'you')}
+    ${done ? '' : items(t)}
+    ${links ? `<div class="card__links">${links}</div>` : ''}
+  </article>`;
+}
+
+function render(){
+  const r = rows.find(x => x.o && x.sf && x.sf === front) || rows.find(x => x.k === pinnedK);
+  if (!r){ $('#app').innerHTML = `<div class="sess__bar"><h1 class="sess__name">In this session</h1></div><p class="empty">Go to a session: this shows what it works on, what is done and what is still open.</p>`; return; }
+  pinnedK = r.k;
+  const [st, word] = stateOf(r);
+  const topics = r.bt || [];
+  const open = topics.filter(t => t.s !== 'done'), done = topics.filter(t => t.s === 'done');
+  let h = `<div class="sess__bar"><h1 class="sess__name">${esc(r.n)}</h1><span class="state state--${st === 'done' ? 'done' : st}">${word}</span></div>`;
+  if (r.bn) h += `<div class="now"><b>Now:</b> ${esc(r.bn)}</div>`;
+  else if (r.gl) h += `<div class="now"><b>Works on:</b> ${esc(r.gl)}</div>`;
+  if (r.bp) h += `<div class="reading">Reading the conversation again…</div>`;
+  if (r.bc && r.bc[0]) h += `<div class="check"><div class="t">Check: ${esc(r.bc[0])}</div>${r.bc[1] ? `<div class="card__links">${chip(r, r.bc[1])}</div>` : ''}</div>`;
+  if (!topics.length){
+    h += `<p class="empty">${r.bp ? 'Switchboard reads this conversation now.' : 'Switchboard reads a conversation once its agent stops, and again when it has grown. Nothing read yet.'}</p>`;
+    if ((r.op || []).length) h += `<div class="sess__label">Still open</div><ul class="items">${r.op.map(([w, t]) => `<li class="item"><i></i><span>${w === 'you' ? '<span class="who who--you">You</span>' : '<span class="who who--agent">Agent</span>'}${esc(t)}</span></li>`).join('')}</ul>`;
+  }
+  if (open.length) h += `<div class="sess__label">Doing now</div>` + open.map((t, i) => topic(r, t, i)).join('');
+  if (done.length) h += `<div class="sess__label">Done in this session</div>` + done.map(t => topic(r, t, 9)).join('');
+  if ((r.bl || []).length) h += `<div class="sess__label">Later</div><ul class="items" style="--c:var(--sbf-violet)">${r.bl.map(x => `<li class="item"><i></i><span>${esc(x)}</span></li>`).join('')}</ul>`;
+  if (r.bd){
+    const last = topics[topics.length - 1];
+    h += `<div class="drift"><span><b>✦ New topic:</b> ${esc(last ? last.t : 'the latest messages')}. It is not what this session started on.</span>
+      <div class="btn-row"><button class="btn btn--solid" style="--btn:var(--sbf-violet)" data-drift="doc">Start a Doc for it</button><button class="btn" style="--btn:var(--sbf-violet)" data-drift="split">Split into a new session</button></div></div>`;
+  }
+  const lk = r.lk || [];
+  if (lk.length){
+    const kind = {doc: 'Doc', dev: 'Dev', artifact: 'Page'};
+    h += `<details class="links"><summary class="sess__label">All links · ${lk.length} ›</summary><div class="linklist">${lk.map(l => `<a data-link="${esc(l[1])}" title="${esc(l[1])}"><small>${kind[l[0]] || l[0]}</small><span>${esc(l[2] || l[1])}</span></a>`).join('')}</div></details>`;
+  }
+  const keepOpen = $('details.links')?.open;
+  $('#app').innerHTML = h;
+  if (keepOpen) $('details.links').open = true;
+}
+
+document.addEventListener('click', e => {
+  const ln = e.target.closest('[data-link]'); if (ln){ e.preventDefault(); bridge('link', {url: ln.dataset.link}); return; }
+  const d = e.target.closest('[data-drift]');
+  if (d){
+    const r = rows.find(x => x.k === pinnedK); if (!r) return;
+    const topics = r.bt || [], last = topics[topics.length - 1];
+    if (d.dataset.drift === 'doc'){
+      bridge('op', {o: {op: 'send', k: r.k, text: `Start a separate Simplero Doc for the new topic${last ? ' (' + last.t + ')' : ''}, apart from this session's main Doc, and keep that topic's work there.`}});
+    } else {
+      const sid = r.k.startsWith('claude:') ? r.k.slice(7) : '';
+      bridge('op', {o: {op: 'new', login: r.ld || '~/.claude', cwd: r.cwd || '~', focus: true,
+        prompt: `Take over a topic from the session “${r.n}” (Claude conversation ${sid}; its transcript is under ~/.claude*/projects). Read the end of that conversation, then continue this topic only: ${last ? last.t : 'its latest topic'}.`}});
+    }
+  }
+});
+bridge('ready');
+</script>
+</body></html>

@@ -171,10 +171,19 @@ final class SessionsAPI {
                         self.respond(conn, status: 200, body: ["gpu": before.map { Int($0) }, "stopped": stopped.map { Int($0) }])
                         return
                     }
+                    if req.method == "POST", req.path == "/sb/tool", req.headers["x-token"] == self.token {
+                        // For checks: ⌘B / ⌘I ({"kind": "board"|"session"}), as the keys do; {} closes it.
+                        if let k = (req.json["kind"] as? String).flatMap(SBToolPage.Kind.init(rawValue:)) { SessionsDocPanes.shared.toggle(k) }
+                        else { SessionsDocPanes.shared.tool = nil }
+                        self.respond(conn, status: 200, body: ["tool": SessionsDocPanes.shared.tool ?? ""])
+                        return
+                    }
                     if req.method == "GET", req.path == "/sb/snap", req.headers["x-token"] == self.token {
                         // For checks: a picture of the sidebar or the panel page (window pictures leave web views blank).
+                        // ?page=board / session: that tool page.
                         let page = req.query["page"] == "banner" ? SessionsWeb.banner : SessionsWeb.shared
                         var web: WKWebView = page.webView
+                        if let t = req.query["page"].flatMap(SBToolPage.Kind.init(rawValue:)) { web = SessionsDocPanes.shared.toolPage(t).webView }
                         // ?pane=<terminal id>: the page next to that terminal's session.
                         if let pid = req.query["pane"], let view = SessionsAPI.surface(id: pid),
                            let controller = BaseTerminalController.controller(owning: view) as? TerminalController,

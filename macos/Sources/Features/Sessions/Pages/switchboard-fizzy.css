@@ -1,0 +1,476 @@
+/* Switchboard Board and "In this session": a playful kanban look (colorful columns, big
+   friendly titles, rounded cards, stamps), inspired by Fizzy's design language. Own code:
+   no Fizzy logo, name, fonts files or images.
+   Dark is the default (Switchboard is dark); light under prefers-color-scheme: light.
+   Color is never the only signal: every state has a sign and a word. */
+
+:root {
+  color-scheme: dark;
+  /* Base */
+  --sbf-canvas: oklch(20% 0.02 250);
+  --sbf-sunk: oklch(17% 0.018 250);
+  --sbf-raised: oklch(24% 0.02 250);
+  --sbf-ink: oklch(95% 0.004 260);
+  --sbf-ink-2: oklch(84% 0.007 260);
+  --sbf-ink-3: oklch(68% 0.011 260);
+  --sbf-ink-4: oklch(48% 0.015 260);
+  --sbf-line: oklch(30% 0.018 260);
+  --sbf-ink-inverted: oklch(16% 0.02 250);
+  --sbf-ring: 0 0 0 1px var(--sbf-line);
+  --sbf-shadow: var(--sbf-ring), 0 6px 18px oklch(0% 0 0 / 30%);
+
+  /* Column colors (dark: lighter tones) */
+  --sbf-blue: oklch(74% 0.13 256);
+  --sbf-yellow: oklch(80% 0.14 85);
+  --sbf-violet: oklch(74% 0.14 286);
+  --sbf-pink: oklch(76% 0.15 344);
+  --sbf-aqua: oklch(76% 0.1 206);
+  --sbf-lime: oklch(80% 0.13 114);
+  --sbf-gray: oklch(64% 0.012 260);
+  --sbf-green: oklch(76% 0.14 146);
+  --sbf-orange: oklch(76% 0.15 52);
+
+  /* State colors (always with a sign and a word) */
+  --sbf-needs: var(--sbf-orange);
+  --sbf-work: var(--sbf-blue);
+  --sbf-wait: var(--sbf-yellow);
+  --sbf-off: var(--sbf-gray);
+  --sbf-done: var(--sbf-green);
+
+  /* Type and shape */
+  --sbf-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --sbf-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sbf-radius: 8px;
+  --sbf-pill: 999px;
+  --sbf-col-w: 340px;
+  --sbf-col-collapsed: 40px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --sbf-canvas: oklch(99% 0.003 250);
+    --sbf-sunk: oklch(96.5% 0.004 250);
+    --sbf-raised: oklch(100% 0 0);
+    --sbf-ink: oklch(26% 0.05 264);
+    --sbf-ink-2: oklch(38% 0.035 262);
+    --sbf-ink-3: oklch(54% 0.016 260);
+    --sbf-ink-4: oklch(72% 0.008 258);
+    --sbf-line: oklch(91% 0.004 254);
+    --sbf-ink-inverted: oklch(100% 0 0);
+    --sbf-shadow: 0 0 0 1px oklch(0% 0 0 / 5%), 0 3px 3px oklch(0% 0 0 / 5%), 0 6px 6px oklch(0% 0 0 / 5%), 0 12px 12px oklch(0% 0 0 / 4%);
+
+    --sbf-blue: oklch(57% 0.19 260);
+    --sbf-yellow: oklch(70% 0.16 75);
+    --sbf-violet: oklch(58% 0.21 288);
+    --sbf-pink: oklch(62% 0.2 344);
+    --sbf-aqua: oklch(56% 0.12 210);
+    --sbf-lime: oklch(60% 0.15 113);
+    --sbf-gray: oklch(60% 0.012 260);
+    --sbf-green: oklch(56% 0.16 147);
+    --sbf-orange: oklch(62% 0.18 48);
+  }
+}
+
+/* ---------------------------------------------------------------- Board */
+
+.board {
+  font-family: var(--sbf-font);
+  background: var(--sbf-canvas);
+  color: var(--sbf-ink);
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+.board__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px 6px;
+}
+.board__title {
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.board__key {
+  font: 700 11px var(--sbf-mono);
+  color: var(--sbf-ink-3);
+  border: 1px solid var(--sbf-line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.board__spacer { flex: 1; }
+.board__add {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--sbf-ink-inverted);
+  background: var(--sbf-blue);
+  border: 0;
+  border-radius: var(--sbf-pill);
+  padding: 5px 14px;
+}
+.board__cols {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px 18px;
+  overflow-x: auto;
+}
+
+/* A column: its color in --col. Expanded: a soft tinted lane with a centered uppercase title. */
+.col {
+  --col: var(--sbf-blue);
+  flex: 0 0 var(--sbf-col-w);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 10px 14px;
+  border-radius: 14px;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--col) 14%, var(--sbf-canvas)), color-mix(in srgb, var(--col) 4%, var(--sbf-canvas)) 70%);
+}
+.col--blue { --col: var(--sbf-blue); }
+.col--yellow { --col: var(--sbf-yellow); }
+.col--violet { --col: var(--sbf-violet); }
+.col--pink { --col: var(--sbf-pink); }
+.col--aqua { --col: var(--sbf-aqua); }
+.col--lime { --col: var(--sbf-lime); }
+.col--gray { --col: var(--sbf-gray); }
+
+.col__head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 40px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sbf-ink);
+}
+.col__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: var(--sbf-pill);
+  background: var(--col);
+  color: var(--sbf-ink-inverted);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+/* Collapsed: a tall pill, count on top, the name written down the pill. Its height grows
+   with the number of cards (--n), and a thin line continues below it. */
+.col.collapsed {
+  flex: 0 0 var(--sbf-col-collapsed);
+  padding: 0;
+  gap: 0;
+  background: none;
+  align-items: center;
+  position: relative;
+}
+.col.collapsed .col__pill {
+  width: var(--sbf-col-collapsed);
+  min-height: calc(var(--sbf-col-collapsed) * 3 + var(--n, 0) * 16px);
+  border-radius: var(--sbf-pill);
+  background: linear-gradient(to bottom, var(--col), color-mix(in srgb, var(--col) 18%, var(--sbf-canvas)) 85%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  gap: 10px;
+  color: var(--sbf-ink-inverted);
+}
+.col.collapsed .col__pill b { font-size: 13px; font-weight: 800; }
+.col.collapsed .col__pill span {
+  writing-mode: vertical-rl;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sbf-ink);
+}
+.col.collapsed::after {
+  content: "";
+  width: 1px;
+  height: 240px;
+  background: color-mix(in srgb, var(--col) 40%, transparent);
+}
+
+/* ---------------------------------------------------------------- Card (one session) */
+
+.card {
+  --c: var(--col, var(--sbf-blue));
+  position: relative;
+  background: color-mix(in srgb, var(--c) 5%, var(--sbf-raised));
+  border-radius: var(--sbf-radius);
+  box-shadow: var(--sbf-shadow);
+  padding: 0 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--sbf-ink);
+}
+/* The tab in the top-left corner: the session's name and its state (sign + word). */
+.card__tab {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: -14px;
+  padding: 4px 10px 4px 14px;
+  border-radius: var(--sbf-radius) 0 var(--sbf-radius) 0;
+  background: var(--c);
+  color: var(--sbf-ink-inverted);
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  max-width: calc(100% + 14px);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.card__tab .sep { width: 1px; height: 12px; background: currentColor; opacity: 0.35; }
+.card__title {
+  font-size: 19px;
+  line-height: 1.15;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+  margin: 4px 0 0;
+  color: color-mix(in srgb, var(--c) 22%, var(--sbf-ink));
+}
+.card__next { font-size: 13px; color: var(--sbf-ink-2); line-height: 1.35; }
+.card__next b { font-weight: 800; color: var(--sbf-ink); }
+/* His note: a little sticky note. */
+.card__note {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--sbf-ink-2);
+  background: color-mix(in srgb, var(--sbf-yellow) 14%, var(--sbf-raised));
+  border-radius: 4px;
+  padding: 5px 8px;
+  rotate: -0.6deg;
+}
+.card__note::before { content: "✎ "; color: var(--sbf-ink-3); }
+/* Meta: small uppercase words with thin dividers. */
+.card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--c) 55%, var(--sbf-ink-3));
+}
+.card__meta > * + *::before {
+  content: "";
+  display: inline-block;
+  width: 1px;
+  height: 10px;
+  background: currentColor;
+  opacity: 0.35;
+  margin-right: 10px;
+  vertical-align: -1px;
+}
+.card__links { display: flex; flex-wrap: wrap; gap: 6px; }
+.card--off { --c: var(--sbf-gray); }
+.card--off .card__title { color: var(--sbf-ink-3); }
+.card.needs { box-shadow: var(--sbf-shadow), 0 0 0 2px var(--sbf-needs); }
+
+/* The bubble: a soft round blob on the top-right edge, for time ("Parked 4 days"). */
+.bubble {
+  position: absolute;
+  top: -12px;
+  right: -10px;
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: var(--sbf-ink);
+  z-index: 2;
+}
+.bubble::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 54% 46% 61% 39% / 57% 49% 51% 43%;
+  background: radial-gradient(color-mix(in srgb, var(--c) 10%, var(--sbf-canvas)) 50%, color-mix(in srgb, var(--c) 50%, var(--sbf-canvas)) 100%);
+  z-index: -1;
+}
+.bubble b { display: block; font-size: 20px; font-weight: 900; line-height: 1; }
+.bubble small { display: block; font-size: 8.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* The stamp: a tilted rubber stamp for an end state (MERGED, DEPLOYED, DONE). */
+.stamp {
+  --s: var(--sbf-done);
+  position: absolute;
+  right: 10px;
+  bottom: -10px;
+  rotate: 5deg;
+  border: 3px solid color-mix(in srgb, var(--s) 75%, transparent);
+  border-radius: 6px;
+  padding: 3px 10px;
+  background: color-mix(in srgb, var(--sbf-raised) 88%, transparent);
+  backdrop-filter: blur(2px);
+  color: var(--s);
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+  line-height: 1.1;
+  z-index: 2;
+}
+.stamp small { display: block; font: 600 9.5px var(--sbf-mono); color: var(--sbf-ink-3); letter-spacing: 0; }
+.stamp--inline { position: static; display: inline-block; }
+
+/* ---------------------------------------------------------------- Chips and state */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--sbf-pill);
+  border: 1px solid color-mix(in srgb, var(--chip, var(--sbf-blue)) 45%, transparent);
+  color: var(--chip, var(--sbf-blue));
+  background: color-mix(in srgb, var(--chip, var(--sbf-blue)) 8%, transparent);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip svg { width: 12px; height: 12px; flex: none; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.chip--linear { --chip: var(--sbf-violet); }
+.chip--wait { --chip: var(--sbf-yellow); }
+.chip--quiet { --chip: var(--sbf-ink-3); }
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--st);
+}
+.state--needs { --st: var(--sbf-needs); }
+.state--work { --st: var(--sbf-work); }
+.state--wait { --st: var(--sbf-wait); }
+.state--off { --st: var(--sbf-off); }
+.state--done { --st: var(--sbf-done); }
+
+/* ---------------------------------------------------------------- In this session */
+
+.sess {
+  font-family: var(--sbf-font);
+  background: var(--sbf-canvas);
+  color: var(--sbf-ink);
+  min-height: 100%;
+  padding: 0 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  -webkit-font-smoothing: antialiased;
+}
+.sess__bar { display: flex; align-items: center; gap: 8px; padding-top: 12px; }
+.sess__name { font-size: 20px; font-weight: 900; margin: 0; letter-spacing: -0.01em; }
+.sess__label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sbf-ink-3);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sess__label::after { content: ""; flex: 1; height: 1px; background: var(--sbf-line); }
+
+/* A topic: one thing the session does. Its color follows its state. */
+.topic {
+  --c: var(--sbf-blue);
+  position: relative;
+  background: color-mix(in srgb, var(--c) 6%, var(--sbf-raised));
+  border-radius: var(--sbf-radius);
+  box-shadow: var(--sbf-shadow);
+  padding: 0 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.topic--needs { --c: var(--sbf-needs); }
+.topic--work { --c: var(--sbf-work); }
+.topic--wait { --c: var(--sbf-wait); }
+.topic--done { --c: var(--sbf-gray); }
+.topic .card__tab { background: var(--c); }
+.topic__title { font-size: 17px; font-weight: 900; line-height: 1.2; margin: 2px 0 0; color: color-mix(in srgb, var(--c) 22%, var(--sbf-ink)); }
+.topic--done .topic__title { color: var(--sbf-ink-3); }
+
+/* Steps on the way to deployed: a row of dots with words. Done: filled + check. Now: big ring. */
+.steps { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.step { display: inline-flex; align-items: center; gap: 4px; color: var(--sbf-ink-4); }
+.step i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; display: inline-grid; place-items: center; font-style: normal; font-size: 9px; line-height: 1; }
+.step--done { color: var(--sbf-done); }
+.step--done i { background: var(--sbf-done); color: var(--sbf-ink-inverted); }
+.step--done i::before { content: "✓"; }
+.step--now { color: var(--sbf-needs); }
+.step--now i { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sbf-needs) 25%, transparent); background: var(--sbf-needs); }
+.steps .arrow { color: var(--sbf-ink-4); }
+
+/* Items: check marks like a to-do list. */
+.items { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.item { display: grid; grid-template-columns: 18px 1fr; gap: 8px; font-size: 13.5px; line-height: 1.35; color: var(--sbf-ink-2); }
+.item i {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--c) 60%, var(--sbf-ink-4));
+  display: grid; place-items: center; font-style: normal; font-size: 10px; font-weight: 900;
+}
+.item--done { color: var(--sbf-ink-3); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--sbf-ink-3) 60%, transparent); }
+.item--done i { background: var(--sbf-done); border-color: var(--sbf-done); color: var(--sbf-ink-inverted); }
+.item--done i::before { content: "✓"; }
+.who { display: inline-block; font-size: 10px; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; border-radius: 4px; padding: 1px 5px; margin-right: 4px; vertical-align: 1px; text-decoration: none; }
+.who--you { color: var(--sbf-ink-inverted); background: var(--sbf-needs); }
+.who--agent { color: var(--sbf-ink-inverted); background: var(--sbf-work); }
+
+/* A new topic in the conversation: a dashed note with two buttons. */
+.drift {
+  border: 2px dashed color-mix(in srgb, var(--sbf-violet) 60%, transparent);
+  border-radius: var(--sbf-radius);
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--sbf-ink-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.drift b { color: var(--sbf-violet); }
+.btn {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 800;
+  border-radius: var(--sbf-pill);
+  padding: 4px 12px;
+  border: 1.5px solid var(--btn, var(--sbf-blue));
+  color: var(--btn, var(--sbf-blue));
+  background: transparent;
+}
+.btn--solid { background: var(--btn, var(--sbf-blue)); color: var(--sbf-ink-inverted); }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* In a topic the stamp sits on the right of the tab row, inside the block. */
+.topic .stamp { top: 8px; bottom: auto; right: 12px; font-size: 12px; padding: 2px 8px; }

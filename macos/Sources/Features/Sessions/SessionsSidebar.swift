@@ -212,6 +212,13 @@ final class SessionsStore: ObservableObject {
                     UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
                     SessionsWeb.shared.focusSearch()
                     return nil
+                case "b":
+                    // ⌘B: the Board; ⌘I: In this session. The same key again closes it.
+                    if !event.isARepeat { SessionsDocPanes.shared.toggle(.board) }
+                    return nil
+                case "i":
+                    if !event.isARepeat { SessionsDocPanes.shared.toggle(.session) }
+                    return nil
                 case "n":
                     // ⌘N: a new session with a plain shell (no agent), not a bare window.
                     // Holding the keys down must not open a row of them.
@@ -518,8 +525,17 @@ struct SessionsSidebarContainer<Content: View>: View {
                 WebBanner()
                 content
             }
+            // The Board (⌘B) or In this session (⌘I): over the Doc while open.
+            if let t = panes.tool, let kind = SBToolPage.Kind(rawValue: t) {
+                ResizeHandle { dx in
+                    if paneDragStart == nil { paneDragStart = Double(paneShown(total: total)) }
+                    paneWidth = min(1400, max(320, (paneDragStart ?? paneWidth) - dx))
+                } ended: { paneDragStart = nil }
+                ToolPaneView(page: panes.toolPage(kind)) { panes.tool = nil }
+                    .frame(width: paneShown(total: total))
+            }
             // A Doc opened from the panel: on the right, next to the session it belongs to.
-            if let ws = sessionID, let page = panes.pages[ws] {
+            else if let ws = sessionID, let page = panes.pages[ws] {
                 ResizeHandle { dx in
                     // Start from the width on screen (it can be less than the saved one).
                     if paneDragStart == nil { paneDragStart = Double(paneShown(total: total)) }

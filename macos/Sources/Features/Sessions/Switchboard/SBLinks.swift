@@ -23,8 +23,28 @@ struct SBBrief: Codable, Equatable {
         var who: String?
         var text: String
     }
+    /// One thing the session works on (a session often does two or three).
+    struct Topic: Codable, Equatable {
+        var title: String
+        /// "working", "you" (waits for Calvin), "done" or "later".
+        var state: String
+        var done: [String]
+        var open: [Item]
+        /// Up to two links to check this topic with (a Doc, a PR, a dev page).
+        var links: [String]
+    }
     var goal: String
     var open: [Item]
+    /// Where the session stands now, in one sentence.
+    var now: String? = nil
+    /// The one thing to check next, and where.
+    var check: String? = nil
+    var checkURL: String? = nil
+    var topics: [Topic]? = nil
+    /// What was put off for later.
+    var later: [String]? = nil
+    /// The latest messages moved to a topic its Doc does not cover.
+    var drift: Bool? = nil
     /// The transcript size it read, and when.
     var size: Int
     var at: Double
@@ -412,7 +432,10 @@ enum SBLinks {
     later cannot remember what the session was about or what was never finished. Help him remember.
 
     Return ONLY a JSON object, no prose:
-    {"goal": "...", "open": [{"who": "you", "text": "..."}, {"who": "agent", "text": "..."}]}
+    {"goal": "...", "open": [{"who": "you", "text": "..."}, {"who": "agent", "text": "..."}],
+     "now": "...", "check": {"text": "...", "url": "..."},
+     "topics": [{"title": "...", "state": "working", "done": ["..."], "open": [{"who": "you", "text": "..."}], "links": ["https://..."]}],
+     "later": ["..."], "drift": false}
 
     "goal": what this session works on now, max 12 words, plain words. Say the thing itself
       ("Show doc and dev links in the Switchboard panel"), not "Calvin wants…".
@@ -424,6 +447,19 @@ enum SBLinks {
         later, or was dropped without a word.
       Leave out what is done, what Calvin rejected or said to skip, and routine steps agents do by
       themselves (tests, CI, screenshots) unless they are stuck. [] when nothing is open.
+    "now": where the session stands right now, one sentence, max 16 words ("PR #431 is merged; the
+      deploy is running"). For Calvin, who asks "status?" a lot.
+    "check": the one thing Calvin should look at next, max 12 words, with the link to look at it
+      (a URL from the log: a Doc, a PR, a dev page); null when nothing waits for him.
+    "topics": the separate things this session works on, 1 to 4, in the order they came up. Each:
+      "title" max 8 words; "state": "working" (the agent is on it), "you" (it waits for Calvin),
+      "done" or "later" (put off); "done": finished parts, max 4, each max 10 words; "open": what
+      is not finished, as in "open" above, max 4; "links": at most 2 URLs from the log that matter
+      for checking it (a Simplero Doc first, then a PR, then a dev page), [] when none.
+    "later": what Calvin or the agent put off for later ("after the deploy", "next week"), max 4,
+      each max 12 words; [] when none.
+    "drift": true when the latest messages work on something none of the earlier topics covers,
+      so it may need its own Doc or session; else false.
     Write each item like a task title: short and plain, no "I", "me", "my" or "your", no markdown.
     If the log ends with a new message from Calvin, the agent has not answered it yet: it is open
     work for the agent, not for him.
@@ -446,7 +482,27 @@ enum SBLinks {
             guard let d = x as? [String: Any], let t = d["text"] as? String, !t.isEmpty else { return nil }
             return SBBrief.Item(who: d["who"] as? String, text: t)
         }
-        return SBBrief(goal: goal, open: Array(items.prefix(5)), size: size, at: Date().timeIntervalSince1970)
+        func item(_ x: Any) -> SBBrief.Item? {
+            if let s = x as? String { return s.isEmpty ? nil : SBBrief.Item(who: nil, text: s) }
+            guard let d = x as? [String: Any], let t = d["text"] as? String, !t.isEmpty else { return nil }
+            return SBBrief.Item(who: d["who"] as? String, text: t)
+        }
+        let strings: (Any?) -> [String] = { ($0 as? [Any] ?? []).compactMap { $0 as? String }.filter { !$0.isEmpty } }
+        let topics: [SBBrief.Topic] = ((j["topics"] as? [Any]) ?? []).compactMap { x in
+            guard let d = x as? [String: Any], let title = d["title"] as? String, !title.isEmpty else { return nil }
+            let links = strings(d["links"]).filter { $0.hasPrefix("http") }
+            return SBBrief.Topic(title: title, state: d["state"] as? String ?? "working", done: Array(strings(d["done"]).prefix(4)),
+                                 open: Array(((d["open"] as? [Any]) ?? []).compactMap(item).prefix(4)), links: Array(links.prefix(2)))
+        }
+        let check = j["check"] as? [String: Any]
+        var b = SBBrief(goal: goal, open: Array(items.prefix(5)), size: size, at: Date().timeIntervalSince1970)
+        b.now = (j["now"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        b.check = (check?["text"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        b.checkURL = (check?["url"] as? String).flatMap { $0.hasPrefix("http") ? $0 : nil }
+        b.topics = Array(topics.prefix(4))
+        b.later = Array(strings(j["later"]).prefix(4))
+        b.drift = j["drift"] as? Bool
+        return b
     }
 
     /// The conversation as plain text: the first ask, the summary Claude wrote when it

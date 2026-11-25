@@ -78,6 +78,21 @@ button.chip.srv:hover{border-color:var(--accent);color:var(--ink)}
 .lnk .lo{border-left:1px solid var(--line2);padding-left:5px}
 .more{flex:none;border:1px solid var(--line2);background:var(--sunk);border-radius:6px;padding:1px 7px;font-size:11.5px;font-weight:600;color:var(--ink2);height:20px}
 .replies{display:inline-flex;gap:5px;flex:none}
+/* Panel A: where it stands (Now), its PR's steps, the one thing to check, and its key links. */
+.steps{display:inline-flex;align-items:center;gap:4px;flex:none;font-size:11px;font-weight:700;letter-spacing:.02em;white-space:nowrap}
+.steps .st{display:inline-flex;align-items:center;gap:3px;color:var(--faint)}
+.steps .st.ok{color:var(--done)}
+.steps .st.now{color:var(--needs)}
+.steps .st.bad{color:var(--needs)}
+.steps .ar{color:var(--faint)}
+.steps a{cursor:pointer}
+.chk{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1;overflow:hidden}
+.chk .k{color:var(--needs)!important}
+.mergebtn{flex:none;border:1px solid var(--done);background:color-mix(in srgb,var(--done) 16%,transparent);color:var(--ink);border-radius:6px;padding:1px 9px;font-size:11.5px;font-weight:700;height:20px}
+.mergebtn:hover{background:color-mix(in srgb,var(--done) 30%,transparent)}
+.infobtn{flex:none;margin-left:auto;border:1px solid var(--line2);background:var(--sunk);border-radius:6px;padding:1px 8px;font-size:11.5px;font-weight:600;color:var(--ink2);height:20px;display:inline-flex;align-items:center;gap:5px}
+.infobtn:hover{border-color:var(--accent);color:var(--ink)}
+.infobtn kbd{font:600 10px ui-monospace,SFMono-Regular,monospace;color:var(--muted)}
 .reply{border:1px solid var(--line2);background:var(--surface);border-radius:6px;padding:1px 8px;font-size:11.5px;font-weight:600}
 .reply:hover{border-color:var(--accent)}
 #tabs{display:flex;overflow:hidden;align-items:center;gap:2px;height:30px;flex:none;padding:0 8px;border-bottom:1px solid var(--line);background:var(--bg)}
@@ -211,6 +226,35 @@ let shownLinks = [];
 let shownK = null, shownAt = 0;
 const ARM_MS = 1500;
 const armed = k => k === shownK && Date.now() - shownAt >= ARM_MS;
+// The links that matter now: what to check, then the topics' links (at most 3), each found in
+// the session's links for its name.
+function keyLinks(s){
+  const lk = s.lk || [], urls = [];
+  if (s.bc && s.bc[1]) urls.push(s.bc[1]);
+  for (const t of s.bt || []) if (t.s !== 'done') for (const u of t.l || []) urls.push(u);
+  if (!urls.length){ const d = lk.find(l => l[0] === 'doc'); if (d) urls.push(d[1]); }
+  return [...new Set(urls)].slice(0, 3).map(u => {
+    const l = lk.find(x => x[1] === u);
+    if (l) return l;
+    const m = u.match(/\/pull\/(\d+)/);
+    return [/doc\.simplero\.me|\/admin\/docs/.test(u) ? 'doc' : 'dev', u, m ? 'PR #' + m[1] : u.replace(/^https?:\/\//, '').slice(0, 40)];
+  });
+}
+// The PR's steps: PR › CI › your check › merged, each with a sign and a word.
+function stepsHTML(s){
+  const pr = (s.pr || []).find(p => p.s === 'OPEN') || (s.pr || [])[0];
+  if (!pr) return '';
+  const merged = pr.s === 'MERGED', closed = pr.s === 'CLOSED';
+  const st = (cls, sign, word) => `<span class="st ${cls}">${sign} ${word}</span>`;
+  const parts = [`<a class="st ok" data-url="${esc(pr.u)}" title="${esc(pr.t)}\n${esc(pr.u)}">✓ PR #${pr.n}</a>`];
+  if (merged) parts.push(st('ok', '✓', 'CI'), st('ok', '✓', 'Merged'));
+  else if (closed) parts.push(st('', '○', 'Closed'));
+  else {
+    parts.push(pr.ci === 'pass' ? st('ok', '✓', 'CI') : pr.ci === 'fail' ? st('bad', '✗', 'CI failed') : pr.ci === 'pending' ? st('now', '↻', 'CI running') : st('', '○', 'CI'));
+    parts.push(st(s.bc && s.bc[0] ? 'now' : '', s.bc && s.bc[0] ? '●' : '○', 'Your check'), st('', '○', 'Merged'));
+  }
+  return `<span class="steps">${parts.join('<span class="ar">›</span>')}</span>`;
+}
 function linksHTML(s){
   const lk = s.lk || [];
   shownLinks = lk;
@@ -307,11 +351,19 @@ function render(){
       ? `<span class="k" style="color:var(${L[2]})">Needs you:</span>
          <span class="v" title="${esc(step)}">${esc(step)}</span>
          ${reps.length ? `<span class="replies">${reps.map(r => `<button class="reply" data-send="${esc(r[1])}" data-k="${esc(s.k)}">${esc(r[0])}</button>`).join('')}</span>` : ''}`
+      : s.bn ? `<span class="k" style="color:var(--muted)">Now:</span><span class="v" title="${esc(s.bn)}">${esc(s.bn)}</span>`
       : s.gl ? `<span class="k" style="color:var(--muted)">Working on:</span><span class="v" title="${esc(s.gl)}">${esc(s.gl)}</span>`
       : `<span class="k" style="color:var(--muted)">Working on:</span><span class="v muted">${s.bp ? 'Reading the conversation…' : esc(s.t || '')}</span>`;
     // Row 3: what was raised and is not finished. "You:" = waits for you.
     const op = s.op || [];
-    const row3 = op.length
+    const steps = stepsHTML(s);
+    const check = s.bc && s.bc[0] ? `<span class="chk"><span class="k">Check:</span><span class="v" title="${esc(s.bc[0])}">${esc(s.bc[0])}</span></span>` : '';
+    // "merge pr" is what you say to ship the work (it makes the PR): offered when the session asks for it.
+    const asks = [s.bc && s.bc[0], s.ns, ...(s.op || []).filter(o => o[0] === 'you').map(o => o[1]),
+      ...(s.bt || []).flatMap(t => (t.o || []).filter(o => o[0] === 'you').map(o => o[1]))].some(x => /merge[ -]?pr/i.test(x || ''));
+    const merge = asks && s.a === 'claude' && s.st !== 'working' ? `<button class="mergebtn" data-send="merge pr" data-k="${esc(s.k)}" title="Type “merge pr” into this session: it ships the work as a PR that SDev merges">merge pr</button>` : '';
+    const row3 = steps || check ? `${steps}${check || '<span style="flex:1"></span>'}${merge}`
+      : op.length
       ? `<span class="k">Still open:</span><span class="v" title="${esc(op.map(([w, t]) => '• ' + (w === 'you' ? 'You: ' : '') + t).join('\n'))}">${op.map(([w, t]) => (w === 'you' ? '<span class="you">You:</span> ' : '') + esc(t)).join('<span class="sep">·</span>')}</span>`
       : s.gl ? `<span class="k">Still open:</span><span class="v muted">Nothing.</span>` : '';
     b.innerHTML = `
@@ -327,7 +379,7 @@ function render(){
       </div>
       <div class="r2">${row2}</div>
       <div class="r3">${row3}</div>
-      <div class="r4">${linksHTML(s)}</div>`;
+      <div class="r4">${s.bt ? keyLinks(s).map(linkHTML).join('') + `<button class="infobtn" data-act="session" title="In this session: its topics, what is done and open, and all ${(s.lk || []).length} links">In this session${(s.lk || []).length ? ' · ' + (s.lk || []).length + ' links' : ''} <kbd>⌘I</kbd></button>` : linksHTML(s)}</div>`;
   }
 
   // Tabs of this window, always shown (also one), with + and the update button.
@@ -362,6 +414,7 @@ document.addEventListener('click', async e => {
   }
   const lnk = t.closest('[data-url]'); if (lnk){ bridge('openLink', {url: lnk.dataset.url}); return; }
   if (act === 'newtab'){ bridge('newTab'); return; }
+  if (act === 'session'){ bridge('sessionPane'); return; }
   if ((act === 'done' || act === 'close') && !armed(t.closest('[data-act]').dataset.k)) return;
   if (act === 'done'){ bridge('op', {o: {op: 'done', k: t.closest('[data-act]').dataset.k}}); return; }
   if (act === 'close'){ bridge('op', {o: {op: 'close', k: t.closest('[data-act]').dataset.k}}); return; }

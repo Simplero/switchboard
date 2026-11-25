@@ -351,6 +351,8 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
             let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
             menu.popUp(positioning: nil, at: point, in: webView)
+        case "sessionPane":
+            SessionsDocPanes.shared.toggle(.session)
         case "switchLogin":
             guard let k = body["k"] as? String, let login = body["login"] as? String else { return }
             store.send(["op": "switch", "k": k, "login": login])

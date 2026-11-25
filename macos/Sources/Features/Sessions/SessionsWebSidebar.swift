@@ -160,6 +160,16 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         webView.evaluateJavaScript("window.Sessions && Sessions.setFocus(\(arg))")
     }
 
+    /// ⌘N: the sidebar's New session form, with the keyboard in its message.
+    func openNewForm(tries: Int = 10) {
+        guard let w = webView.window, w.isKeyWindow || tries == 0 else {
+            if tries > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.openNewForm(tries: tries - 1) } }
+            return
+        }
+        w.makeFirstResponder(webView)
+        webView.evaluateJavaScript("window.Sessions && Sessions.openNewForm && Sessions.openNewForm()")
+    }
+
     func focusSearch(tries: Int = 10) {
         // Just shown (⌘P with the sidebar hidden): the page joins the window a moment later.
         guard let w = webView.window, w.isKeyWindow || tries == 0 else {

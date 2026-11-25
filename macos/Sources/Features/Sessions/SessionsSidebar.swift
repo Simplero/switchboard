@@ -194,6 +194,11 @@ final class SessionsStore: ObservableObject {
                 self.openPin(n)
                 return nil
             }
+            // ⌥⌘N: a new session with a plain shell (no agent).
+            if mods == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "n" {
+                if !event.isARepeat { self.newShellSession() }
+                return nil
+            }
             if mods == .command {
                 // Arrows by key code (the same on every layout). Letters by the
                 // character the layout types: key code 35 is P only on QWERTY
@@ -208,7 +213,8 @@ final class SessionsStore: ObservableObject {
                 case "]":
                     SessionHistory.shared.goForward("⌘] (forward)")
                     return nil
-                case "p":
+                case "p", "o":
+                    // ⌘O (open) or ⌘P: search, to get to a session; nothing found → a new one.
                     UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
                     SessionsWeb.shared.focusSearch()
                     return nil
@@ -220,9 +226,11 @@ final class SessionsStore: ObservableObject {
                     if !event.isARepeat { SessionsDocPanes.shared.toggle(.session) }
                     return nil
                 case "n":
-                    // ⌘N: a new session with a plain shell (no agent), not a bare window.
-                    // Holding the keys down must not open a row of them.
-                    if !event.isARepeat { self.newShellSession() }
+                    // ⌘N: the New session form. Holding the keys down must not open a row of them.
+                    if !event.isARepeat {
+                        UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
+                        SessionsWeb.shared.openNewForm()
+                    }
                     return nil
                 case let c? where c.count == 1 && "123456789".contains(c):
                     // ⌘1…⌘9: tabs of this session only (macOS would count every session's

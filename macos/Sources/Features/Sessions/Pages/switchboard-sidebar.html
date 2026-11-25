@@ -113,6 +113,10 @@ button{font:inherit;color:inherit;cursor:default}
 .navbtns button:hover:not(:disabled){background:var(--sunk);color:var(--ink)}
 .navbtns button:disabled{color:var(--faint);opacity:.55}
 /* Pinned: sessions that stay (Chief of staff, lazygit). Not in the lists below. ⌃1…⌃9 open them. */
+.newq{display:flex;align-items:center;gap:8px;width:calc(100% - 12px);margin:8px 6px;padding:9px 12px;border:1.5px dashed var(--line2);border-radius:9px;background:none;color:var(--ink2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
+.newq:hover{border-color:var(--accent);color:var(--ink)}
+.newq .plus{font-weight:800;color:var(--accent)}
+.newq b{font-weight:650;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .pins{display:flex;flex-direction:column;gap:6px}
 .pinrow{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
 .pin{display:flex;align-items:center;gap:8px;border:1px solid var(--line2);background:var(--surface);border-radius:9px;padding:6px 8px;min-width:0;text-align:left;color:var(--ink);font:inherit}
@@ -275,7 +279,7 @@ svg{flex-shrink:0}
     <label id="search">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
       <input id="q" placeholder="Search, or move with the arrow keys…" autocomplete="off" spellcheck="false">
-      <span class="key" id="qkey">⌘P</span>
+      <span class="key" id="qkey">⌘O</span>
     </label>
     </div>
     <div id="pins" class="pins" hidden></div>
@@ -483,6 +487,8 @@ window.Sessions = {
   setHistory(b, f){ $('#navBack').disabled = !b; $('#navFwd').disabled = !f; },
   // ⌘P: start at the session in front.
   focusSearch(){ cur = null; q.focus(); q.select(); if (!cur) cur = initialCursor(); applyCursor(true); },
+  // ⌘N: the New session form.
+  openNewForm(){ if (query){ clearSearch(); render(); } openNew(); },
   // The app moved the page to the window the cursor just brought to the front.
   refocus(){ clearTimeout(blurTimer); q.focus(); setKbd(true); },
 };
@@ -555,7 +561,7 @@ function otherColumn(){
 function setKbd(on){
   kbd = on;
   q.placeholder = on ? 'Type to search · arrows move · Enter opens' : 'Search, or move with the arrow keys…';
-  $('#qkey').textContent = on ? 'esc' : '⌘P';
+  $('#qkey').textContent = on ? 'esc' : '⌘O';
   applyCursor(on);
 }
 q.addEventListener('focus', () => { clearTimeout(blurTimer); if (!cur) cur = initialCursor(); setKbd(true); });
@@ -616,11 +622,27 @@ q.addEventListener('keydown', e => {
   }
   if (e.key === 'Enter'){
     e.preventDefault();
+    if (query && cur && cur.k === '__new'){ newFromQuery(); return; }
     if (query && (e.metaKey || (cur && cur.k === '__deep'))){ runDeep(true); return; }
     const s = sessionOf(cur && cur.k) || results[0];
+    if (!s && query && !idHit){ newFromQuery(); return; }
     if (s){ if (!query && cur) setNavCol(cur.col); cur = null; openSession(s, query ? 'Enter in the sidebar search (“' + query.slice(0, 40) + '”)' : 'Enter in the sidebar'); }
   }
 });
+
+// Nothing found (or not what you want): a new session from what you typed. A short word or
+// two is its name ("triggers"); a sentence is its first message.
+function newFromQueryHTML(){
+  return `<button class="newq" data-newq data-k="__new" title="Start a new session ${/\s/.test(query) && query.length > 30 ? 'with this as its first message' : 'with this name'} (Return when nothing matches)"><span class="plus">+</span>New session: <b>${esc(query.slice(0, 80))}</b></button>`;
+}
+function newFromQuery(){
+  const text = query;
+  clearSearch();
+  openNew();
+  if (text.length <= 40 && text.split(/\s+/).length <= 3){ nfName.value = text; nfMsg.focus(); }
+  else { nfMsg.value = text; nfGrow(); nfMsg.focus(); }
+  render();
+}
 
 function openSession(s, via){
   if (query){ setTimeout(() => { clearSearch(); render(); }, 1500); }
@@ -1040,7 +1062,7 @@ function renderNow(){
   if (!data) return;
   // Not while the mouse button is down: a row rebuilt under the mouse loses the click.
   if (drag || pressing){ renderLater = true; return; }
-  $('#newbtns').innerHTML = `<button class="newbtn big" data-new="" aria-pressed="${nf.open}" title="New Claude session: pick the folder and the login. A first message, files and a name are optional."><span class="plus">+</span>New session</button>`
+  $('#newbtns').innerHTML = `<button class="newbtn big" data-new="" aria-pressed="${nf.open}" title="New Claude session (⌘N): pick the folder and the login. A first message, files and a name are optional. ⌥⌘N: a plain shell."><span class="plus">+</span>New session</button>`
     + `<span id="subs">${LOGINS.map(subHTML).join('')}</span>`;
   if (nf.open) nfStatus();
   seg('#colseg', [[1,'1'],[2,'2']], cols, v => { cols = v; store.set('cols', v); render(); });
@@ -1056,10 +1078,12 @@ function renderNow(){
     host.innerHTML = `<div class="col" data-col="0"><div class="list">
       ${idHitHTML()}
       ${!results.length && !idHit ? `<div class="empty">No session matches “${esc(query)}”.</div>` : ''}
+      ${!results.length && !idHit ? newFromQueryHTML() : ''}
       ${open.length ? `<div class="group">Open now <span class="n">${open.length}</span></div>` + open.map(s => itemHTML(s)).join('') : ''}
       ${away.length ? `<div class="group">Running elsewhere <span class="n">${away.length}</span></div>` + away.map(s => itemHTML(s)).join('') : ''}
       ${older.length ? `<div class="group">Older <span class="n">${older.length}</span></div>` + older.map(s => itemHTML(s)).join('') : ''}
       ${deepHTML()}
+      ${results.length || idHit ? newFromQueryHTML() : ''}
     </div></div>`;
     if (scroll[0]) host.querySelector('.list').scrollTop = scroll[0];
     applyCursor(false);
@@ -1332,6 +1356,7 @@ document.addEventListener('click', e => {
   }
   if (t.closest('#newform')) return;
   const nb = t.closest('[data-new]'); if (nb){ openNew(nb.dataset.new); return; }
+  if (t.closest('[data-newq]')){ newFromQuery(); return; }
   const sb = t.closest('[data-sub]');
   if (sb){ loginFilter = loginFilter === sb.dataset.sub ? null : sb.dataset.sub; store.set('loginFilter', loginFilter); render(); return; }
   const cf = t.closest('[data-colfolder]');
@@ -1368,7 +1393,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('contextmenu', e => {
   const row = e.target.closest('[data-k]');
-  if (row && (row.dataset.k.startsWith('conv:') || row.dataset.k === '__deep')){ e.preventDefault(); return; }
+  if (row && (row.dataset.k.startsWith('conv:') || row.dataset.k === '__deep' || row.dataset.k === '__new')){ e.preventDefault(); return; }
   if (row){ e.preventDefault(); bridge('menu', {k: row.dataset.k}); }
 });
 setInterval(() => render(), 30000);   // keep "5m ago" fresh

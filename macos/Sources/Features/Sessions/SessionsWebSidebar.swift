@@ -361,6 +361,8 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             let x = body["x"] as? Double ?? 0, y = body["y"] as? Double ?? 0
             let point = webView.isFlipped ? NSPoint(x: x, y: y) : NSPoint(x: x, y: webView.bounds.height - y)
             menu.popUp(positioning: nil, at: point, in: webView)
+        case "seen":
+            if let k = body["k"] as? String, let t = (body["t"] as? NSNumber)?.doubleValue { Switchboard.shared.noteSeen(k, at: t) }
         case "sessionPane":
             SessionsDocPanes.shared.toggle(.session)
         case "switchLogin":

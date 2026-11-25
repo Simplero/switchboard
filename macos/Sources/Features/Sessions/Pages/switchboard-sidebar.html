@@ -400,9 +400,12 @@ let seenBase = store.get('seenBase', 0);
 if (!seenBase){ seenBase = Date.now()/1000; store.set('seenBase', seenBase); }
 let seenSaved = 0;
 const seenAt = k => Math.max(seen[k] || 0, visits[k] || 0, seenBase);
+const seenSent = {};
 function markSeen(k, t){
   seen[k] = t;
   if (t - seenSaved > 5){ seenSaved = t; store.set('seen', seen); }
+  // The phone shows a new answer you already read here as read too.
+  if (t - (seenSent[k] || 0) > 5){ seenSent[k] = t; bridge('seen', {k, t: Math.floor(t)}); }
 }
 // Orders that never shift under the mouse:
 //  manual: the order sessions first showed up in; new ones go at the end, a new name does not move a row.

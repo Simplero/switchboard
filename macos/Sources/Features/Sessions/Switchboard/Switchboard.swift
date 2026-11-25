@@ -976,6 +976,7 @@ final class Switchboard {
             "was": n(e.was),
             "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
             "fa": Int(e.isOpen ? (answeredAt[e.key] ?? 0) : 0),
+            "vs": Int(macSeen[e.key] ?? 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
             "mv": e.move_to.map { ($0 == "#slot" ? "a slot" : $0.hasPrefix("@") ? (e.move_stage == "slotting" ? (e.machine == nil ? "a slot, then " : "a work tree, then ") : "") + ($0 == "@" ? "this Mac" : String($0.dropFirst())) : SBPaths.tilde($0)) as Any } ?? NSNull(),
             "mvm": e.move_to?.hasPrefix("@") == true,
@@ -984,6 +985,25 @@ final class Switchboard {
             "md": (e.isOpen ? SBBackground.modelName(details[e.key]?.model) : nil).map { $0 as Any } ?? NSNull(),
             "wt": worktreeObject(e),
         ]
+    }
+
+    /// When you last looked at each session here (the sidebar says so), for the phone: an answer
+    /// you read on the Mac is not new there. Kept in seen.json.
+    private lazy var macSeen: [String: Double] = {
+        (FileManager.default.contents(atPath: SBPaths.data + "/seen.json")).flatMap { try? JSONDecoder().decode([String: Double].self, from: $0) } ?? [:]
+    }()
+    private var macSeenSaveAt: Double = 0
+
+    func noteSeen(_ k: String, at t: Double) {
+        guard t > (macSeen[k] ?? 0) else { return }
+        macSeen[k] = t
+        if now - macSeenSaveAt > 10 {
+            macSeenSaveAt = now
+            let keep = macSeen.filter { reg.sessions[$0.key] != nil }
+            macSeen = keep
+            if let d = try? JSONEncoder().encode(keep) { SBFiles.queue.async { _ = SBFiles.writeAtomic(d, SBPaths.data + "/seen.json") } }
+        }
+        publish()
     }
 
     /// The pull requests the last payload asked about (SBPRs looks at them again when due).

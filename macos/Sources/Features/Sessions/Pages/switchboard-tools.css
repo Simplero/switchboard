@@ -25,39 +25,39 @@ svg{flex-shrink:0}
 
 /* ---------- Board ---------- */
 .board{display:flex;flex-direction:column;background:var(--bg);color:var(--ink)}
-.board__bar{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line)}
-.board__add{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:var(--surface);border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600;color:var(--ink2);height:24px}
+.board__bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.board__add{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:var(--surface);border-radius:6px;padding:2px 12px;font-size:13.5px;font-weight:600;color:var(--ink2);height:30px}
 .board__add:hover{border-color:var(--accent);color:var(--ink)}
 .board__cols{display:flex;align-items:flex-start;gap:10px;padding:12px;overflow-x:auto}
-.col{--col:var(--c-blue);flex:0 0 270px;min-width:0;display:flex;flex-direction:column;gap:8px;background:var(--sunk);border-radius:10px;padding:0 8px 8px}
+.col{--col:var(--c-blue);flex:0 0 330px;min-width:0;display:flex;flex-direction:column;gap:8px;background:var(--sunk);border-radius:10px;padding:0 8px 8px}
 .col--blue{--col:var(--c-blue)} .col--yellow{--col:var(--c-yellow)} .col--violet{--col:var(--c-violet)} .col--pink{--col:var(--c-pink)}
 .col--aqua{--col:var(--c-aqua)} .col--lime{--col:var(--c-lime)} .col--gray{--col:var(--c-gray)}
-.col__head{display:flex;align-items:center;gap:6px;height:34px;font-size:12.5px;font-weight:700;color:var(--ink2);padding:0 4px}
+.col__head{display:flex;align-items:center;gap:7px;height:40px;font-size:14px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2);padding:0 4px}
 .col__head::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--col);flex:none}
-.col__count{color:var(--faint);font-weight:600}
+.col__count{color:var(--faint);font-weight:600;letter-spacing:0}
 .col__more{margin-left:auto}
 .col.collapsed{flex:0 0 34px;padding:8px 0;align-items:center}
-.col__pill{display:flex;flex-direction:column;align-items:center;gap:8px;font-size:12px;font-weight:700;color:var(--ink2)}
+.col__pill{display:flex;flex-direction:column;align-items:center;gap:8px;font-size:13px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2)}
 .col__pill b{color:var(--faint);font-weight:600}
 .col__pill span{writing-mode:vertical-rl;white-space:nowrap}
 .col__pill::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--col)}
 
-.card{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:8px 10px;display:flex;flex-direction:column;gap:5px}
+.card{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
 .card:hover{border-color:var(--line2)}
 .card.needs{border-left:3px solid var(--needs)}
 .card--off .card__title,.card--off .card__tab .nm{color:var(--muted)}
 .card__tab{display:flex;align-items:center;gap:6px;min-width:0;padding-right:22px}
-.card__tab .nm{font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.card__tab .nm{font-weight:700;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .card__tab .sep{display:none}
-.card__title{font-size:12.5px;font-weight:500;color:var(--ink2);margin:0;line-height:1.35}
-.card__next{font-size:12px;color:var(--muted);line-height:1.35}
+.card__title{font-size:15.5px;font-weight:500;color:var(--ink2);margin:0;line-height:1.4}
+.card__next{font-size:14.5px;color:var(--muted);line-height:1.4}
 .card__next b{color:var(--ink2);font-weight:700}
-.card__note{font-size:11.5px;color:var(--muted);border-left:2px solid var(--line2);padding-left:7px;white-space:pre-wrap}
+.card__note{font-size:14px;color:var(--muted);border-left:2px solid var(--line2);padding-left:7px;white-space:pre-wrap}
 .card__links{display:flex;flex-wrap:wrap;gap:4px}
-.card__meta{display:flex;flex-wrap:wrap;gap:2px 8px;font-size:11px;color:var(--faint)}
+.card__meta{display:flex;flex-wrap:wrap;gap:2px 8px;font-size:13px;color:var(--faint)}
 .card__meta > * + *::before{content:"·";margin-right:8px}
 
-.state{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;border-radius:5px;padding:0 5px;white-space:nowrap;flex:none;height:17px}
+.state{display:inline-flex;align-items:center;gap:3px;font-size:12.5px;font-weight:700;border-radius:5px;padding:0 6px;white-space:nowrap;flex:none;height:21px}
 .state--needs{color:var(--needs);background:var(--needs-soft)}
 .state--work{color:var(--work);background:var(--accent-soft)}
 .state--wait{color:var(--muted);background:var(--sunk)}
@@ -65,13 +65,13 @@ svg{flex-shrink:0}
 .state--done{color:var(--done);background:var(--done-soft)}
 
 /* How long a card has been in its column: small, on the top right. */
-.bubble{font-size:10.5px;color:var(--muted);white-space:nowrap}
+.bubble{font-size:12px;color:var(--muted);white-space:nowrap}
 .bubble span{display:inline-flex;gap:3px}
 .bubble small{font-size:inherit}
 .bubble b{font-weight:700;color:var(--ink2)}
 
-.chip{display:inline-flex;align-items:center;gap:4px;border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:5px;padding:0 6px;font-size:11px;color:var(--accent);height:19px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
-.chip svg{width:11px;height:11px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.chip{display:inline-flex;align-items:center;gap:4px;border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:6px;padding:0 7px;font-size:13px;color:var(--accent);height:24px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.chip svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .chip--quiet,.chip--linear{color:var(--ink2);border-color:var(--line2)}
 .chip--wait{color:var(--needs);border-color:color-mix(in srgb,var(--needs) 40%,transparent)}
 .stamp{display:none}

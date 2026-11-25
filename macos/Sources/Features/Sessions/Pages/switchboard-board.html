@@ -17,7 +17,7 @@ body{overflow:hidden}
 .col__more:hover{color:var(--ink);background:var(--line2)}
 .col.drop-target{outline:2px dashed var(--col);outline-offset:-2px}
 .col.collapsed{cursor:pointer}
-.col__empty{font-size:12px;color:var(--muted);text-align:center;padding:14px 6px;border:1.5px dashed color-mix(in srgb,var(--col) 35%,transparent);border-radius:8px}
+.col__empty{font-size:13.5px;color:var(--muted);text-align:center;padding:14px 6px;border:1.5px dashed color-mix(in srgb,var(--col) 35%,transparent);border-radius:8px}
 .card{cursor:pointer}
 .card.dragging{opacity:.35}
 .ghost{position:fixed;z-index:60;pointer-events:none;rotate:1.5deg;box-shadow:0 12px 30px rgba(0,0,0,.35);opacity:.95}
@@ -40,11 +40,28 @@ input.line-edit{border-color:var(--accent)}
 .pop .sw{display:flex;gap:6px;padding:4px 9px 6px;flex-wrap:wrap}
 .pop .sw button{width:22px;height:22px;padding:0;border-radius:50%;background:var(--c);justify-content:center;color:var(--surface);font-weight:900}
 .pop .check{width:14px;flex:none;text-align:center}
+.bsearch{display:flex;align-items:center;gap:7px;flex:0 1 380px;min-width:180px;height:32px;border:1px solid var(--line2);background:var(--surface);border-radius:8px;padding:0 9px}
+.bsearch:focus-within{border-color:var(--accent)}
+.bsearch svg{width:15px;height:15px;stroke:var(--muted);fill:none;stroke-width:2.2;stroke-linecap:round}
+.bsearch input{flex:1;min-width:0;border:0;background:none;outline:none;font:14.5px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:var(--ink)}
+.bsearch kbd{font:600 11px ui-monospace,SFMono-Regular,monospace;color:var(--faint);border:1px solid var(--line2);border-radius:4px;padding:0 5px}
+.bfilters{display:flex;gap:5px;flex:none}
+.bf{border:1px solid var(--line2);background:var(--surface);border-radius:7px;padding:0 10px;height:30px;font-size:13.5px;font-weight:600;color:var(--ink2);cursor:pointer;white-space:nowrap}
+.bf:hover{border-color:var(--accent)}
+.bf.on{background:var(--accent-soft);border-color:var(--accent);color:var(--ink)}
 .board__hint{margin-right:auto;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .board__add{white-space:nowrap;flex:none;cursor:pointer}
 .board__bar .board__spacer{display:none}
 </style></head>
-<body><div id="app" class="board"></div>
+<body><div id="app" class="board">
+  <div class="board__bar">
+    <label class="bsearch"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="q" placeholder="Find a session: name, what it works on, a note…" autocomplete="off" spellcheck="false"><kbd id="qk">/</kbd></label>
+    <div class="bfilters" id="filters"></div>
+    <span class="board__hint" id="hint"></span>
+    <button class="board__add" data-addcol>+ Column</button>
+  </div>
+  <div class="board__cols" id="colsEl"></div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -180,8 +197,22 @@ function cardHTML({r, c}, col){
   </article>`;
 }
 
+// Find and filter: words match the name, what it works on, the next step, your note, the folder,
+// the branch and its topics; the buttons keep only sessions in that state.
+const FILTERS = [['all', 'All'], ['needs', '? Needs you'], ['work', '↻ Working'], ['done', '✓ Answered'], ['off', '⏾ Off']];
+let filter = 'all', words = [];
+try { filter = localStorage.getItem('boardFilter') || 'all'; } catch (e) {}
+const filtering = () => filter !== 'all' || words.length > 0;
+function matches(x){
+  const r = x.r, c = x.c;
+  if (filter !== 'all' && stateOf(r)[0] !== filter) return false;
+  if (!words.length) return true;
+  const hay = [r.n, r.gl, r.t, r.ns, r.bn, r.cwd, r.br, r.m, c.note, (r.bc || [])[0], ...(r.bt || []).map(t => t.t + ' ' + (t.x || ''))]
+    .filter(Boolean).join(' \n ').toLowerCase();
+  return words.every(w => hay.includes(w));
+}
 function render(){
-  const all = cardsOf();
+  const all = cardsOf().filter(matches);
   const byCol = Object.fromEntries(board.cols.map(c => [c.id, []]));
   for (const x of all) (byCol[x.c.col] || byCol[board.cols[0].id]).push(x);
   for (const id in byCol) byCol[id].sort((a, b) => (a.c.pos ?? -1e9 + 0) - (b.c.pos ?? -1e9 + 0) || (b.r.la - a.r.la));
@@ -193,10 +224,13 @@ function render(){
     const nameEdit = editing && editing.col === col.id;
     return `<section class="col col--${esc(col.color)}" data-col="${esc(col.id)}">
       <div class="col__head" data-colhead="${esc(col.id)}" title="Drag to move the column. Double-click the name to rename it."><span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
-      ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">Drag a session here.</div>`}
+      ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">${filtering() ? 'No match here.' : 'Drag a session here.'}</div>`}
     </section>`;
   }).join('');
-  $('#app').innerHTML = `<div class="board__bar"><span class="board__hint">${all.length} session${all.length === 1 ? '' : 's'} · drag a card to park it, drag a column by its name to move it · esc or ⌘B goes back</span><span class="board__spacer"></span><button class="board__add" data-addcol>+ Column</button></div><div class="board__cols">${cols}</div>`;
+  $('#colsEl').innerHTML = cols;
+  const total = cardsOf().length;
+  $('#hint').textContent = filtering() ? `${all.length} of ${total} sessions` : `${total} session${total === 1 ? '' : 's'} · drag cards and column names · esc or ⌘B goes back`;
+  $('#filters').innerHTML = FILTERS.map(([id, label]) => `<button class="bf${filter === id ? ' on' : ''}" data-filter="${id}" aria-pressed="${filter === id}">${label}</button>`).join('');
   if (editing){
     const f = editing.col ? $('.col__head .name[contenteditable]') : $('.note-edit, .line-edit');
     if (f){ f.focus(); if (editing.col){ const r = document.createRange(); r.selectNodeContents(f); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } else if (f.setSelectionRange) f.setSelectionRange(f.value.length, f.value.length); }
@@ -391,11 +425,19 @@ document.addEventListener('mouseup', e => endDrag(e, false));
 window.addEventListener('blur', () => { if (press && press.on) endDrag({clientX: 0, clientY: 0}, true); press = null; });
 
 // MARK: Clicks and keys
+const qEl = $('#q');
+qEl.addEventListener('input', () => { words = qEl.value.toLowerCase().split(/\s+/).filter(Boolean); render(); });
+qEl.addEventListener('keydown', e => {
+  if (e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); if (qEl.value){ qEl.value = ''; words = []; render(); } else qEl.blur(); }
+  if (e.key === 'Enter'){ e.preventDefault(); const first = document.querySelector('.card[data-k]'); if (first) bridge('open', {k: first.dataset.k}); }
+});
 document.addEventListener('click', e => {
   if (justDragged) return;
   const t = e.target;
   if (pop && !t.closest('.pop')) closePop();
   if (editing && !t.closest('.note-edit, .line-edit, .col__head .name[contenteditable]')){ commitEdit(false); return; }
+  const fb = t.closest('[data-filter]');
+  if (fb){ filter = fb.dataset.filter; try { localStorage.setItem('boardFilter', filter); } catch (e) {} render(); return; }
   if (t.closest('[data-addcol]')){
     const used = new Set(board.cols.map(c => c.color));
     const id = 'c' + Date.now().toString(36);
@@ -423,6 +465,13 @@ document.addEventListener('contextmenu', e => {
   if (col){ e.preventDefault(); colMenu(col.dataset.col, e.clientX, e.clientY); }
 });
 document.addEventListener('keydown', e => {
+  // "/" or typing a letter (nothing else has the keyboard): the search box.
+  if (!editing && document.activeElement !== qEl && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === '/' || /^[\p{L}\p{N}]$/u.test(e.key))){
+    qEl.focus(); if (e.key === '/') e.preventDefault(); return;
+  }
+  if (e.key === 'Escape' && document.activeElement !== qEl && (qEl.value || filter !== 'all') && !pop && !editing){
+    qEl.value = ''; words = []; filter = 'all'; try { localStorage.setItem('boardFilter', 'all'); } catch (x) {} render(); return;
+  }
   if (e.key === 'Escape'){ if (pop){ closePop(); return; } if (editing){ commitEdit(true); return; } bridge('close'); return; }
   if (e.key === 'Enter' && editing && !(editing.what === 'note' && e.shiftKey)){ e.preventDefault(); commitEdit(false); }
 });

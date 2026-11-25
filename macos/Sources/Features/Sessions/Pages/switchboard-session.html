@@ -105,7 +105,7 @@ function topic(r, t, current){
 
 function render(){
   const r = rows.find(x => x.o && x.sf && x.sf === front) || rows.find(x => x.k === pinnedK);
-  if (!r){ $('#app').innerHTML = `<div class="sess__bar"><h1 class="sess__name">In this session</h1></div><p class="empty">Go to a session: this shows what it works on, what is done and what is still open.</p>`; return; }
+  if (!r){ render.last = null; $('#app').innerHTML = `<div class="sess__bar"><h1 class="sess__name">In this session</h1></div><p class="empty">Go to a session: this shows what it works on, what is done and what is still open.</p>`; return; }
   pinnedK = r.k;
   const [st, word] = stateOf(r);
   const topics = r.bt || [];
@@ -132,9 +132,13 @@ function render(){
     const kind = {doc: 'Doc', dev: 'Dev', artifact: 'Page'};
     h += `<details class="links"><summary class="sess__label">All links · ${lk.length} ›</summary><div class="linklist">${lk.map(l => `<a data-link="${esc(l[1])}" title="${esc(l[1])}"><small>${kind[l[0]] || l[0]}</small><span>${esc(l[2] || l[1])}</span></a>`).join('')}</div></details>`;
   }
-  const keepOpen = $('details.links')?.open;
+  // Only when something changed, and where you scrolled to stays.
+  if (h === render.last) return;
+  render.last = h;
+  const keepOpen = $('details.links')?.open, y = scrollY;
   $('#app').innerHTML = h;
   if (keepOpen) $('details.links').open = true;
+  scrollTo(0, y);
 }
 
 document.addEventListener('click', e => {

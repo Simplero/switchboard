@@ -52,6 +52,19 @@ input.line-edit{border-color:var(--accent)}
 .board__hint{margin-right:auto;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .board__add{white-space:nowrap;flex:none;cursor:pointer}
 .board__bar .board__spacer{display:none}
+/* The state, as in the sidebar: its icon (the spinner while it works) and its word. */
+.state svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.spin{animation:spin 1.2s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.spin{animation:none}}
+.state--new{color:var(--needs);background:var(--needs-soft)}
+/* The keyboard's place: a thick ring and a marker on the left, not color alone. */
+.card{scroll-margin:48px 0 8px}
+.card.kb,.col__head.kb,.col.collapsed.kb{box-shadow:0 0 0 2.5px var(--accent);border-radius:9px}
+.card.kb::before,.col__head.kb::after{content:"";position:absolute;left:-8px;top:50%;translate:0 -50%;border:6px solid transparent;border-left-color:var(--accent)}
+.col__head.kb::after{left:-10px}
+.col.collapsed.kb{position:relative}
+.col__pin{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2.3;stroke-linecap:round;stroke-linejoin:round;margin-left:-2px}
+.board__hint kbd{font:600 11px ui-monospace,SFMono-Regular,monospace;border:1px solid var(--line2);border-radius:4px;padding:0 4px;color:var(--ink2)}
 </style></head>
 <body><div id="app" class="board">
   <div class="board__bar">
@@ -74,10 +87,34 @@ const I = {
   wait: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
 };
 const COLORS = ['blue', 'yellow', 'violet', 'pink', 'aqua', 'lime', 'gray'];
-const NEEDS = new Set(['permission', 'question', 'review', 'heads_up']);
+const NEEDS = new Set(['permission', 'question', 'review', 'heads_up', 'wrong_login']);
+// The sidebar's icons and words for each state (never color alone: an icon and a word).
+const ICON = {
+  spin: '<path d="M21 12a9 9 0 1 1-6.2-8.56"/>',
+  hand: '<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+  q: '<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2-3 4"/><path d="M12 17h.01"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  warn: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  dots: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+  pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
+  moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>',
+  term: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
+  pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
+};
+const ic = (n, cls = '') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
+const LOOK = {
+  urgent: ['warn', 'Urgent'], permission: ['hand', 'Approve'], question: ['q', 'Answer'], review: ['eye', 'Look at it'],
+  heads_up: ['warn', 'Read this'], wrong_login: ['warn', 'Wrong login'], working: ['spin', 'Working'], reading: ['dots', 'Reading'],
+  done: ['check', 'Done'], handled: ['check', 'Handled'], info: ['check', 'Answered'], parked: ['pause', 'Parked'], shell: ['term', 'Terminal'],
+};
+// The Pinned column: every pinned session, in the sidebar's pin order, by itself.
+const PIN = '__pinned';
 
-let rows = [], board = {cols: [], cards: {}, collapsed: []}, nowT = Date.now() / 1000;
+let rows = [], board = {cols: [], cards: {}, collapsed: []}, nowT = Date.now() / 1000, front = '';
 let editing = null;   // {k, what: 'note'|'linear'} or {col}
+let cur = null;       // the keyboard's place: {k, col} on a card, {col} on a column's head
 
 window.SB = {
   setData(p, extra){
@@ -85,12 +122,17 @@ window.SB = {
     if (extra && extra.board && !editing && !dragK && !dragCol){
       board = structuredClone(extra.board);
       for (const c of board.cols) if (!COLORS.includes(c.color)) c.color = c.color === 'purple' ? 'violet' : 'gray';
+      if (!board.cols.some(c => c.id === PIN)){ board.cols.unshift({id: PIN, name: 'Pinned', color: 'gray'}); save(); }
     }
     if (extra && extra.now) nowT = extra.now;
+    // You went to another session since: the keyboard starts on its card.
+    if (extra && 'front' in extra && (extra.front || '') !== front){ front = extra.front || ''; cur = null; }
     rekey();
     if (!editing && !dragK && !dragCol) render();
   }
 };
+// Where a new session's card goes: the first column that is not Pinned.
+const homeCol = () => (board.cols.find(c => c.id !== PIN) || board.cols[0]).id;
 
 // A session whose key changed (its conversation id arrived) keeps its card.
 function rekey(){
@@ -103,11 +145,19 @@ function rekey(){
 const save = () => bridge('board', {board});
 const rowOf = k => rows.find(r => r.k === k);
 
+// [filter group, the state's badge]. The badge is the sidebar's: its icon (the spinner while
+// the agent works) and its word; a new answer (after you last looked) has the bell.
 function stateOf(r){
-  if (!r.o) return ['off', '⏾ Off', 'Not running'];
-  if (r.st === 'working') return ['work', '↻ Working', 'Working'];
-  if (r.u || NEEDS.has(r.st)) return ['needs', '? Needs you', 'Needs you'];
-  return ['done', '✓ Answered', 'Answered'];
+  const st = (r.u && NEEDS.has(r.st)) ? 'urgent' : (r.st || 'info');
+  const badge = (cls, icon, word, spin) => `<span class="state state--${cls}">${ic(icon, spin ? 'spin' : '')}${word}</span>`;
+  if (!r.o) return ['off', badge('off', 'moon', 'Off')];
+  if (st === 'working' || st === 'reading') return ['work', badge('work', LOOK[st][0], LOOK[st][1], st === 'working')];
+  if (st === 'urgent' || NEEDS.has(st)) return ['needs', badge('needs', LOOK[st][0], LOOK[st][1])];
+  // (Only once the Mac has a time you last looked at it: before that, nothing counts as new.)
+  const fresh = r.a !== 'shell' && r.vs > 0 && r.fa > r.vs && (st === 'done' || st === 'info');
+  if (fresh) return ['needs', badge('new', 'bell', st === 'done' ? 'New: done' : 'New answer')];
+  const [icon, word] = LOOK[st] || LOOK.info;
+  return ['done', badge(st === 'parked' || st === 'shell' ? 'wait' : 'done', icon, word)];
 }
 function ago(t){
   const s = Math.max(0, nowT - t);
@@ -124,15 +174,17 @@ function span(s){
 }
 
 // The sessions on the board: every running one (not the pins), and every one you put on it.
+// The pinned ones are all in Pinned, in pin order, also the ones you turned off.
 function cardsOf(){
   const out = [];
-  const first = board.cols[0] && board.cols[0].id;
+  const first = homeCol();
   for (const r of rows){
     if (r.ar || r.k.startsWith('conv:')) continue;
     const c = board.cards[r.k];
+    if (r.pn != null){ out.push({r, c: {...(c || {}), col: PIN, pos: r.pn, hidden: false}, pinned: true}); continue; }
     if (c && c.hidden) continue;
-    if (!c && !(r.o && r.pn == null && r.a !== 'shell')) continue;
-    out.push({r, c: c || {col: first, pos: null}});
+    if (!c && !(r.o && r.a !== 'shell')) continue;
+    out.push({r, c: c && c.col !== PIN && board.cols.some(x => x.id === c.col) ? c : {...(c || {}), col: first, pos: c ? c.pos : null}});
   }
   return out;
 }
@@ -157,12 +209,13 @@ function linearLabel(u){
   return m ? m[1].replace(/-[0-9a-f]{8,}$/, '').replace(/-/g, ' ').replace(/^(\w+ \d+)$/, s => s.replace(' ', '-')) : 'Linear';
 }
 
-function cardHTML({r, c}, col){
-  const [st, word] = stateOf(r);
+function cardHTML({r, c, pinned}, col){
+  const [st, badge] = stateOf(r);
   const title = r.gl || r.t || r.n;
   let next = '';
-  if (r.bc && r.bc[0]) next = `<b>Check:</b> ${esc(r.bc[0])}`;
-  else if (st === 'work' && r.wl) next = `<b>Now:</b> ${esc(r.wl.replace(/^\S+\s+/, '').replace(/\s*\(.*$/, ''))}`;
+  // While it works: what the agent does now, all of it, as the sidebar shows it.
+  if (st === 'work' && r.wl) next = `<b>Now:</b> ${esc(r.wl.replace(/^[^\p{L}\p{N}(]+/u, ''))}`;
+  else if (r.bc && r.bc[0]) next = `<b>Check:</b> ${esc(r.bc[0])}`;
   else if (r.ns) next = `<b>Next:</b> ${esc(r.ns)}`;
   else if (r.bn) next = `<b>Now:</b> ${esc(r.bn)}`;
   const chips = linksOf(r).map(u => { const [k, t] = linkLabel(r, u); return `<span class="chip" data-link="${esc(u)}" title="${esc(u)}">${I[k]}${esc(t)}</span>`; });
@@ -176,7 +229,7 @@ function cardHTML({r, c}, col){
   const slot = r.wt && r.wt.top && r.wt.top.match(/Simplero-(\d+)$/);
   if (slot) meta.push('Slot ' + slot[1]);
   let bubble = '';
-  if (col !== board.cols[0] && c.at){
+  if (col.id !== homeCol() && col.id !== PIN && c.at){
     const [n, unit] = span(nowT - c.at);
     if (nowT - c.at >= 3600) bubble = `<span class="bubble" title="In ${esc(col.name)} for ${n} ${unit}"><span><b>${n}</b><small>${unit}</small></span></span>`;
   }
@@ -186,8 +239,8 @@ function cardHTML({r, c}, col){
   let lin = '';
   if (editing && editing.k === r.k && editing.what === 'linear')
     lin = `<input class="line-edit" placeholder="Paste a Linear issue or project link" value="${esc(c.linear || '')}"><div class="edit-hint">Return saves · empty removes it · Esc: cancel</div>`;
-  return `<article class="card ${st === 'off' ? 'card--off' : ''} ${st === 'needs' ? 'needs' : ''}" data-k="${esc(r.k)}" title="Click to go to “${esc(r.n)}”. Drag it to another column.">
-    <div class="card__tab"><span class="nm">${esc(r.n)}</span><span class="state state--${st === 'done' ? 'done' : st}">${word}</span>${bubble}</div>
+  return `<article class="card ${st === 'off' ? 'card--off' : ''} ${st === 'needs' ? 'needs' : ''}" data-k="${esc(r.k)}" ${pinned ? 'data-pinned' : ''} title="${pinned ? `Click to go to “${esc(r.n)}”. Pinned: it stays in Pinned while it is pinned in the sidebar.` : `Click to go to “${esc(r.n)}”. Drag it to another column.`}">
+    <div class="card__tab"><span class="nm">${esc(r.n)}</span>${badge}${bubble}</div>
     <button class="card__more" data-cardmenu="${esc(r.k)}" title="Note, waits for, Linear, remove" aria-label="More for ${esc(r.n)}">⋯</button>
     <h3 class="card__title">${esc(title)}</h3>
     ${next ? `<div class="card__next">${next}</div>` : ''}
@@ -213,32 +266,47 @@ function matches(x){
 function render(){
   const all = cardsOf().filter(matches);
   const byCol = Object.fromEntries(board.cols.map(c => [c.id, []]));
-  for (const x of all) (byCol[x.c.col] || byCol[board.cols[0].id]).push(x);
+  for (const x of all) (byCol[x.c.col] || byCol[homeCol()]).push(x);
   for (const id in byCol) byCol[id].sort((a, b) => (a.c.pos ?? -1e9 + 0) - (b.c.pos ?? -1e9 + 0) || (b.r.la - a.r.la));
   const collapsed = new Set(board.collapsed || []);
   const cols = board.cols.map(col => {
-    const list = byCol[col.id];
+    const list = byCol[col.id], pin = col.id === PIN;
     if (collapsed.has(col.id))
-      return `<section class="col col--${esc(col.color)} collapsed" data-col="${esc(col.id)}" style="--n:${list.length}" title="${esc(col.name)}: ${list.length}. Click to open it."><div class="col__pill"><b>${list.length}</b><span>${esc(col.name)}</span></div></section>`;
+      return `<section class="col col--${esc(col.color)} collapsed" data-col="${esc(col.id)}" style="--n:${list.length}" title="${esc(col.name)}: ${list.length}. Click (or Return) to open it."><div class="col__pill"><b>${list.length}</b><span>${esc(col.name)}</span></div></section>`;
     const nameEdit = editing && editing.col === col.id;
+    const empty = pin ? 'Pin a session in the sidebar and it shows here.' : filtering() ? 'No match here.' : 'Drag a session here.';
     return `<section class="col col--${esc(col.color)}" data-col="${esc(col.id)}">
-      <div class="col__head" data-colhead="${esc(col.id)}" title="Drag to move the column. Double-click the name to rename it."><span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
-      ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">${filtering() ? 'No match here.' : 'Drag a session here.'}</div>`}
+      <div class="col__head" data-colhead="${esc(col.id)}" title="${pin ? 'Your pinned sessions, in the sidebar’s order. Drag to move the column.' : 'Drag to move the column. Double-click the name to rename it.'}">${pin ? `<svg class="col__pin" viewBox="0 0 24 24" aria-hidden="true">${ICON.pin}</svg>` : ''}<span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
+      ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">${empty}</div>`}
     </section>`;
   }).join('');
-  $('#colsEl').innerHTML = cols;
+  // Only what changed is drawn again, and every column keeps where you scrolled it to.
+  const colsEl = $('#colsEl');
+  if (cols !== render.last){
+    render.last = cols;
+    const tops = Object.fromEntries([...colsEl.querySelectorAll('.col[data-col]')].map(c => [c.dataset.col, c.scrollTop]));
+    const left = colsEl.scrollLeft;
+    colsEl.innerHTML = cols;
+    for (const c of colsEl.querySelectorAll('.col[data-col]')) if (tops[c.dataset.col]) c.scrollTop = tops[c.dataset.col];
+    colsEl.scrollLeft = left;
+  }
   const total = cardsOf().length;
-  $('#hint').textContent = filtering() ? `${all.length} of ${total} sessions` : `${total} session${total === 1 ? '' : 's'} · drag cards and column names · esc or ⌘B goes back`;
-  $('#filters').innerHTML = FILTERS.map(([id, label]) => `<button class="bf${filter === id ? ' on' : ''}" data-filter="${id}" aria-pressed="${filter === id}">${label}</button>`).join('');
+  const hint = filtering() ? `${all.length} of ${total} sessions` : `${total} session${total === 1 ? '' : 's'}`;
+  const keys = '<kbd>↩</kbd> go to it · <kbd>space</kbd> menu · <kbd>⌥</kbd> arrows: move the card · <kbd>tab</kbd> filter · <kbd>esc</kbd> back';
+  const hintHTML = `${hint} · ${keys}`;
+  if ($('#hint').innerHTML !== hintHTML) $('#hint').innerHTML = hintHTML;
+  const fl = FILTERS.map(([id, label]) => `<button class="bf${filter === id ? ' on' : ''}" data-filter="${id}" aria-pressed="${filter === id}" tabindex="-1">${label}</button>`).join('');
+  if (fl !== render.lastF){ render.lastF = fl; $('#filters').innerHTML = fl; }
+  showCursor(false);
   if (editing){
     const f = editing.col ? $('.col__head .name[contenteditable]') : $('.note-edit, .line-edit');
-    if (f){ f.focus(); if (editing.col){ const r = document.createRange(); r.selectNodeContents(f); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } else if (f.setSelectionRange) f.setSelectionRange(f.value.length, f.value.length); }
+    if (f && document.activeElement !== f){ f.focus(); if (editing.col){ const r = document.createRange(); r.selectNodeContents(f); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } else if (f.setSelectionRange) f.setSelectionRange(f.value.length, f.value.length); }
   }
 }
 
 // MARK: Edits
 function setCard(k, f){
-  const c = board.cards[k] || {col: board.cols[0].id, pos: null, at: Math.floor(Date.now() / 1000)};
+  const c = board.cards[k] || {col: homeCol(), pos: null, at: Math.floor(Date.now() / 1000)};
   f(c);
   board.cards[k] = c;
 }
@@ -283,9 +351,9 @@ function cardMenu(k, x, y){
     <button data-a="linear">${I.lin.replace('<svg', '<svg width="13" height="13" style="stroke:currentColor;fill:none;stroke-width:2"')} ${c.linear ? 'Change the Linear link' : 'Link to Linear'}</button>
     <div class="cap">Waits for</div>
     ${others.length ? others.map(o => `<button data-a="wait" data-k="${esc(o.k)}"><span class="check">${waits.has(o.k) ? '✓' : ''}</span>${esc(o.n)}</button>`).join('') : '<div class="cap" style="text-transform:none;font-weight:500">No other sessions.</div>'}
-    <div class="cap">Move to</div>
-    ${board.cols.map(col => `<button data-a="move" data-col="${esc(col.id)}"><span class="check">${(c.col || board.cols[0].id) === col.id ? '✓' : ''}</span>${esc(col.name)}</button>`).join('')}
-    <hr><button data-a="hide">Remove from the board</button>`,
+    ${r && r.pn != null ? '<div class="cap" style="text-transform:none;font-weight:500">Pinned: it stays in Pinned. Unpin it in the sidebar to move it.</div>' : `<div class="cap">Move to</div>
+    ${board.cols.filter(col => col.id !== PIN).map(col => `<button data-a="move" data-col="${esc(col.id)}"><span class="check">${(c.col || homeCol()) === col.id ? '✓' : ''}</span>${esc(col.name)}</button>`).join('')}
+    <hr><button data-a="hide">Remove from the board</button>`}`,
     a => {
       if (a.a === 'note' || a.a === 'linear'){ editing = {k, what: a.a}; render(); return; }
       if (a.a === 'wait') setCard(k, c => { const s = new Set(c.waits || []); s.has(a.k) ? s.delete(a.k) : s.add(a.k); c.waits = [...s]; });
@@ -296,17 +364,18 @@ function cardMenu(k, x, y){
 }
 function colMenu(id, x, y){
   const col = board.cols.find(c => c.id === id);
+  const pin = id === PIN, others = board.cols.filter(c => c.id !== id && c.id !== PIN);
   openPop(x, y, `
-    <button data-a="rename">Rename</button>
+    ${pin ? '<div class="cap" style="text-transform:none;font-weight:500">Your pinned sessions. Pin and unpin in the sidebar.</div>' : '<button data-a="rename">Rename</button>'}
     <div class="sw">${COLORS.map(cl => `<button data-a="color" data-c="${cl}" style="--c:var(--c-${cl})" title="${cl}" aria-label="Color ${cl}">${col.color === cl ? '✓' : ''}</button>`).join('')}</div>
     <button data-a="fold">Fold it</button>
-    ${board.cols.length > 1 ? `<hr><button data-a="remove">Remove the column (its cards go to ${esc(board.cols.find(c => c.id !== id).name)})</button>` : ''}`,
+    ${!pin && others.length ? `<hr><button data-a="remove">Remove the column (its cards go to ${esc(others[0].name)})</button>` : ''}`,
     a => {
       if (a.a === 'rename'){ editing = {col: id}; render(); return; }
       if (a.a === 'color') col.color = a.c;
       if (a.a === 'fold') board.collapsed = [...new Set([...(board.collapsed || []), id])];
       if (a.a === 'remove'){
-        const to = board.cols.find(c => c.id !== id).id;
+        const to = others[0].id;
         for (const k in board.cards) if (board.cards[k].col === id) board.cards[k].col = to;
         board.cols = board.cols.filter(c => c.id !== id);
         board.collapsed = (board.collapsed || []).filter(c => c !== id);
@@ -321,7 +390,7 @@ function colMenu(id, x, y){
 // line shows where it lands. Columns: they change places as you move.
 let dragK = null, dragCol = null, press = null, ghost = null, justDragged = false;
 function moveCard(k, colId, before){
-  const list = cardsOf().filter(x => (x.c.col || board.cols[0].id) === colId && x.r.k !== k)
+  const list = cardsOf().filter(x => !x.pinned && (x.c.col || homeCol()) === colId && x.r.k !== k)
     .sort((a, b) => (a.c.pos ?? -1e9) - (b.c.pos ?? -1e9) || (b.r.la - a.r.la));
   const i = before ? list.findIndex(x => x.r.k === before) : list.length;
   const at = i < 0 ? list.length : i;
@@ -336,6 +405,7 @@ function colAt(x, y){
 function cardSpot(x, y){
   const col = colAt(x, y);
   if (!col) return null;
+  if (col.dataset.col === PIN) return null;   // Pinned follows the sidebar's pins
   if (col.classList.contains('collapsed')) return {col: col.dataset.col, before: null, el: col};
   const cards = [...col.querySelectorAll('.card[data-k]')].filter(c => c.dataset.k !== dragK);
   const before = cards.find(c => { const b = c.getBoundingClientRect(); return y < b.top + b.height / 2; });
@@ -343,7 +413,7 @@ function cardSpot(x, y){
 }
 document.addEventListener('mousedown', e => {
   if (e.button !== 0 || editing || e.target.closest('button, .chip, .pop, [contenteditable="true"], textarea, input')) return;
-  const head = e.target.closest('[data-colhead]'), card = !head && e.target.closest('.card[data-k]');
+  const head = e.target.closest('[data-colhead]'), card = !head && e.target.closest('.card[data-k]:not([data-pinned])');
   if (!head && !card) return;
   press = {x: e.clientX, y: e.clientY, head, card, on: false};
 });
@@ -418,6 +488,7 @@ function endDrag(e, cancel){
   if (ghost){ ghost.remove(); ghost = null; }
   dragK = dragCol = null;
   if (!cancel) save();
+  render.last = null;   // the page moved things itself: draw it all again
   render();
 }
 document.addEventListener('mouseup', e => endDrag(e, false));
@@ -429,10 +500,12 @@ qEl.addEventListener('input', () => { words = qEl.value.toLowerCase().split(/\s+
 qEl.addEventListener('keydown', e => {
   if (e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); if (qEl.value){ qEl.value = ''; words = []; render(); } else qEl.blur(); }
   if (e.key === 'Enter'){ e.preventDefault(); const first = document.querySelector('.card[data-k]'); if (first) bridge('open', {k: first.dataset.k}); }
+  if (e.key === 'ArrowDown'){ e.preventDefault(); e.stopPropagation(); qEl.blur(); cur = null; const first = document.querySelector('.card[data-k]'); setCur(first); showCursor(true); }
 });
 document.addEventListener('click', e => {
   if (justDragged) return;
   const t = e.target;
+  const btn = t.closest('button'); if (btn && !btn.closest('.pop')) setTimeout(() => btn.blur(), 0);
   if (pop && !t.closest('.pop')) closePop();
   if (editing && !t.closest('.note-edit, .line-edit, .col__head .name[contenteditable]')){ commitEdit(false); return; }
   const fb = t.closest('[data-filter]');
@@ -455,7 +528,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('dblclick', e => {
   const h = e.target.closest('[data-colhead]');
-  if (h && !editing){ editing = {col: h.dataset.colhead}; render(); }
+  if (h && !editing && h.dataset.colhead !== PIN){ editing = {col: h.dataset.colhead}; render(); }
 });
 document.addEventListener('contextmenu', e => {
   const card = e.target.closest('.card[data-k]');
@@ -463,16 +536,151 @@ document.addEventListener('contextmenu', e => {
   const col = e.target.closest('.col[data-col]:not(.collapsed)');
   if (col){ e.preventDefault(); colMenu(col.dataset.col, e.clientX, e.clientY); }
 });
+// MARK: Keyboard
+// The Board works without the mouse: the arrows move a ring from card to card (and up to a
+// column's head), Return goes to the session, Space opens its menu, Option and an arrow moves
+// the card (or the column), Tab changes the filter, / finds.
+const colEls = () => [...document.querySelectorAll('.col[data-col]')];
+const cardEls = col => [...col.querySelectorAll('.card[data-k]')];
+function cursorEl(){
+  if (!cur) return null;
+  if (cur.k) return document.querySelector(`.card[data-k="${CSS.escape(cur.k)}"]`);
+  const col = document.querySelector(`.col[data-col="${CSS.escape(cur.col)}"]`);
+  return col && (col.classList.contains('collapsed') ? col : col.querySelector('.col__head'));
+}
+function setCur(el){
+  if (!el){ cur = null; return; }
+  const col = el.closest('.col[data-col]');
+  cur = el.matches('.card') ? {k: el.dataset.k, col: col && col.dataset.col} : {col: col.dataset.col};
+}
+function showCursor(scroll){
+  let el = cursorEl();
+  if (!el){
+    // Gone (a filter, it closed): the first card of its column, the session you are in, or the first card.
+    const col = cur && document.querySelector(`.col[data-col="${CSS.escape(cur.col || '')}"]`);
+    const fr = front && rows.find(r => r.sf === front);
+    el = (col && (cardEls(col)[0] || col.querySelector('.col__head') || col))
+      || (fr && document.querySelector(`.card[data-k="${CSS.escape(fr.k)}"]`))
+      || document.querySelector('.card[data-k]') || document.querySelector('.col__head');
+    setCur(el);
+    scroll = true;
+  }
+  document.querySelectorAll('.kb').forEach(x => { if (x !== el) x.classList.remove('kb'); });
+  if (el && !el.classList.contains('kb')) el.classList.add('kb');
+  if (el && scroll) el.scrollIntoView({block: 'nearest', inline: 'nearest'});
+}
+function stepV(dy){
+  const el = cursorEl(); if (!el) return showCursor(true);
+  const col = el.closest('.col'), cards = cardEls(col);
+  if (el.matches('.card')){
+    const i = cards.indexOf(el) + dy;
+    setCur(i < 0 ? col.querySelector('.col__head') : cards[Math.min(i, cards.length - 1)]);
+  } else if (dy > 0 && cards[0]) setCur(cards[0]);
+  showCursor(true);
+}
+function stepH(dx){
+  const el = cursorEl(); if (!el) return showCursor(true);
+  const cols = colEls(), col = el.closest('.col'), to = cols[cols.indexOf(col) + dx];
+  if (!to) return;
+  const cards = cardEls(to);
+  if (!el.matches('.card') || to.classList.contains('collapsed') || !cards.length){
+    setCur(to.classList.contains('collapsed') ? to : to.querySelector('.col__head'));
+  } else {
+    // The card at the same height in the next column.
+    const b = el.getBoundingClientRect(), y = b.top + b.height / 2;
+    setCur(cards.reduce((best, c) => { const r = c.getBoundingClientRect(); const d = Math.abs(r.top + r.height / 2 - y); return d < best[0] ? [d, c] : best; }, [1e9, cards[0]])[1]);
+  }
+  showCursor(true);
+}
+// Option and an arrow: the card to the next column (at the same place in it) or up and down in
+// its column; on a column's head, the column one place to the left or right.
+function moveByKey(key){
+  const el = cursorEl(); if (!el) return;
+  if (!el.matches('.card')){
+    if (key !== 'ArrowLeft' && key !== 'ArrowRight') return;
+    const i = board.cols.findIndex(c => c.id === cur.col), j = i + (key === 'ArrowLeft' ? -1 : 1);
+    if (i < 0 || j < 0 || j >= board.cols.length) return;
+    [board.cols[i], board.cols[j]] = [board.cols[j], board.cols[i]];
+    save(); render(); showCursor(true); return;
+  }
+  if (el.hasAttribute('data-pinned')) return;   // Pinned follows the sidebar's pins
+  const col = el.closest('.col'), cards = cardEls(col), i = cards.indexOf(el);
+  if (key === 'ArrowUp' || key === 'ArrowDown'){
+    const up = key === 'ArrowUp';
+    if (up ? i === 0 : i === cards.length - 1) return;
+    const before = up ? cards[i - 1] : cards[i + 2];
+    moveCard(cur.k, col.dataset.col, before ? before.dataset.k : null);
+  } else {
+    const cols = colEls(), dx = key === 'ArrowLeft' ? -1 : 1;
+    let n = cols.indexOf(col) + dx;
+    while (cols[n] && (cols[n].dataset.col === PIN || cols[n].classList.contains('collapsed'))) n += dx;
+    if (!cols[n]) return;
+    const there = cardEls(cols[n]);
+    moveCard(cur.k, cols[n].dataset.col, there[i] ? there[i].dataset.k : null);
+    cur.col = cols[n].dataset.col;
+  }
+  save(); render(); showCursor(true);
+}
+function activate(space){
+  const el = cursorEl(); if (!el) return showCursor(true);
+  const b = el.getBoundingClientRect();
+  if (el.matches('.card')){
+    if (space) cardMenu(cur.k, Math.max(8, b.right - 230), b.top + 30); else bridge('open', {k: cur.k});
+    return;
+  }
+  if (el.matches('.col.collapsed')){ board.collapsed = (board.collapsed || []).filter(c => c !== cur.col); save(); render(); showCursor(true); return; }
+  if (space || cur.col === PIN) colMenu(cur.col, b.left + 8, b.bottom + 4);
+  else { editing = {col: cur.col}; render(); }
+}
+function setFilter(id){ filter = id; try { localStorage.setItem('boardFilter', filter); } catch (e) {} render(); showCursor(true); }
+const typing = t => t && (t.matches('input, textarea') || t.isContentEditable);
+
 document.addEventListener('keydown', e => {
+  // A menu is open: the arrows go from item to item, Return or Space picks one, Esc closes it.
+  if (pop){
+    if (e.key === 'Escape'){ e.preventDefault(); closePop(); showCursor(false); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Tab'){
+      e.preventDefault();
+      const bs = [...pop.querySelectorAll('button')], i = bs.indexOf(document.activeElement);
+      const d = e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey) ? -1 : 1;
+      bs[(i + d + bs.length) % bs.length]?.focus();
+    }
+    return;
+  }
+  if (e.metaKey || e.ctrlKey) return;
+  const inField = typing(e.target);
   // "/" or typing a letter (nothing else has the keyboard): the search box.
-  if (!editing && document.activeElement !== qEl && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === '/' || /^[\p{L}\p{N}]$/u.test(e.key))){
+  if (!editing && !inField && !e.altKey && (e.key === '/' || /^[\p{L}\p{N}]$/u.test(e.key))){
     qEl.focus(); if (e.key === '/') e.preventDefault(); return;
   }
-  if (e.key === 'Escape' && document.activeElement !== qEl && (qEl.value || filter !== 'all') && !pop && !editing){
+  if (e.key === 'Escape' && !inField && (qEl.value || filter !== 'all') && !editing){
     qEl.value = ''; words = []; filter = 'all'; try { localStorage.setItem('boardFilter', 'all'); } catch (x) {} render(); return;
   }
-  if (e.key === 'Escape'){ if (pop){ closePop(); return; } if (editing){ commitEdit(true); return; } bridge('close'); return; }
-  if (e.key === 'Enter' && editing && !(editing.what === 'note' && e.shiftKey)){ e.preventDefault(); commitEdit(false); }
+  if (e.key === 'Escape'){ if (editing){ commitEdit(true); showCursor(false); return; } if (!inField) bridge('close'); return; }
+  if (e.key === 'Enter' && editing && !(editing.what === 'note' && e.shiftKey)){ e.preventDefault(); commitEdit(false); showCursor(false); return; }
+  if (editing) return;
+  if (e.key === 'Tab'){
+    e.preventDefault();
+    if (inField) e.target.blur();
+    const i = FILTERS.findIndex(f => f[0] === filter);
+    setFilter(FILTERS[(i + (e.shiftKey ? -1 : 1) + FILTERS.length) % FILTERS.length][0]);
+    return;
+  }
+  if (inField) return;
+  const arrows = {ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1};
+  if (arrows[e.key]){
+    e.preventDefault();
+    if (e.altKey) moveByKey(e.key);
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') stepV(e.key === 'ArrowUp' ? -1 : 1);
+    else stepH(e.key === 'ArrowLeft' ? -1 : 1);
+    return;
+  }
+  if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur(); activate(e.key === ' '); return; }
+  if (e.key === 'Home' || e.key === 'End'){
+    e.preventDefault();
+    const el = cursorEl(), col = el && el.closest('.col'), cards = col ? cardEls(col) : [];
+    if (cards.length){ setCur(e.key === 'Home' ? cards[0] : cards[cards.length - 1]); showCursor(true); }
+  }
 });
 bridge('ready');
 </script>

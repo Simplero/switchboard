@@ -174,6 +174,8 @@ final class SessionsStore: ObservableObject {
             if pageKey, let w = event.window ?? NSApp.keyWindow {
                 let r = w.firstResponder as? NSView
                 if r is DocWebView || r?.enclosingDocWebView != nil { return event }
+                // The Board or In this session has the keyboard: its arrows are its own.
+                if let r, sequence(first: r, next: { $0.superview }).contains(where: { $0 is ToolWebHolder }) { return event }
                 if self.pageHasYou, let doc = Self.docWebView(in: w) {
                     w.makeFirstResponder(doc)
                     return event

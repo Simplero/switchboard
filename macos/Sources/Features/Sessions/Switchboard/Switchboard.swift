@@ -463,7 +463,7 @@ final class Switchboard {
                   let size = transcriptSizes[sid], size > 0 else { continue }
             if e.state == "working" || e.screen == "working" { continue }
             if now - (failedBriefs[sid] ?? 0) < 300 { continue }
-            if let b = briefs[sid], b.topics != nil {   // one from before topics: read it again
+            if let b = briefs[sid], b.v == 2 {   // one read with an older prompt: read it again
                 let focused = e.surface_id != nil && e.surface_id == focusedSF
                 if size - b.size < 2000 || now - b.at < (focused ? 90 : 900) { continue }
             }
@@ -958,7 +958,7 @@ final class Switchboard {
             // In this session (⌘I) and the panel: where it stands, what to check, its topics.
             "bn": br?.now ?? "", "bc": br?.check.map { [$0, br?.checkURL ?? ""] as Any } ?? NSNull(),
             "bt": (br?.topics ?? []).map { t in
-                ["t": t.title, "s": t.state, "d": t.done, "o": t.open.map { [$0.who ?? "", $0.text] }, "l": t.links] as [String: Any]
+                ["t": t.title, "s": t.state, "x": t.status ?? "", "l": t.links] as [String: Any]
             },
             "bl": br?.later ?? [], "bd": br?.drift == true, "ba": Int(br?.at ?? 0), "pr": prs,
             "lg": e.agent == "shell" ? NSNull() as Any : SBLogins.short(e.login_dir) as Any, "ld": n(e.login_dir), "a": n(e.agent),

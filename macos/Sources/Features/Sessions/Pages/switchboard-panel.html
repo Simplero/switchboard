@@ -362,7 +362,12 @@ function render(){
     const asks = [s.bc && s.bc[0], s.ns, ...(s.op || []).filter(o => o[0] === 'you').map(o => o[1]),
       ...(s.bt || []).flatMap(t => (t.o || []).filter(o => o[0] === 'you').map(o => o[1]))].some(x => /merge[ -]?pr/i.test(x || ''));
     const merge = asks && s.a === 'claude' && s.st !== 'working' ? `<button class="mergebtn" data-send="merge pr" data-k="${esc(s.k)}" title="Type “merge pr” into this session: it ships the work as a PR that SDev merges">merge pr</button>` : '';
+    // No PR and nothing to check: the pieces of work of this session, in order, each with its state.
+    const tops = (s.bt || []);
+    const sign = t => t.s === 'done' ? '✓' : t.s === 'you' ? '?' : t.s === 'later' ? '◷' : '↻';
+    const chain = tops.length ? `<span class="k">Worked on:</span><span class="v" title="${esc(tops.map(t => sign(t) + ' ' + t.t + (t.x ? ': ' + t.x : '')).join('\n'))}">${tops.map(t => `<span class="${t.s === 'you' ? 'you' : t.s === 'done' ? 'muted' : ''}">${sign(t)} ${esc(t.t)}</span>`).join('<span class="sep">›</span>')}</span>` : '';
     const row3 = steps || check ? `${steps}${check || '<span style="flex:1"></span>'}${merge}`
+      : chain ? chain + merge
       : op.length
       ? `<span class="k">Still open:</span><span class="v" title="${esc(op.map(([w, t]) => '• ' + (w === 'you' ? 'You: ' : '') + t).join('\n'))}">${op.map(([w, t]) => (w === 'you' ? '<span class="you">You:</span> ' : '') + esc(t)).join('<span class="sep">·</span>')}</span>`
       : s.gl ? `<span class="k">Still open:</span><span class="v muted">Nothing.</span>` : '';

@@ -28,6 +28,8 @@ struct SBBrief: Codable, Equatable {
         var title: String
         /// "working", "you" (waits for Calvin), "done" or "later".
         var state: String
+        /// Where it stands, in one plain sentence that makes sense without the conversation.
+        var status: String? = nil
         var done: [String]
         var open: [Item]
         /// Up to two links to check this topic with (a Doc, a PR, a dev page).
@@ -45,6 +47,8 @@ struct SBBrief: Codable, Equatable {
     var later: [String]? = nil
     /// The latest messages moved to a topic its Doc does not cover.
     var drift: Bool? = nil
+    /// The prompt it was read with (2: topics at the level of pieces of work, with a status).
+    var v: Int? = nil
     /// The transcript size it read, and when.
     var size: Int
     var at: Double
@@ -434,7 +438,7 @@ enum SBLinks {
     Return ONLY a JSON object, no prose:
     {"goal": "...", "open": [{"who": "you", "text": "..."}, {"who": "agent", "text": "..."}],
      "now": "...", "check": {"text": "...", "url": "..."},
-     "topics": [{"title": "...", "state": "working", "done": ["..."], "open": [{"who": "you", "text": "..."}], "links": ["https://..."]}],
+     "topics": [{"title": "...", "state": "working", "status": "...", "links": ["https://..."]}],
      "later": ["..."], "drift": false}
 
     "goal": what this session works on now, max 12 words, plain words. Say the thing itself
@@ -449,15 +453,25 @@ enum SBLinks {
       themselves (tests, CI, screenshots) unless they are stuck. [] when nothing is open.
     "now": where the session stands right now, one sentence, max 16 words ("PR #431 is merged; the
       deploy is running"). For Calvin, who asks "status?" a lot.
-    "check": the one thing Calvin should look at next, max 12 words, with the link to look at it
-      (a URL from the log: a Doc, a PR, a dev page); null when nothing waits for him.
-    "topics": the separate things this session works on, 1 to 4, in the order they came up. Each:
-      "title" max 8 words; "state": "working" (the agent is on it), "you" (it waits for Calvin),
-      "done" or "later" (put off); "done": finished parts, max 4, each max 10 words; "open": what
-      is not finished, as in "open" above, max 4; "links": at most 2 URLs from the log that matter
-      for checking it (a Simplero Doc first, then a PR, then a dev page), [] when none.
-    "later": what Calvin or the agent put off for later ("after the deploy", "next week"), max 4,
-      each max 12 words; [] when none.
+    "check": the one thing Calvin should look at next, max 14 words, that makes sense without
+      the log (what to look at and why), with the link to look at it (a URL from the log: a Doc,
+      a PR, a dev page); null when nothing waits for him or there is no link for it.
+    "topics": the pieces of work this session has done or is doing, in the order they came up,
+      1 to 6. A topic is a piece of work at the level Calvin plans at: "Replace Selectize",
+      "API for custom objects", "Split the integration screen". Never a step, a check, a test, a
+      question or a to-do inside a piece of work. Each:
+      "title" max 6 words, the piece of work itself;
+      "state": "working" (the agent is on it), "you" (it waits for Calvin), "done" (finished, or
+        shipped) or "later" (put off);
+      "status": where it stands, one sentence, max 22 words, that makes sense to Calvin without
+        the log. If it waits for him, say the decision or the thing to look at itself and where
+        it is (for example "Pick how refunds work for partial payments: three options in the
+        Custom objects Doc"), never "answer Q5 to Q7" or "run the steps". Leave out routine
+        steps the agent does by itself.
+      "links": at most 2 URLs from the log for this piece of work (its Simplero Doc first, then
+        its PR), [] when none.
+    "later": pieces of work put off for later, at the same level as topics, max 4, each max
+      12 words; [] when none.
     "drift": true when the latest messages work on something none of the earlier topics covers,
       so it may need its own Doc or session; else false.
     Write each item like a task title: short and plain, no "I", "me", "my" or "your", no markdown.
@@ -491,15 +505,17 @@ enum SBLinks {
         let topics: [SBBrief.Topic] = ((j["topics"] as? [Any]) ?? []).compactMap { x in
             guard let d = x as? [String: Any], let title = d["title"] as? String, !title.isEmpty else { return nil }
             let links = strings(d["links"]).filter { $0.hasPrefix("http") }
-            return SBBrief.Topic(title: title, state: d["state"] as? String ?? "working", done: Array(strings(d["done"]).prefix(4)),
-                                 open: Array(((d["open"] as? [Any]) ?? []).compactMap(item).prefix(4)), links: Array(links.prefix(2)))
+            var t = SBBrief.Topic(title: title, state: d["state"] as? String ?? "working", done: [], open: [], links: Array(links.prefix(2)))
+            t.status = (d["status"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return t
         }
         let check = j["check"] as? [String: Any]
         var b = SBBrief(goal: goal, open: Array(items.prefix(5)), size: size, at: Date().timeIntervalSince1970)
         b.now = (j["now"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         b.check = (check?["text"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         b.checkURL = (check?["url"] as? String).flatMap { $0.hasPrefix("http") ? $0 : nil }
-        b.topics = Array(topics.prefix(4))
+        b.topics = Array(topics.prefix(6))
+        b.v = 2
         b.later = Array(strings(j["later"]).prefix(4))
         b.drift = j["drift"] as? Bool
         return b

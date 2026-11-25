@@ -26,6 +26,9 @@ details.links summary::-webkit-details-marker{display:none}
 .linklist small{color:var(--faint);font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;flex:none;width:52px}
 .btn{cursor:pointer}
 .reading{font-size:12px;color:var(--muted)}
+.timeline{display:flex;flex-direction:column;gap:8px}
+.status{font-size:12.5px;color:var(--ink2);line-height:1.4}
+.topic--done .card__tab .nm,.topic--done .status{color:var(--muted)}
 </style></head>
 <body><div class="sess" id="app"></div>
 <script>
@@ -69,7 +72,9 @@ const chip = (r, u, quiet) => { const [k, t] = linkLabel(r, u); return `<span cl
 function prOf(r, t, first){
   const prs = r.pr || [];
   for (const u of t.l || []) { const p = prs.find(x => x.u === u); if (p) return p; }
-  return first ? prs[0] : null;
+  // The branch's PR belongs to the piece of work going on now, unless another one links to it.
+  if (!first || !prs[0]) return null;
+  return (r.bt || []).some(o => (o.l || []).includes(prs[0].u)) ? null : prs[0];
 }
 function steps(r, pr, waitsForYou){
   if (!pr) return '';
@@ -81,26 +86,19 @@ function steps(r, pr, waitsForYou){
   s.push(`<span class="step ${merged ? 'step--done' : ''}"><i></i>${closed ? 'Closed' : 'Merged'}</span>`);
   return `<div class="steps">${s.join('<span class="arrow">›</span>')}</div>`;
 }
-function items(t){
-  const out = (t.d || []).map(x => `<li class="item item--done"><i></i><span>${esc(x)}</span></li>`);
-  for (const [who, text] of t.o || []) out.push(`<li class="item"><i></i><span>${who === 'you' ? '<span class="who who--you">You</span>' : who === 'agent' ? '<span class="who who--agent">Agent</span>' : ''}${esc(text)}</span></li>`);
-  return out.length ? `<ul class="items">${out.join('')}</ul>` : '';
-}
-function topic(r, t, i){
-  const done = t.s === 'done';
-  const cls = done ? 'topic--done' : t.s === 'you' ? 'topic--needs' : t.s === 'later' ? 'topic--wait' : 'topic--work';
-  let word = done ? '✓ Done' : t.s === 'you' ? '? Needs you' : t.s === 'later' ? '◷ Later' : '↻ Agent on it';
-  const pr = prOf(r, t, i === 0 && !done);
+// One piece of work in this session: its name, its state (a sign and a word), where it stands
+// in one sentence, its PR's steps while it is open, and its Doc or PR.
+function topic(r, t, current){
+  const pr = prOf(r, t, current);
   const merged = pr && pr.s === 'MERGED';
-  if (merged) word = '✓ Merged';
-  const stc = done || merged ? 'done' : t.s === 'you' ? 'needs' : t.s === 'later' ? 'wait' : 'work';
-  const stamp = done || merged ? `<div class="stamp">${merged ? 'Merged' : 'Done'}${merged && pr.ma ? `<small>${new Date(pr.ma).toLocaleDateString(undefined, {month: 'short', day: 'numeric'})}</small>` : ''}</div>` : '';
+  const done = t.s === 'done' || merged;
+  const word = merged ? '✓ Merged' : done ? '✓ Done' : t.s === 'you' ? '? Needs you' : t.s === 'later' ? '◷ Later' : '↻ Working';
+  const stc = done ? 'done' : t.s === 'you' ? 'needs' : t.s === 'later' ? 'wait' : 'work';
   const links = (t.l || []).map(u => chip(r, u, done)).join('');
-  return `<article class="topic ${cls}">
+  return `<article class="topic ${t.s === 'you' && !done ? 'topic--needs' : ''} ${done ? 'topic--done' : ''}">
     <div class="card__tab"><span class="nm">${esc(t.t)}</span><span class="state state--${stc}">${word}</span></div>
-    ${stamp}
+    ${t.x ? `<div class="status">${esc(t.x)}</div>` : ''}
     ${done ? '' : steps(r, pr, t.s === 'you')}
-    ${done ? '' : items(t)}
     ${links ? `<div class="card__links">${links}</div>` : ''}
   </article>`;
 }
@@ -111,7 +109,6 @@ function render(){
   pinnedK = r.k;
   const [st, word] = stateOf(r);
   const topics = r.bt || [];
-  const open = topics.filter(t => t.s !== 'done'), done = topics.filter(t => t.s === 'done');
   let h = `<div class="sess__bar"><h1 class="sess__name">${esc(r.n)}</h1><span class="state state--${st === 'done' ? 'done' : st}">${word}</span></div>`;
   if (r.bn) h += `<div class="now"><b>Now:</b> ${esc(r.bn)}</div>`;
   else if (r.gl) h += `<div class="now"><b>Works on:</b> ${esc(r.gl)}</div>`;
@@ -119,11 +116,12 @@ function render(){
   if (r.bc && r.bc[0]) h += `<div class="check"><div class="t">Check: ${esc(r.bc[0])}</div>${r.bc[1] ? `<div class="card__links">${chip(r, r.bc[1])}</div>` : ''}</div>`;
   if (!topics.length){
     h += `<p class="empty">${r.bp ? 'Switchboard reads this conversation now.' : 'Switchboard reads a conversation once its agent stops, and again when it has grown. Nothing read yet.'}</p>`;
-    if ((r.op || []).length) h += `<div class="sess__label">Still open</div><ul class="items">${r.op.map(([w, t]) => `<li class="item"><i></i><span>${w === 'you' ? '<span class="who who--you">You</span>' : '<span class="who who--agent">Agent</span>'}${esc(t)}</span></li>`).join('')}</ul>`;
+  } else {
+    // The pieces of work in the order they came up; the newest is the one going on now.
+    const lastOpen = topics.map(t => t.s !== 'done').lastIndexOf(true);
+    h += `<div class="sess__label">Worked on in this session</div><div class="timeline">${topics.map((t, i) => topic(r, t, i === lastOpen)).join('')}</div>`;
   }
-  if (open.length) h += `<div class="sess__label">Doing now</div>` + open.map((t, i) => topic(r, t, i)).join('');
-  if (done.length) h += `<div class="sess__label">Done in this session</div>` + done.map(t => topic(r, t, 9)).join('');
-  if ((r.bl || []).length) h += `<div class="sess__label">Later</div><ul class="items" style="--c:var(--accent)">${r.bl.map(x => `<li class="item"><i></i><span>${esc(x)}</span></li>`).join('')}</ul>`;
+  if ((r.bl || []).length) h += `<div class="sess__label">Put off for later</div><div class="timeline">${r.bl.map(x => `<article class="topic"><div class="card__tab"><span class="nm">${esc(x)}</span><span class="state state--wait">◷ Later</span></div></article>`).join('')}</div>`;
   if (r.bd){
     const last = topics[topics.length - 1];
     h += `<div class="drift"><span><b>✦ New topic:</b> ${esc(last ? last.t : 'the latest messages')}. It is not what this session started on.</span>

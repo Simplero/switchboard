@@ -109,7 +109,7 @@ final class SBBoard {
         "cols": [
             ["id": "now", "name": "Now", "color": "blue"],
             ["id": "waiting", "name": "Waiting", "color": "yellow"],
-            ["id": "later", "name": "Later", "color": "purple"],
+            ["id": "later", "name": "Later", "color": "violet"],
         ],
         "cards": [String: Any](),
         "collapsed": [String](),

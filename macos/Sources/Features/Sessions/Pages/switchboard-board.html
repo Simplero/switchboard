@@ -64,7 +64,10 @@ let editing = null;   // {k, what: 'note'|'linear'} or {col}
 window.SB = {
   setData(p, extra){
     rows = (p && p.s) || [];
-    if (extra && extra.board && !editing && !dragK && !dragCol) board = structuredClone(extra.board);
+    if (extra && extra.board && !editing && !dragK && !dragCol){
+      board = structuredClone(extra.board);
+      for (const c of board.cols) if (!COLORS.includes(c.color)) c.color = c.color === 'purple' ? 'violet' : 'gray';
+    }
     if (extra && extra.now) nowT = extra.now;
     rekey();
     if (!editing && !dragK && !dragCol) render();

@@ -193,7 +193,7 @@ function render(){
       ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">Drag a session here.</div>`}
     </section>`;
   }).join('');
-  $('#app').innerHTML = `<div class="board__bar"><span class="board__hint">${all.length} session${all.length === 1 ? '' : 's'} · drag a card to park it</span><span class="board__spacer"></span><button class="board__add" data-addcol>+ Column</button></div><div class="board__cols">${cols}</div>`;
+  $('#app').innerHTML = `<div class="board__bar"><span class="board__hint">${all.length} session${all.length === 1 ? '' : 's'} · drag a card to park it · esc or ⌘B goes back</span><span class="board__spacer"></span><button class="board__add" data-addcol>+ Column</button></div><div class="board__cols">${cols}</div>`;
   if (editing){
     const f = editing.col ? $('.col__head .name[contenteditable]') : $('.note-edit, .line-edit');
     if (f){ f.focus(); if (editing.col){ const r = document.createRange(); r.selectNodeContents(f); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } else if (f.setSelectionRange) f.setSelectionRange(f.value.length, f.value.length); }
@@ -371,7 +371,7 @@ document.addEventListener('contextmenu', e => {
   if (col){ e.preventDefault(); colMenu(col.dataset.col, e.clientX, e.clientY); }
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape'){ if (pop){ closePop(); return; } if (editing){ commitEdit(true); return; } }
+  if (e.key === 'Escape'){ if (pop){ closePop(); return; } if (editing){ commitEdit(true); return; } bridge('close'); return; }
   if (e.key === 'Enter' && editing && !(editing.what === 'note' && e.shiftKey)){ e.preventDefault(); commitEdit(false); }
 });
 bridge('ready');

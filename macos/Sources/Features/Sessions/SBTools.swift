@@ -52,7 +52,8 @@ final class SBToolPage: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             loaded = true
             push()
         case "open":
-            // Go to that session (the pane stays open in its window).
+            // Go to that session. The Board covers the window, so it steps aside.
+            if kind == .board, SessionsDocPanes.shared.tool == Kind.board.rawValue { SessionsDocPanes.shared.tool = nil }
             if let k = body["k"] as? String { store.open(key: k, via: "the \(title.lowercased())") }
         case "board":
             if let state = body["board"] as? [String: Any] {
@@ -169,7 +170,15 @@ extension SessionsDocPanes {
     /// ⌘B / ⌘I: open that page in the pane, or close it when it is open.
     func toggle(_ kind: SBToolPage.Kind) {
         tool = tool == kind.rawValue ? nil : kind.rawValue
-        if tool != nil { toolPage(kind).push() }
+        guard tool != nil else { return }
+        let page = toolPage(kind)
+        page.push()
+        // The Board takes the whole window: it gets the keyboard (esc closes it).
+        if kind == .board {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                page.webView.window?.makeFirstResponder(page.webView)
+            }
+        }
     }
 
     /// The sessions changed: the open tool pages get them.

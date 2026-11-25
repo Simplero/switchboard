@@ -494,6 +494,13 @@ struct SessionsSidebarContainer<Content: View>: View {
 
     private var withSidebar: some View {
         GeometryReader { geo in layout(total: geo.size.width) }
+            // ⌘B: the Board takes the whole window. The sessions stay underneath (their
+            // terminals keep running and keep their place); ⌘B or esc goes back.
+            .overlay {
+                if panes.tool == SBToolPage.Kind.board.rawValue {
+                    ToolPaneView(page: panes.toolPage(.board)) { panes.tool = nil }
+                }
+            }
     }
 
     /// The pane's width: what you dragged it to, but never so wide that the terminal gets
@@ -534,7 +541,7 @@ struct SessionsSidebarContainer<Content: View>: View {
                 content
             }
             // The Board (⌘B) or In this session (⌘I): over the Doc while open.
-            if let t = panes.tool, let kind = SBToolPage.Kind(rawValue: t) {
+            if let t = panes.tool, let kind = SBToolPage.Kind(rawValue: t), kind == .session {
                 ResizeHandle { dx in
                     if paneDragStart == nil { paneDragStart = Double(paneShown(total: total)) }
                     paneWidth = min(1400, max(320, (paneDragStart ?? paneWidth) - dx))

@@ -1694,8 +1694,9 @@ final class Switchboard {
             let shared: Bool
             if let m = srcMachine, let sid = e.session_id {
                 // Where its Claude works now, from its conversation there (the synced copy may lag).
-                if let t = await SBMachines.transcript(m, sid: sid), let cwd = Self.lastCwd(t.data) { folder = cwd }
-                else { folder = workFolder(e) ?? "~" }
+                let home = await SBMachines.prepare(m).home ?? "/nonexistent"
+                if let t = await SBMachines.transcript(m, sid: sid), let cwd = Self.lastCwd(t.data, under: home) { folder = cwd }
+                else { folder = e.cwd ?? "~" }
                 shared = await SBMachines.worktrees(m, folders: [folder])[folder]?.shared ?? false
             } else {
                 let f = folder
@@ -1831,7 +1832,7 @@ final class Switchboard {
         }
         let folder: String
         if src != nil {
-            guard let f = Self.lastCwd(convo) ?? workFolder(e) else { return (false, "Switchboard does not know the folder of “\(name)”.", nil) }
+            guard let f = Self.lastCwd(convo, under: srcHome) ?? e.cwd else { return (false, "Switchboard does not know the folder of “\(name)”.", nil) }
             folder = f
         } else {
             guard let f = workFolder(e).map(SBPaths.expand) else { return (false, "Switchboard does not know the folder of “\(name)”.", nil) }
@@ -1938,14 +1939,15 @@ final class Switchboard {
         return (true, "Moved.", tell)
     }
 
-    /// The folder Claude worked in last, from its conversation file.
-    static func lastCwd(_ convo: Data) -> String? {
+    /// The folder Claude worked in last, from its conversation file: only one under `home` (the
+    /// machine's home), since a conversation that just moved there still ends with the old paths.
+    static func lastCwd(_ convo: Data, under home: String) -> String? {
         let tail = convo.count > 1_000_000 ? convo.suffix(1_000_000) : convo
         let text = String(decoding: tail, as: UTF8.self)
         guard let r = text.range(of: "\"cwd\":\"", options: .backwards) else { return nil }
         guard let end = text[r.upperBound...].firstIndex(of: "\"") else { return nil }
         let cwd = String(text[r.upperBound..<end])
-        return cwd.isEmpty ? nil : cwd
+        return cwd == home || cwd.hasPrefix(home + "/") ? cwd : nil
     }
 
     /// Run a bash script here with these arguments; what it prints.

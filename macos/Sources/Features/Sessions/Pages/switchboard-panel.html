@@ -94,6 +94,10 @@ button.chip.srv:hover{border-color:var(--accent);color:var(--ink)}
 .right .updbtn{margin-left:0}
 .donebtn{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:var(--surface);border-radius:6px;padding:2px 9px;font-size:11.5px;font-weight:600;color:var(--ink2);white-space:nowrap}
 .donebtn:hover{border-color:var(--accent);color:var(--ink)}
+/* Just after the session above changed: the buttons wait, so a second click meant for the
+   session that was here does not close or archive the one that took its place. */
+.donebtn[disabled]{opacity:.45;cursor:default}
+.donebtn[disabled]:hover{border-color:var(--line2);color:var(--ink2)}
 .pinned{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--muted);white-space:nowrap}
 svg{flex-shrink:0}
 .acct{margin-left:auto;display:flex;align-items:center;gap:10px;min-width:0}
@@ -203,6 +207,10 @@ function linkHTML(l){
   return `<button class="lnk" data-url="${esc(url)}" title="${esc(tip)}">${ic(look[0],11,2.2)}<span class="lt">${esc(title)}</span>${port}${kind === 'artifact' && login ? `<span class="lo">${esc(login)}</span>` : ''}</button>`;
 }
 let shownLinks = [];
+// The session shown, and since when: Close and Archive work only after it has shown 1.5 s.
+let shownK = null, shownAt = 0;
+const ARM_MS = 1500;
+const armed = k => k === shownK && Date.now() - shownAt >= ARM_MS;
 function linksHTML(s){
   const lk = s.lk || [];
   shownLinks = lk;
@@ -270,6 +278,11 @@ function render(){
   // An agent row wins over a shell row of the same session.
   if (data){ const rows = surfaces.map(id => data.s.find(x => x.o && x.sf === id)).filter(Boolean); s = rows.find(x => x.a !== 'shell') || rows[0] || null; }
   const b = $('#banner');
+  if ((s ? s.k : null) !== shownK){
+    shownK = s ? s.k : null; shownAt = Date.now();
+    if (s) setTimeout(render, ARM_MS + 50);
+  }
+  const wait = s && !armed(s.k) ? ' disabled' : '';
   if (!s){
     b.className = '';
     b.innerHTML = `<div class="r0"></div><div class="r1"><span class="none">No session in this window.</span></div><div class="r2"></div><div class="r3"></div><div class="r4"></div>`;
@@ -323,8 +336,8 @@ function render(){
   const u = ctx.update && ctx.update.running < 24 ? ctx.update : null;
   // A pin stays (Chief of staff, lazygit): no Done. Unpin it first (right-click it in the sidebar).
   const done = s && s.pn != null ? `<span class="pinned" title="Pinned: it stays in the Pinned row at the top of the sidebar. Right-click it there to unpin it.">${ic('pin',11,2.4)} Pinned</span>`
-    : s ? (s.a === 'shell' ? '' : `<button class="donebtn" data-act="close" data-k="${esc(s.k)}" title="Close it: Claude stops, and the session waits under Not running in the sidebar until you archive it. Click it there to resume it.">${ic('moon',11,2.6)} Close</button>`)
-      + `<button class="donebtn" data-act="done" data-k="${esc(s.k)}" title="${s.a === 'shell' ? 'Close this window and its tabs.' : 'We are done with it: close this session (Claude and every tab in this window) and move it to the Archive. It is under Archive in the sidebar; click it there to resume it.'}">${ic('check',11,2.6)} ${s.a === 'shell' ? 'Close' : 'Archive'}</button>` : '';
+    : s ? (s.a === 'shell' ? '' : `<button class="donebtn" data-act="close" data-k="${esc(s.k)}"${wait} title="Close it: Claude stops, and the session waits under Not running in the sidebar until you archive it. Click it there to resume it.">${ic('moon',11,2.6)} Close</button>`)
+      + `<button class="donebtn" data-act="done" data-k="${esc(s.k)}"${wait} title="${s.a === 'shell' ? 'Close this window and its tabs.' : 'We are done with it: close this session (Claude and every tab in this window) and move it to the Archive. It is under Archive in the sidebar; click it there to resume it.'}">${ic('check',11,2.6)} ${s.a === 'shell' ? 'Close' : 'Archive'}</button>` : '';
   $('#tabs').innerHTML = tabs.map(x => `<button class="tab" data-tab="${x.id}" aria-selected="${!!x.selected}"><span>${esc(tabTitle(x.title))}</span>${tabs.length > 1 ? `<span class="x" data-close="${x.id}" title="Close tab">✕</span>` : ''}</button>`).join('')
     + `<button class="addtab" data-act="newtab" title="New tab in this window (⌘T)">+</button>`
     + `<span class="right">${u ? `<button class="updbtn" data-act="restart" title="Switchboard b${u.installed} is installed. You run b${u.running}.">${ic('down',11,2.6)} Restart to update to b${u.installed}</button>` : ''}${done}</span>`;
@@ -349,6 +362,7 @@ document.addEventListener('click', async e => {
   }
   const lnk = t.closest('[data-url]'); if (lnk){ bridge('openLink', {url: lnk.dataset.url}); return; }
   if (act === 'newtab'){ bridge('newTab'); return; }
+  if ((act === 'done' || act === 'close') && !armed(t.closest('[data-act]').dataset.k)) return;
   if (act === 'done'){ bridge('op', {o: {op: 'done', k: t.closest('[data-act]').dataset.k}}); return; }
   if (act === 'close'){ bridge('op', {o: {op: 'close', k: t.closest('[data-act]').dataset.k}}); return; }
   if (act === 'login'){

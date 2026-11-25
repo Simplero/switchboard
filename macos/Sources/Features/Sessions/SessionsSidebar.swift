@@ -253,8 +253,17 @@ final class SessionsStore: ObservableObject {
     /// session (a server in a shell tab, an editor), ask first. The agent's conversation
     /// is saved, so it does not need asking. Returns true to go ahead.
     func confirmClose(_ k: String, action: String) -> Bool {
-        guard let s = payload?.s.first(where: { $0.k == k }), s.isOpen, let sf = s.sf,
-              let view = SessionsAPI.surface(id: sf),
+        guard let s = payload?.s.first(where: { $0.k == k }), s.isOpen, let sf = s.sf else { return true }
+        // Its agent is in the middle of a turn: closing or archiving it stops that work.
+        if s.a != "shell", s.st == "working" {
+            let alert = NSAlert()
+            alert.messageText = "\(action) “\(s.n)”?"
+            alert.informativeText = "It is still working. \(action) stops what it does now."
+            alert.addButton(withTitle: action)
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() != .alertFirstButtonReturn { return false }
+        }
+        guard let view = SessionsAPI.surface(id: sf),
               let controller = BaseTerminalController.controller(owning: view) as? TerminalController else { return true }
         // The agent's own terminal needs no asking, but only while the agent still runs in it
         // (after it exits, the same terminal may run an editor or a server).

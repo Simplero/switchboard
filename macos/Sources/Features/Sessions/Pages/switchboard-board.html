@@ -39,7 +39,9 @@ input.line-edit{border-color:var(--sbf-violet)}
 .pop .sw{display:flex;gap:6px;padding:4px 9px 6px;flex-wrap:wrap}
 .pop .sw button{width:22px;height:22px;padding:0;border-radius:50%;background:var(--c);justify-content:center;color:var(--sbf-ink-inverted);font-weight:900}
 .pop .check{width:14px;flex:none;text-align:center}
-.board__hint{font-size:12px;color:var(--sbf-ink-3)}
+.board__hint{font-size:12px;color:var(--sbf-ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.board__add{white-space:nowrap;flex:none;cursor:pointer}
+.board__bar .board__spacer{display:none}
 </style></head>
 <body><div id="app" class="board"></div>
 <script>

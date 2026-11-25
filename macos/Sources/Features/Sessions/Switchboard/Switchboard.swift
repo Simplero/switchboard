@@ -1227,6 +1227,7 @@ final class Switchboard {
         case "remember_open": return rememberOpen()
         case "pin": return pin(k)
         case "unpin": return unpin(k)
+        case "pin_off": return pinOff(k)
         case "pin_order": return pinOrder(msg["keys"] as? [String] ?? [])
         case "pin_command":
             let r = pinCommand(msg["cmd"] as? String ?? "", cwd: msg["cwd"] as? String, name: msg["name"] as? String)
@@ -1337,6 +1338,15 @@ final class Switchboard {
         if !keepRemote { stopRemote(e) }
         if !e.isOpen { update(k) { $0.state = stateOf($0) } }
         return (true, park ? "Parked." : "Closed.")
+    }
+
+    /// Turn a pinned session off: it stops (Claude or its command ends, its memory is free) and
+    /// stays pinned, under its key. A click on the pin starts it again (Claude resumes it).
+    func pinOff(_ k: String) -> (Bool, String) {
+        guard let e = reg.sessions[k], e.pinned != nil else { return (false, "It is not pinned.") }
+        guard e.isOpen else { return (true, "It is off already.") }
+        let r = close(k, park: false)
+        return (r.0, r.0 ? "“\(e.name ?? "It")” is off. Click its pin to start it again." : r.1)
     }
 
     /// I'm done with it: close it with every tab and move it to the Archive. Reopening it

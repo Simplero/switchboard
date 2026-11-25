@@ -124,6 +124,13 @@ button{font:inherit;color:inherit;cursor:default}
 .pin small .w{font-weight:650}
 .pin kbd{margin-left:auto;flex:none;font:600 10.5px ui-monospace,SFMono-Regular,monospace;color:var(--muted2);border:1px solid var(--line2);border-radius:4px;padding:1px 4px}
 .pin.off b{color:var(--muted)}
+/* Turn off: a running pin stops (frees its memory) and stays pinned; a click starts it again. */
+.pin .poff{display:none;flex:none;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;color:var(--muted);margin-left:auto}
+.pin .poff + kbd{margin-left:4px}
+.pin:hover .poff{display:inline-flex}
+.pin .poff:hover{background:var(--line2);color:var(--ink)}
+.pin.sel .poff{color:#E3E8FF}
+.pin.sel .poff:hover{background:rgba(255,255,255,.18);color:#fff}
 .pin.sel{background:var(--sel);border-color:var(--sel);color:var(--sel-ink)}
 .pin.sel small,.pin.sel kbd{color:#E3E8FF}
 .pin.sel kbd{border-color:rgba(255,255,255,.45)}
@@ -312,6 +319,7 @@ const ICON = {
   warn:'<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
   hand:'<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
   spin:'<path d="M21 12a9 9 0 1 1-6.2-8.56"/>',
+  power:'<path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>',
   check:'<polyline points="20 6 9 17 4 12"/>',
   plus:'<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
   dots:'<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
@@ -921,11 +929,11 @@ function pinTile(s, i){
   else if (s.a === 'shell'){ word = ''; rest = s.cwd; }
   else if (st === 'working'){ rest = s.wl || s.ns || ''; }
   const key = i < 9 ? `⌃${i + 1}` : '';
-  const title = `${s.n}${tip ? ' · ' + tip : ''}${s.o && s.ns && s.a !== 'shell' ? '\n' + s.ns : ''}${key ? `\n${key} opens it. ${key} again takes you back.` : ''}\nDrag to change the order. Right-click to unpin.`;
+  const title = `${s.n}${tip ? ' · ' + tip : ''}${s.o && s.ns && s.a !== 'shell' ? '\n' + s.ns : ''}${key ? `\n${key} opens it. ${key} again takes you back.` : ''}\nDrag to change the order. Right-click to unpin or turn it off.`;
   const small = (word ? `<span class="w" style="color:${front ? 'inherit' : `var(${color === '--faint' ? '--muted' : color})`}">${word}</span>` : '') + (word && rest ? ' · ' : '') + esc(rest);
   return `<button class="pin${front ? ' sel' : ''}${s.o ? '' : ' off'}" data-k="${esc(s.k)}" title="${esc(title)}">
     <span class="pi" style="color:${front ? 'inherit' : `var(${color})`}">${ic(icon, 14, 2.2, st === 'working' && s.o ? 'spin' : '')}</span>
-    <span class="pt"><b>${esc(s.n)}</b><small>${small || '&nbsp;'}</small></span>${key ? `<kbd>${key}</kbd>` : ''}</button>`;
+    <span class="pt"><b>${esc(s.n)}</b><small>${small || '&nbsp;'}</small></span>${s.o ? `<span class="poff" data-pinoff="${esc(s.k)}" role="button" aria-label="Turn off ${esc(s.n)}" title="Turn off: it stops and frees its memory. The pin stays; click the pin to start it again.">${ic('power', 13, 2.2)}</span>` : ''}${key ? `<kbd>${key}</kbd>` : ''}</button>`;
 }
 function renderPins(){
   const el = $('#pins');
@@ -950,6 +958,7 @@ function endPinDrag(){
   }
 }
 document.addEventListener('mousedown', e => {
+  if (e.target.closest('[data-pinoff]')) return;
   const t = e.button === 0 && e.target.closest('#pins .pin[data-k]');
   if (!t) return;
   pinDrag = {el: t, x0: e.clientX, y0: e.clientY, on: false, before: [...document.querySelectorAll('#pins .pin[data-k]')].map(x => x.dataset.k).join(',')};
@@ -1289,6 +1298,7 @@ window.addEventListener('blur', () => { if (pinDrag) endPinDrag(); if (drag) end
 // ---------- events ----------
 document.addEventListener('click', e => {
   const t = e.target;
+  const off = t.closest('[data-pinoff]'); if (off){ e.stopPropagation(); op({op:'pin_off', k: off.dataset.pinoff}); return; }
   const ack = t.closest('[data-ack]'); if (ack){ e.stopPropagation(); op({op:'ack', k: ack.dataset.ack}); return; }
   const send = t.closest('[data-send]'); if (send){ op({op:'send', k: send.dataset.k, text: send.dataset.send}); return; }
   if (t.closest('#navBack')){ bridge('histBack'); return; }

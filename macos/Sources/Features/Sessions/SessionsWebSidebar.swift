@@ -358,7 +358,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             if let o = body["o"] as? [String: Any] {
                 SessionSwitchLog.because("the sidebar: \(o["op"] as? String ?? "an action")")
                 if let op = o["op"] as? String, let k = o["k"] as? String,
-                   let action = ["done": "Archive", "close": "Close", "park": "Park"][op],
+                   let action = ["done": "Archive", "close": "Close", "park": "Park", "pin_off": "Turn off"][op],
                    !store.confirmClose(k, action: action) { return }
                 if o["op"] as? String == "resume_conv", let key = o["key"] as? String,
                    let d = SBHistory.shared.doc(key), let warning = SBHistory.shared.otherMacWarning(d) {
@@ -507,6 +507,13 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         // A pin stays: no Archive or Close. Unpin it first.
         if s.isPinned {
             let n = (store.pins.firstIndex { $0.k == s.k } ?? 99) + 1
+            if s.isOpen {
+                // It stops (its memory is free again) and stays pinned: a click starts it again.
+                menu.addItem(item("Turn off (keeps the pin)") {
+                    guard store.confirmClose(s.k, action: "Turn off") else { return }
+                    store.send(["op": "pin_off", "k": s.k])
+                })
+            }
             menu.addItem(item("Unpin" + (n <= 9 ? "  (⌃\(n))" : "")) { store.send(["op": "unpin", "k": s.k]) })
         } else if s.isOpen || s.a != "shell" {
             let n = store.pins.count + 1

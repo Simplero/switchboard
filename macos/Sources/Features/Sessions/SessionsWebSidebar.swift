@@ -568,23 +568,24 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 if s.ld != d { store.send(["op": "switch", "k": s.k, "login": d]) }
             }
         }))
-        if s.a == "claude" && s.k.hasPrefix("claude:") && s.m == nil {
-            menu.addItem(submenu("Move to folder", moveItems(s)))
-            let machines = SBMachines.all
-            if !machines.isEmpty {
+        if s.a == "claude" && s.k.hasPrefix("claude:") {
+            if s.m == nil { menu.addItem(submenu("Move to folder", moveItems(s))) }
+            // This Mac and every machine but the one it runs on.
+            let places = (s.m == nil ? [] : [("", "This Mac")]) + SBMachines.all.filter { $0.name != s.m }.map { ($0.name, $0.name) }
+            if !places.isEmpty {
                 // With its work tree: the branch, its commits, its uncommitted changes and new files.
                 var items: [NSMenuItem] = []
                 if s.mvm == true, let to = s.mv {
                     let head = NSMenuItem(title: "Moves to \(to) when its turn is over", action: nil, keyEquivalent: "")
                     head.isEnabled = false
                     items.append(head)
-                    items.append(item("Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": s.mvr ?? "@" + to, "now": true]) })
+                    items.append(item("Move now (stops what it does)") { store.send(["op": "move", "k": s.k, "cwd": s.mvr ?? "@", "now": true]) })
                     items.append(item("Don’t move it") { store.send(["op": "move_cancel", "k": s.k]) })
                     items.append(.separator())
                 }
-                for m in machines {
-                    items.append(item("\(m.name) (with its work tree)", checked: s.mvm == true && s.mv == m.name) {
-                        store.send(["op": "move", "k": s.k, "cwd": "@" + m.name])
+                for (target, title) in places {
+                    items.append(item("\(title) (with its work tree)", checked: s.mvm == true && s.mvr == "@" + target) {
+                        store.send(["op": "move", "k": s.k, "cwd": "@" + target])
                     })
                 }
                 menu.addItem(submenu("Move to machine", items))

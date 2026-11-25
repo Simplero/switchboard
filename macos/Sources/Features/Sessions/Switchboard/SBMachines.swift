@@ -89,6 +89,8 @@ enum SBMachines {
         if !force, installed.contains(m.name), let s = status[m.name], s.ok, Date().timeIntervalSince1970 - s.at < 120 { return s }
         let script = helper.replacingOccurrences(of: "__VERSION__", with: String(helperVersion))
             .replacingOccurrences(of: "__GITINFO__", with: SBWorktree.script)
+            .replacingOccurrences(of: "__RECEIVE__", with: moveReceive)
+            .replacingOccurrences(of: "__MOVEPREP__", with: movePrep)
         // Install only when the one there is older or missing: two Switchboards of different builds
         // must not replace each other's. Print the home folder either way.
         let remote = "v=$(.local/bin/switchboard-remote version 2>/dev/null); "
@@ -178,6 +180,39 @@ enum SBMachines {
         return r.status == 0
     }
 
+    /// A file there (a path relative to its home, or absolute), as it is: nil when it is not there.
+    static func fetch(_ m: Machine, _ path: String, timeout: Double = 300) async -> Data? {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                p.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "-o", "ControlPath=none", m.host, "--", "cat " + shq(path)]
+                let out = Pipe()
+                p.standardOutput = out
+                p.standardError = FileHandle.nullDevice
+                p.standardInput = FileHandle.nullDevice
+                do { try p.run() } catch { cont.resume(returning: nil); return }
+                let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                killer.cancel()
+                cont.resume(returning: p.terminationStatus == 0 ? data : nil)
+            }
+        }
+    }
+
+    /// A conversation's file there (the newest, when two project folders have one): its path and
+    /// what is in it.
+    static func transcript(_ m: Machine, sid: String) async -> (path: String, data: Data)? {
+        guard SBBackground.isUUID(sid) else { return nil }
+        let dirs = m.projects.map { [shq($0)] } ?? [".claude*/projects"]
+        let r = await run(m, "ls -t " + dirs.map { "\($0)/*/\(sid).jsonl" }.joined(separator: " ") + " 2>/dev/null | head -1", timeout: 15)
+        let path = r.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard r.status == 0, !path.isEmpty, !path.contains("\n"), let data = await fetch(m, path) else { return nil }
+        return (path, data)
+    }
+
     /// Run the helper there with these arguments; its output.
     static func helperRun(_ m: Machine, _ args: [String], timeout: Double = 120) async -> (status: Int32, out: String) {
         await run(m, envPrefix(m) + ".local/bin/switchboard-remote " + args.map(shq).joined(separator: " "), timeout: timeout)
@@ -214,6 +249,50 @@ if [ -n "$(git ls-files --others --exclude-standard | head -1)" ]; then
 fi
 echo "top=$top"; echo "branch=$br"; echo "head=$(git rev-parse HEAD)"; echo "url=$url"; echo "main=$main"
 echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
+"""#
+
+    /// Where a session moves to (another machine, or this Mac): its branch with the commits from
+    /// the bundle, then its uncommitted changes and new files, in a new work tree ~/wt/<branch>
+    /// of the same repository, with the main checkout's dev files (.env, keys). $1: the main
+    /// checkout (~/…), $2: the branch, $3: its last commit, $4: origin's address, $5: the folder
+    /// with the files (removed after). Prints WT= and BRANCH=, or ERR=why. Bash 3 (the Mac's).
+    static let moveReceive = #"""
+sb_expand() { case "$1" in "~") echo "$HOME" ;; "~/"*) echo "$HOME/${1#\~/}" ;; *) echo "$1" ;; esac; }
+main="$(sb_expand "$1")"; br="$2"; head="$3"; url="$4"; in="$(sb_expand "$5")"
+fail() { echo "ERR=$1"; rm -rf "$in"; exit 0; }
+# The same repository, whatever the address form: git@github.com:o/r.git = https://github.com/o/r
+repo_id() { local u="${1%/}"; u="${u%.git}"; u="${u#*://}"; u="${u#*@}"; u="${u/://}"; printf '%s' "$u" | tr '[:upper:]' '[:lower:]'; }
+[ -e "$main/.git" ] || fail "There is no git checkout $1 on $(hostname)."
+cd "$main" || fail "Could not open $1 on $(hostname)."
+there="$(git remote get-url origin 2>/dev/null)"
+[ "$(repo_id "$there")" = "$(repo_id "$url")" ] || fail "$1 on $(hostname) is another repository ($there, not $url)."
+git fetch -q origin 2>/dev/null
+if [ -f "$in/commits.bundle" ]; then
+  git fetch -q "$in/commits.bundle" "+refs/heads/$br:refs/switchboard/incoming" 2>/dev/null || fail "Could not read its commits."
+fi
+git cat-file -e "$head^{commit}" 2>/dev/null || fail "Its last commit is neither in the bundle nor on origin."
+b="$br"
+if git show-ref -q --verify "refs/heads/$b"; then
+  # The branch is here already: take it forward when it is behind and not checked out, else a new name.
+  if git merge-base --is-ancestor "refs/heads/$b" "$head" && ! git worktree list --porcelain | grep -qx "branch refs/heads/$b"; then
+    git branch -q -f "$b" "$head"
+  else
+    b="$br-moved-$(date +%m%d-%H%M)"; git branch -q "$b" "$head"
+  fi
+else
+  git branch -q "$b" "$head"
+fi
+mkdir -p "$HOME/wt"
+wt="$HOME/wt/$b"; n=2; while [ -e "$wt" ]; do wt="$HOME/wt/$b-$n"; n=$((n+1)); done
+git worktree add -q "$wt" "$b" 2>/dev/null || fail "Could not make the work tree $wt."
+cd "$wt" || fail "Could not open $wt."
+if [ -s "$in/changes.patch" ]; then git apply --whitespace=nowarn "$in/changes.patch" 2>/dev/null || fail "Its uncommitted changes did not apply in $wt."; fi
+[ -f "$in/new.tgz" ] && tar -xzf "$in/new.tgz" -C "$wt"
+for f in .env .env.local config/master.key; do [ -f "$main/$f" ] && [ ! -e "$wt/$f" ] && cp -p "$main/$f" "$wt/$f"; done
+for f in "$main"/config/credentials/*.key; do [ -f "$f" ] || continue; r="${f#$main/}"; [ -e "$wt/$r" ] || { mkdir -p "$(dirname "$wt/$r")"; cp -p "$f" "$wt/$r"; }; done
+git -C "$main" update-ref -d refs/switchboard/incoming 2>/dev/null
+rm -rf "$in"
+echo "WT=$wt"; echo "BRANCH=$b"
 """#
 
     private static func envPrefix(_ m: Machine) -> String {
@@ -277,7 +356,7 @@ echo "commits=$n"; echo "bundle=$b"; echo "patch=$p"; echo "new=$u"
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 11
+    static let helperVersion = 12
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -342,45 +421,15 @@ case "$cmd" in
 version) echo "$VERSION" ;;
 list) t list-sessions -F '#{session_name} #{session_activity}' 2>/dev/null | sed -n 's/^sb-//p' ;;
 receive)
-  # A session moves here from another machine: its branch with the commits from the bundle,
-  # then its uncommitted changes and new files, in a new work tree ~/wt/<branch> of the same
-  # repository here, with the main checkout's dev files (.env, keys). Prints WT= and BRANCH=,
-  # or ERR=why.
-  main="$(expand "$1")"; br="$2"; head="$3"; url="$4"; in="$(expand "$5")"
-  fail() { echo "ERR=$1"; rm -rf "$in"; exit 0; }
-  # The same repository, whatever the address form: git@github.com:o/r.git = https://github.com/o/r
-  repo_id() { local u="${1%/}"; u="${u%.git}"; u="${u#*://}"; u="${u#*@}"; u="${u/://}"; echo "${u,,}"; }
-  [ -e "$main/.git" ] || fail "There is no git checkout $1 on $(hostname)."
-  cd "$main" || fail "Could not open $1 on $(hostname)."
-  there="$(git remote get-url origin 2>/dev/null)"
-  [ "$(repo_id "$there")" = "$(repo_id "$url")" ] || fail "$1 on $(hostname) is another repository ($there, not $url)."
-  git fetch -q origin 2>/dev/null
-  if [ -f "$in/commits.bundle" ]; then
-    git fetch -q "$in/commits.bundle" "+refs/heads/$br:refs/switchboard/incoming" 2>/dev/null || fail "Could not read its commits."
-  fi
-  git cat-file -e "$head^{commit}" 2>/dev/null || fail "Its last commit is neither in the bundle nor on origin."
-  b="$br"
-  if git show-ref -q --verify "refs/heads/$b"; then
-    # The branch is here already: take it forward when it is behind and not checked out, else a new name.
-    if git merge-base --is-ancestor "refs/heads/$b" "$head" && ! git worktree list --porcelain | grep -qx "branch refs/heads/$b"; then
-      git branch -q -f "$b" "$head"
-    else
-      b="$br-moved-$(date +%m%d-%H%M)"; git branch -q "$b" "$head"
-    fi
-  else
-    git branch -q "$b" "$head"
-  fi
-  mkdir -p "$HOME/wt"
-  wt="$HOME/wt/$b"; n=2; while [ -e "$wt" ]; do wt="$HOME/wt/$b-$n"; n=$((n+1)); done
-  git worktree add -q "$wt" "$b" 2>/dev/null || fail "Could not make the work tree $wt."
-  cd "$wt" || fail "Could not open $wt."
-  if [ -s "$in/changes.patch" ]; then git apply --whitespace=nowarn "$in/changes.patch" 2>/dev/null || fail "Its uncommitted changes did not apply in $wt."; fi
-  [ -f "$in/new.tgz" ] && tar -xzf "$in/new.tgz" -C "$wt"
-  for f in .env .env.local config/master.key; do [ -f "$main/$f" ] && [ ! -e "$wt/$f" ] && cp -p "$main/$f" "$wt/$f"; done
-  for f in "$main"/config/credentials/*.key; do [ -f "$f" ] || continue; r="${f#$main/}"; [ -e "$wt/$r" ] || { mkdir -p "$(dirname "$wt/$r")"; cp -p "$f" "$wt/$r"; }; done
-  git -C "$main" update-ref -d refs/switchboard/incoming 2>/dev/null
-  rm -rf "$in"
-  echo "WT=$wt"; echo "BRANCH=$b" ;;
+  # A session moves here from another machine (see moveReceive).
+  (
+__RECEIVE__
+  ) ;;
+pack)
+  # A session moves from here to another machine: its work, packed (see movePrep).
+  ( set -- "$(expand "$1")" "$(expand "$2")"
+__MOVEPREP__
+  ) ;;
 gitinfo)
   # The work tree of each folder given, for the panel: "@<folder>" then its lines.
   for d in "$@"; do echo "@$d"; ( set -- "$(expand "$d")"
@@ -432,7 +481,7 @@ attach)
   tmux -u -L "$SOCK" -f "$CONF" new-session -s "$name" -e "SB_LOGIN=$login" "bash -l $(printf %q "$run")"
   alive "$id" && exit 75
   exit 0 ;;
-*) echo "usage: switchboard-remote attach|stop|list|version"; exit 2 ;;
+*) echo "usage: switchboard-remote attach|stop|list|receive|pack|gitinfo|version"; exit 2 ;;
 esac
 """#
 }

@@ -919,7 +919,7 @@ final class Switchboard {
             "nsn": Int(e.isOpen ? (needsSince[e.key] ?? 0) : 0),
             "fa": Int(e.isOpen ? (answeredAt[e.key] ?? 0) : 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
-            "mv": e.move_to.map { ($0 == "#slot" ? "a slot" : $0.hasPrefix("@") ? (e.move_stage == "slotting" ? "a slot, then " : "") + String($0.dropFirst()) : SBPaths.tilde($0)) as Any } ?? NSNull(),
+            "mv": e.move_to.map { ($0 == "#slot" ? "a slot" : $0.hasPrefix("@") ? (e.move_stage == "slotting" ? (e.machine == nil ? "a slot, then " : "a work tree, then ") : "") + ($0 == "@" ? "this Mac" : String($0.dropFirst())) : SBPaths.tilde($0)) as Any } ?? NSNull(),
             "mvm": e.move_to?.hasPrefix("@") == true,
             "mvr": e.move_to.map { $0 as Any } ?? NSNull(),
             "m": e.machine.map { $0 as Any } ?? NSNull(),
@@ -1554,19 +1554,24 @@ final class Switchboard {
             return (true, "“\(name)” puts its work in a slot when its turn is over.")
         }
         if raw.hasPrefix("@") {
-            // To another machine: its work tree goes there too (see carryToMachine).
+            // To another machine, or back to this Mac ("@"): its work tree goes there too (see carry).
             let mname = String(raw.dropFirst())
-            guard SBMachines.named(mname) != nil else { return (false, "Switchboard does not know the machine \(mname).") }
-            if e.machine != nil { return (false, "“\(name)” runs on \(e.machine!) already. Moving between other machines is not built yet.") }
+            let to = mname.isEmpty ? "this Mac" : mname
+            guard mname.isEmpty || SBMachines.named(mname) != nil else { return (false, "Switchboard does not know the machine \(mname).") }
+            if (e.machine ?? "") == mname { return (false, "“\(name)” runs on \(to) already.") }
+            if let m = e.machine, SBMachines.named(m) == nil { return (false, "“\(name)” ran on \(m), which is no longer in \(SBPaths.tilde(SBMachines.path)).") }
             if moving.contains(k) { return (false, "“\(name)” is moving already.") }
             if switching.contains(k) { return (false, "“\(name)” is switching login. Try again in a moment.") }
             if !e.isOpen && runningElsewhere(k) != nil {
                 return (false, "“\(name)” still runs outside Switchboard (\(elsewhereName(e))). Click its row in the sidebar to move it here first.")
             }
+            if !e.isOpen && runsOnMachine(e) {
+                return (false, "“\(name)” still runs on \(e.machine ?? "its machine"). Click its row to show it here, then move it.")
+            }
             update(k) { $0.move_to = raw }
             moveFreeSince[k] = nil
             if !e.isOpen || force || moveBlocker(k, asked: true) == nil { return await performMove(k) }
-            return (true, "“\(name)” moves to \(mname) when its turn is over and you are not looking at it.")
+            return (true, "“\(name)” moves to \(to) when its turn is over and you are not looking at it.")
         }
         if let m = e.machine { return (false, "“\(name)” runs on \(m). Moving it to another folder works only for sessions on this Mac for now.") }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1679,18 +1684,30 @@ final class Switchboard {
         moving.insert(k)
         switching.insert(k)
         defer { moving.remove(k); switching.remove(k) }
+        let toName = target.hasPrefix("@") ? (target == "@" ? "this Mac" : String(target.dropFirst())) : SBPaths.tilde(target)
         // In the shared checkout (~/Simplero on master) its changes are mixed with other sessions'
-        // changes, and only its Claude knows which are its own: it puts them in a slot first.
-        if (target.hasPrefix("@") || target == "#slot"), e.isOpen, e.machine == nil {
-            let folder = workFolder(e).map(SBPaths.expand) ?? ""
-            let shared = await Task.detached(priority: .userInitiated) { SBWorktree.local(folder, commands: "")?.shared ?? false }.value
+        // changes, and only its Claude knows which are its own: it puts them in a slot first
+        // (on another machine: in a work tree of its own).
+        let srcMachine = SBMachines.named(e.machine)
+        if (target.hasPrefix("@") || target == "#slot"), e.isOpen, e.machine == nil || srcMachine != nil {
+            var folder = workFolder(e).map(SBPaths.expand) ?? ""
+            let shared: Bool
+            if let m = srcMachine, let sid = e.session_id {
+                // Where its Claude works now, from its conversation there (the synced copy may lag).
+                if let t = await SBMachines.transcript(m, sid: sid), let cwd = Self.lastCwd(t.data) { folder = cwd }
+                else { folder = workFolder(e) ?? "~" }
+                shared = await SBMachines.worktrees(m, folders: [folder])[folder]?.shared ?? false
+            } else {
+                let f = folder
+                shared = await Task.detached(priority: .userInitiated) { SBWorktree.local(f, commands: "")?.shared ?? false }.value
+            }
             if shared {
                 if target.hasPrefix("@"), e.move_stage == "slotting" {
                     update(k) { $0.move_to = nil; $0.move_stage = nil }
-                    return (false, "“\(name)” did not put its work in a slot, so it did not move to \(target.dropFirst()). Its last answer says why.")
+                    return (false, "“\(name)” did not put its work in \(srcMachine == nil ? "a slot" : "a work tree of its own"), so it did not move to \(toName). Its last answer says why.")
                 }
                 guard let sf = e.surface_id else { return (false, "“\(name)” has no terminal.") }
-                typeWhenReady(sf, Self.slotMessage, since: now, seenAt: nil, quiet: true)
+                typeWhenReady(sf, srcMachine == nil ? Self.slotMessage : Self.worktreeMessage(folder: folder), since: now, seenAt: nil, quiet: true)
                 moveHoldUntil[k] = now + 20
                 moveFreeSince[k] = nil
                 if target == "#slot" {
@@ -1698,11 +1715,11 @@ final class Switchboard {
                     return (true, "“\(name)” puts its work in a slot now.")
                 }
                 update(k) { $0.move_stage = "slotting" }
-                return (true, "“\(name)” puts its work in a slot first. When it is done, it moves to \(target.dropFirst()).")
+                return (true, "“\(name)” puts its work in \(srcMachine == nil ? "a slot" : "a work tree of its own") first. When it is done, it moves to \(toName).")
             }
             if target == "#slot" {
                 update(k) { $0.move_to = nil }
-                return (true, "“\(name)” works in \(SBPaths.tilde(folder)) already, not in the shared checkout.")
+                return (true, "“\(name)” works in \(srcMachine == nil ? SBPaths.tilde(folder) : folder) already, not in the shared checkout.")
             }
             if e.move_stage != nil { update(k) { $0.move_stage = nil } }
         }
@@ -1724,14 +1741,14 @@ final class Switchboard {
         var tell: String?
         var r: (ok: Bool, message: String)
         if toMachine {
-            let c = await carryToMachine(k, String(target.dropFirst()))
+            let c = await carry(k, to: SBMachines.named(String(target.dropFirst())))
             r = (c.ok, c.message)
             tell = c.tell
         } else {
             r = relocate(k)
         }
         if !r.ok { update(k) { $0.move_to = nil } }
-        guard e.isOpen else { return toMachine && r.ok ? (true, "“\(name)” moved to \(target.dropFirst()). It resumes there when you reopen it.") : r }
+        guard e.isOpen else { return toMachine && r.ok ? (true, "“\(name)” moved to \(toName). It resumes there when you reopen it.") : r }
         // Moved or not: it runs again (in the old folder when the move failed).
         update(k) { x in
             x.open = false
@@ -1745,9 +1762,8 @@ final class Switchboard {
         if !r.ok { return r }
         // On the other machine: tell Claude where its work is now.
         if let tell, let sf = o.surface { typeWhenReady(sf, tell, since: now, seenAt: nil, quiet: true) }
-        let to = toMachine ? String(target.dropFirst()) : SBPaths.tilde(target)
-        SessionSwitchLog.did("“\(name)” moved to \(to)")
-        return (true, "“\(name)” moved to \(to).")
+        SessionSwitchLog.did("“\(name)” moved to \(toName)")
+        return (true, "“\(name)” moved to \(toName).")
     }
 
     /// What Switchboard types into a session that works in the shared checkout, to put its work
@@ -1757,6 +1773,16 @@ final class Switchboard {
         + "take exactly those changes out of ~/Simplero; from now on work only in the slot (EnterWorktree). "
         + "Do not commit or push. Do not ask me anything; when you are done, say in one line which slot and branch, then stop."
 
+    /// The same for a session on another machine, which has no simplero-slot: a work tree of
+    /// its own from origin's default branch.
+    static func worktreeMessage(folder: String) -> String {
+        "Move your work to a work tree of your own (from Switchboard): make a new branch with a short name for this work "
+            + "and a work tree for it from origin's default branch (git fetch origin; git worktree add -b NAME ~/wt/NAME origin/master, or origin's default branch if that is not master); "
+            + "put there only the changes this session made in \(folder), never other sessions' files or hunks (none, if it changed nothing); "
+            + "take exactly those changes out of \(folder); from now on work only in the work tree (EnterWorktree, or cd there). "
+            + "Do not commit or push. Do not ask me anything; when you are done, say in one line which work tree and branch, then stop."
+    }
+
     /// The folder a session works in: the slot its Claude claimed, else where its conversation
     /// last worked, else its folder.
     private func workFolder(_ e: SBEntry) -> String? {
@@ -1764,24 +1790,170 @@ final class Switchboard {
         return details[e.key]?.cwd ?? e.cwd
     }
 
-    /// Move a closed session (its Claude has ended) to another machine: its work tree (branch,
-    /// commits no remote has, uncommitted changes and new files) goes to a new work tree there
-    /// (~/wt/<branch>, of the same repository), its conversation goes to that folder's project
-    /// folder there, and it becomes a session of that machine. The work tree here stays as it
-    /// was. `tell`: what to type to Claude once it runs there.
-    private func carryToMachine(_ k: String, _ mname: String) async -> (ok: Bool, message: String, tell: String?) {
-        guard let e = reg.sessions[k], let sid = e.session_id, let m = SBMachines.named(mname) else { return (false, "Unknown session or machine.", nil) }
+    /// Move a closed session (its Claude has ended) to another machine, or from one back to
+    /// this Mac (`dest` nil): its work tree (branch, commits no remote has, uncommitted changes
+    /// and new files) goes to a new work tree there (~/wt/<branch>, of the same repository), its
+    /// conversation goes to that folder's project folder there, and it becomes a session of that
+    /// machine. The work tree where it was stays as it was. `tell`: what to type to Claude once
+    /// it runs there.
+    private func carry(_ k: String, to dest: SBMachines.Machine?) async -> (ok: Bool, message: String, tell: String?) {
+        guard let e = reg.sessions[k], let sid = e.session_id else { return (false, "Unknown session.", nil) }
         let name = e.name ?? "This session"
-        guard let folder = workFolder(e).map(SBPaths.expand) else { return (false, "Switchboard does not know the folder of “\(name)”.", nil) }
-        let st = await SBMachines.prepare(m)
-        guard st.ok, let home = st.home else { return (false, st.message, nil) }
-        // 1. Here: pack the work.
+        let src = SBMachines.named(e.machine)
+        if let m = e.machine, src == nil { return (false, "Switchboard does not know the machine \(m).", nil) }
+        let srcName = src?.name ?? "the Mac", destName = dest?.name ?? "the Mac"
+        var srcHome = SBPaths.home, destHome = SBPaths.home
+        for (m, isSrc) in [(src, true), (dest, false)] {
+            guard let m else { continue }
+            let st = await SBMachines.prepare(m)
+            guard st.ok, let home = st.home else { return (false, st.message, nil) }
+            if isSrc { srcHome = home } else { destHome = home }
+        }
+        func lines(_ out: String) -> [String: String] {
+            var kv: [String: String] = [:]
+            for l in out.split(separator: "\n") { if let i = l.firstIndex(of: "=") { kv[String(l[..<i])] = String(l[l.index(after: i)...]) } }
+            return kv
+        }
+        // Its conversation. On a machine its Claude must be gone first (the file must not grow
+        // after the copy), and the file says where Claude worked last.
+        let convo: Data, convoPath: String
+        if let src {
+            await SBMachines.stop(src, sid: sid)
+            guard let t = await SBMachines.transcript(src, sid: sid) else {
+                return (false, "“\(name)” did not move: Switchboard did not find its conversation file on \(src.name).", nil)
+            }
+            (convoPath, convo) = t
+        } else {
+            guard let p = SBBackground.transcriptPath(sid), let d = FileManager.default.contents(atPath: p) else {
+                return (false, "“\(name)” did not move: Switchboard did not find its conversation file.", nil)
+            }
+            (convoPath, convo) = (p, d)
+        }
+        let folder: String
+        if src != nil {
+            guard let f = Self.lastCwd(convo) ?? workFolder(e) else { return (false, "Switchboard does not know the folder of “\(name)”.", nil) }
+            folder = f
+        } else {
+            guard let f = workFolder(e).map(SBPaths.expand) else { return (false, "Switchboard does not know the folder of “\(name)”.", nil) }
+            folder = f
+        }
+        // 1. Where it is: pack the work (into `out` here).
         let out = SBPaths.data + "/moving/" + sid
         try? FileManager.default.removeItem(atPath: out)
-        let prep = await Task.detached(priority: .userInitiated) { () -> String in
+        defer { try? FileManager.default.removeItem(atPath: out) }
+        var kv: [String: String]
+        if let src {
+            let there = ".cache/switchboard/outgoing-" + sid
+            let r = await SBMachines.helperRun(src, ["pack", folder, "~/" + there], timeout: 300)
+            kv = lines(r.out)
+            if kv["ERR"] == nil, kv["top"] != nil {
+                try? FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+                for (f, flag) in [("commits.bundle", "bundle"), ("changes.patch", "patch"), ("new.tgz", "new")] where kv[flag] == "1" {
+                    guard let d = await SBMachines.fetch(src, there + "/" + f) else { kv["ERR"] = "Switchboard could not copy its work from \(src.name)."; break }
+                    FileManager.default.createFile(atPath: out + "/" + f, contents: d)
+                }
+            } else if kv["ERR"] == nil {
+                kv["ERR"] = "\(src.name) did not answer (\(r.out.suffix(200)))."
+            }
+            _ = await SBMachines.run(src, "rm -rf " + SBMachines.shq(there))
+        } else {
+            kv = lines(await Self.bash(SBMachines.movePrep, [folder, out]))
+        }
+        if let err = kv["ERR"] { return (false, "“\(name)” did not move: \(err)", nil) }
+        guard let top = kv["top"], let branch = kv["branch"], let head = kv["head"], let url = kv["url"], let main = kv["main"] else {
+            return (false, "“\(name)” did not move: Switchboard could not read its work tree.", nil)
+        }
+        // The main checkout, as a path from the home folder (the same one on every machine).
+        func fromHome(_ p: String, _ home: String) -> String { p == home ? "~" : p.hasPrefix(home + "/") ? "~" + p.dropFirst(home.count) : p }
+        let mainThere = fromHome(main, srcHome)
+        // 2. Where it goes: the files, then the new work tree.
+        var got: [String: String]
+        if let dest {
+            let incoming = ".cache/switchboard/incoming-" + sid
+            for f in ["commits.bundle", "changes.patch", "new.tgz"] {
+                guard let data = FileManager.default.contents(atPath: out + "/" + f) else { continue }
+                guard await SBMachines.put(dest, data, to: incoming + "/" + f) else { return (false, "“\(name)” did not move: Switchboard could not copy its work to \(dest.name).", nil) }
+            }
+            let r = await SBMachines.helperRun(dest, ["receive", mainThere, branch, head, url, "~/" + incoming], timeout: 300)
+            got = lines(r.out)
+            if got["ERR"] == nil, got["WT"] == nil { got["ERR"] = "\(dest.name) did not answer (\(r.out.suffix(200)))." }
+        } else {
+            // receive removes the folder it reads: a copy of `out`.
+            let incoming = out + "-in"
+            try? FileManager.default.removeItem(atPath: incoming)
+            try? FileManager.default.copyItem(atPath: out, toPath: incoming)
+            try? FileManager.default.createDirectory(atPath: incoming, withIntermediateDirectories: true)
+            got = lines(await Self.bash(SBMachines.moveReceive, [mainThere, branch, head, url, incoming]))
+            try? FileManager.default.removeItem(atPath: incoming)
+            if got["ERR"] == nil, got["WT"] == nil { got["ERR"] = "Switchboard could not make its work tree here." }
+        }
+        if let err = got["ERR"] { return (false, "“\(name)” did not move: \(err)", nil) }
+        guard let wt = got["WT"], let newBranch = got["BRANCH"] else { return (false, "“\(name)” did not move.", nil) }
+        // 3. Its conversation, in the project folder of the new work tree there.
+        let project = String(wt.unicodeScalars.map { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) ? Character($0) : "-" })
+        if let dest {
+            guard await SBMachines.put(dest, convo, to: "\(dest.projects ?? ".claude/projects")/\(project)/\(sid).jsonl") else {
+                return (false, "“\(name)” did not move: Switchboard could not copy its conversation to \(dest.name).", nil)
+            }
+        } else {
+            guard let root = SBBackground.projectRoots.first else { return (false, "“\(name)” did not move: Switchboard has no projects folder here.", nil) }
+            let dir = root + "/" + Self.claudeProjectName(wt)
+            let file = dir + "/" + sid + ".jsonl"
+            do {
+                try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                try convo.write(to: URL(fileURLWithPath: file))
+            } catch {
+                return (false, "“\(name)” did not move: Switchboard could not write its conversation here (\(error.localizedDescription)).", nil)
+            }
+            // Other copies here (the synced copy from the machine) go, so Claude resumes this one.
+            for r in SBBackground.projectRoots {
+                for d in (try? FileManager.default.contentsOfDirectory(atPath: r)) ?? [] where r + "/" + d != dir {
+                    try? FileManager.default.removeItem(atPath: r + "/" + d + "/" + sid + ".jsonl")
+                }
+            }
+        }
+        // The copy where it was goes (the synced folder brings the new one back), so the
+        // conversation never continues in two places.
+        if let src {
+            _ = await SBMachines.run(src, "rm -f " + SBMachines.shq(convoPath))
+        } else {
+            try? FileManager.default.removeItem(atPath: convoPath)
+        }
+        let wtTilde = fromHome(wt, destHome)
+        update(k) { x in
+            x.machine = dest?.name
+            x.cwd = wtTilde
+            x.branch = newBranch
+            x.move_to = nil
+            x.move_stage = nil
+        }
+        details[k] = nil
+        moveFreeSince[k] = nil
+        let renamed = newBranch == branch ? "" : " (the branch \(branch) was there already, so it is \(newBranch) here)"
+        let tell = "Switchboard moved this session from \(srcName) to \(destName). Your work is now in \(wtTilde) on \(destName): "
+            + "branch \(newBranch)\(renamed), with the same commits and the same uncommitted changes and new files. "
+            + "Work only there from now on. The old copy on \(srcName) (\(fromHome(top, srcHome))) stays as it was; do not use it. "
+            + (srcHome == destHome ? "" : "Paths under \(srcHome) on \(srcName) are under \(destHome) here. ")
+            + "Say in one line that you are ready, then wait for me."
+        return (true, "Moved.", tell)
+    }
+
+    /// The folder Claude worked in last, from its conversation file.
+    static func lastCwd(_ convo: Data) -> String? {
+        let tail = convo.count > 1_000_000 ? convo.suffix(1_000_000) : convo
+        let text = String(decoding: tail, as: UTF8.self)
+        guard let r = text.range(of: "\"cwd\":\"", options: .backwards) else { return nil }
+        guard let end = text[r.upperBound...].firstIndex(of: "\"") else { return nil }
+        let cwd = String(text[r.upperBound..<end])
+        return cwd.isEmpty ? nil : cwd
+    }
+
+    /// Run a bash script here with these arguments; what it prints.
+    static func bash(_ script: String, _ args: [String]) async -> String {
+        await Task.detached(priority: .userInitiated) { () -> String in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/bash")
-            p.arguments = ["-c", SBMachines.movePrep, "sb-move", folder, out]
+            p.arguments = ["-c", script, "sb-move"] + args
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:" + (env["PATH"] ?? "")
             p.environment = env
@@ -1793,50 +1965,6 @@ final class Switchboard {
             p.waitUntilExit()
             return String(decoding: d, as: UTF8.self)
         }.value
-        defer { try? FileManager.default.removeItem(atPath: out) }
-        var kv: [String: String] = [:]
-        for l in prep.split(separator: "\n") { if let i = l.firstIndex(of: "=") { kv[String(l[..<i])] = String(l[l.index(after: i)...]) } }
-        if let err = kv["ERR"] { return (false, "“\(name)” did not move: \(err)", nil) }
-        guard let top = kv["top"], let branch = kv["branch"], let head = kv["head"], let url = kv["url"], let main = kv["main"] else {
-            return (false, "“\(name)” did not move: Switchboard could not read its work tree.", nil)
-        }
-        // 2. There: the files, then the new work tree.
-        let incoming = ".cache/switchboard/incoming-" + sid
-        for f in ["commits.bundle", "changes.patch", "new.tgz"] {
-            guard let data = FileManager.default.contents(atPath: out + "/" + f) else { continue }
-            guard await SBMachines.put(m, data, to: incoming + "/" + f) else { return (false, "“\(name)” did not move: Switchboard could not copy its work to \(m.name).", nil) }
-        }
-        let r = await SBMachines.helperRun(m, ["receive", SBPaths.tilde(main), branch, head, url, "~/" + incoming], timeout: 300)
-        var got: [String: String] = [:]
-        for l in r.out.split(separator: "\n") { if let i = l.firstIndex(of: "=") { got[String(l[..<i])] = String(l[l.index(after: i)...]) } }
-        if let err = got["ERR"] { return (false, "“\(name)” did not move: \(err)", nil) }
-        guard let wt = got["WT"], let newBranch = got["BRANCH"] else { return (false, "“\(name)” did not move: \(m.name) did not answer (\(r.out.suffix(200))).", nil) }
-        // 3. Its conversation, in the project folder of the new work tree there.
-        guard let src = SBBackground.transcriptPath(sid), let convo = FileManager.default.contents(atPath: src) else {
-            return (false, "“\(name)” did not move: Switchboard did not find its conversation file.", nil)
-        }
-        let project = String(wt.unicodeScalars.map { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) ? Character($0) : "-" })
-        guard await SBMachines.put(m, convo, to: "\(m.projects ?? ".claude/projects")/\(project)/\(sid).jsonl") else {
-            return (false, "“\(name)” did not move: Switchboard could not copy its conversation to \(m.name).", nil)
-        }
-        // The copy here goes (the synced folder brings the one from there back), so the
-        // conversation never continues in two places.
-        try? FileManager.default.removeItem(atPath: src)
-        let wtTilde = wt.hasPrefix(home) ? "~" + wt.dropFirst(home.count) : wt
-        update(k) { x in
-            x.machine = m.name
-            x.cwd = wtTilde
-            x.branch = newBranch
-            x.move_to = nil
-        }
-        details[k] = nil
-        moveFreeSince[k] = nil
-        let renamed = newBranch == branch ? "" : " (the branch \(branch) was there already, so it is \(newBranch) here)"
-        let tell = "Switchboard moved this session from the Mac to \(m.name). Your work is now in \(wtTilde) on \(m.name): "
-            + "branch \(newBranch)\(renamed), with the same commits and the same uncommitted changes and new files. "
-            + "Work only there from now on. The old copy on the Mac (\(SBPaths.tilde(top))) stays as it was; do not use it. "
-            + "Paths under \(SBPaths.home) on the Mac are under \(home) here. Say in one line that you are ready, then wait for me."
-        return (true, "Moved.", tell)
     }
 
     /// Move a closed session's conversation file (and its folder of subagents and tool results)

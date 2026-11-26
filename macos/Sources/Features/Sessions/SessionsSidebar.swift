@@ -190,6 +190,13 @@ final class SessionsStore: ObservableObject {
                Switchboard.shared.handOverClipboard(surface: view.id.uuidString, picture: mods == .control) {
                 return nil
             }
+            // ⌃G: search, the same as ⌘O and ⌘P (Simplero's search key). G by the character
+            // the layout types, not the key code.
+            if mods == .control, event.charactersIgnoringModifiers?.lowercased() == "g" {
+                UserDefaults.standard.set(true, forKey: "sessions.sidebar.visible")
+                SessionsWeb.shared.focusSearch()
+                return nil
+            }
             // ⌃1…⌃9: the pins. The same key again goes back to the session you were in.
             if mods == .control, !event.isARepeat, let c = event.charactersIgnoringModifiers, c.count == 1,
                let n = Int(c), (1...9).contains(n), n <= self.pins.count {

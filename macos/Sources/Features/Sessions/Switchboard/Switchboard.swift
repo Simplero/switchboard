@@ -270,6 +270,18 @@ final class Switchboard {
         return (s as NSString).lastPathComponent
     }
 
+    /// A new /rename in the Claude conversation: it names the session, also when the session
+    /// has a name given in Switchboard. The same /rename name again changes nothing, so a
+    /// name you give in Switchboard later stays.
+    private func followRename(_ e: inout SBEntry, _ title: String?) {
+        guard e.agent == "claude", let t = title, !t.isEmpty, t != e.rename_seen else { return }
+        if e.custom_name == true, e.name != t {
+            SessionSwitchLog.did("“\(e.name ?? "")” is now “\(t)”: it was renamed in Claude")
+            e.name = t
+        }
+        e.rename_seen = t
+    }
+
     /// Like Claude Code: the name you gave it (/rename), else Claude's own terminal
     /// title, else the summary's title, else the folder name.
     private func sessionName(_ e: SBEntry, transcriptTitle: String?, terminalTitle: String) -> String {
@@ -524,6 +536,7 @@ final class Switchboard {
             e.pid = a.pid
             e.login_dir = a.loginDir
             if let mt = a.transcriptMtime { e.last_activity = mt }
+            followRename(&e, a.transcriptTitle)
             if e.custom_name != true {
                 e.cwd = a.cwd ?? e.cwd
                 if let t = a.transcriptTitle, !t.isEmpty {
@@ -654,7 +667,9 @@ final class Switchboard {
             if let given = pendingNames.removeValue(forKey: sf) {
                 e.name = given.name
                 e.custom_name = true
+                e.rename_seen = a.transcriptTitle   // an older /rename does not undo the name you just gave
             }
+            followRename(&e, a.transcriptTitle)
             if e.custom_name != true {
                 e.cwd = e.cwd ?? cwd
                 if e.backend == "claude-app", a.transcriptTitle == nil, let n = e.name, !n.isEmpty {
@@ -2457,6 +2472,8 @@ final class Switchboard {
             if let name, !SBScreen.strip(name).isEmpty {
                 e.name = SBScreen.strip(name)
                 e.custom_name = true
+                // The conversation's /rename name now is an old one: only a new /rename renames it again.
+                if e.agent == "claude", let t = SBBackground.transcript(e.session_id).title { e.rename_seen = t }
             }
         }
         return (true, "Saved.")

@@ -180,6 +180,9 @@ struct SBEntry: Codable {
     var machine: String?
     /// "slotting": before its move to another machine, it was asked to put its work in a slot.
     var move_stage: String?
+    /// The last /rename name Switchboard saw in the Claude conversation. A different one
+    /// is a new /rename: it names the session, also over a name given in Switchboard.
+    var rename_seen: String?
 
     /// The end of the terminal, for the summary. Not saved.
     var tail: String? = nil
@@ -189,7 +192,7 @@ struct SBEntry: Codable {
              closed_at, closed_reason, opening_at, workspace_id, surface_id, pid, last_seen, resume_cmd, backend,
              screen, working_line, last_message, last_message_at, last_activity, artifacts, summary, summary_key,
              split, state, parked, archived, archived_at, ack_key, was, closing, tab_title, shared_ws,
-             pinned, pin_cmd, app_only, park_branch, move_to, machine, move_stage
+             pinned, pin_cmd, app_only, park_branch, move_to, machine, move_stage, rename_seen
     }
 
     init(key: String, agent: String?) {
@@ -213,6 +216,7 @@ struct SBEntry: Codable {
         ack_key = v(.ack_key); was = v(.was); closing = v(.closing); tab_title = v(.tab_title); shared_ws = v(.shared_ws)
         pinned = v(.pinned); pin_cmd = v(.pin_cmd); app_only = v(.app_only); park_branch = v(.park_branch)
         move_to = v(.move_to); machine = v(.machine); move_stage = v(.move_stage)
+        rename_seen = v(.rename_seen)
     }
 
     var isOpen: Bool { open == true }

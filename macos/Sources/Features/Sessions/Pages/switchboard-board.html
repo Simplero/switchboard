@@ -368,7 +368,7 @@ function cardMenu(k, x, y){
   const waits = new Set(c.waits || []);
   openPop(x, y, `
     <button data-a="note">✎ ${c.note ? 'Edit the note' : 'Add a note'}</button>
-    <button data-a="prio"><span class="check">${c.prio ? '✓' : ''}</span>Priority (first in every list)</button>
+    <button data-a="prio" title="It comes first in every list of the sidebar."><span class="check">${c.prio ? '✓' : ''}</span>Priority</button>
     <button data-a="linear">${I.lin.replace('<svg', '<svg width="13" height="13" style="stroke:currentColor;fill:none;stroke-width:2"')} ${c.linear ? 'Change the Linear link' : 'Link to Linear'}</button>
     <div class="cap">Waits for</div>
     ${others.length ? others.map(o => `<button data-a="wait" data-k="${esc(o.k)}"><span class="check">${waits.has(o.k) ? '✓' : ''}</span>${esc(o.n)}</button>`).join('') : '<div class="cap" style="text-transform:none;font-weight:500">No other sessions.</div>'}
@@ -388,7 +388,7 @@ function colMenu(id, x, y){
   const col = board.cols.find(c => c.id === id);
   const pin = id === PIN, others = board.cols.filter(c => c.id !== id && c.id !== PIN);
   openPop(x, y, `
-    ${pin ? '<div class="cap" style="text-transform:none;font-weight:500">Your pinned sessions. Pin and unpin in the sidebar.</div>' : `<button data-a="rename">Rename</button><button data-a="prio"><span class="check">${col.prio ? '✓' : ''}</span>Priority column (its sessions first in every list)</button>`}
+    ${pin ? '<div class="cap" style="text-transform:none;font-weight:500">Your pinned sessions. Pin and unpin in the sidebar.</div>' : `<button data-a="rename">Rename</button><button data-a="prio" title="Its sessions come first in every list of the sidebar."><span class="check">${col.prio ? '✓' : ''}</span>Priority column</button>`}
     <div class="sw">${COLORS.map(cl => `<button data-a="color" data-c="${cl}" style="--c:var(--c-${cl})" title="${cl}" aria-label="Color ${cl}">${col.color === cl ? '✓' : ''}</button>`).join('')}</div>
     <button data-a="fold">Fold it</button>
     ${!pin && others.length ? `<hr><button data-a="remove">Remove the column (its cards go to ${esc(others[0].name)})</button>` : ''}`,

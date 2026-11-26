@@ -1273,6 +1273,7 @@ final class Switchboard {
         case "close_when_away":
             return closeWhenAway(k, pid: msg["pid"] as? Int, park: msg["park"] as? Bool == true, branch: msg["branch"] as? String)
         case "send": return send(k, msg["text"] as? String ?? "")
+        case "draft": return draft(k, msg["text"] as? String ?? "")
         case "remember_open": return rememberOpen()
         case "pin": return pin(k)
         case "unpin": return unpin(k)
@@ -2515,6 +2516,15 @@ final class Switchboard {
         guard let e = reg.sessions[k], e.isOpen, let sf = e.surface_id else { return (false, "That session is not running.") }
         let ok = SessionsAPI.sendInput(sf, text: text, enter: true)
         return (ok, ok ? "Sent." : "That terminal is gone.")
+    }
+
+    /// Type text into the session's prompt without sending it, and give that terminal the
+    /// keyboard: you finish the message yourself.
+    func draft(_ k: String, _ text: String) -> (Bool, String) {
+        guard let e = reg.sessions[k], e.isOpen, let sf = e.surface_id else { return (false, "That session is not running.") }
+        SessionsAPI.focusTerminal(sf)
+        let ok = SessionsAPI.sendInput(sf, text: text, enter: false)
+        return (ok, ok ? "Typed." : "That terminal is gone.")
     }
 
     // MARK: Pins

@@ -61,9 +61,11 @@ final class SBToolPage: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 SessionsDocPanes.shared.pushTools(except: self)
             }
         case "op":
-            guard let o = body["o"] as? [String: Any], let op = o["op"] as? String, ["send", "new", "done", "close", "pin_off", "ack"].contains(op) else { return }
+            guard let o = body["o"] as? [String: Any], let op = o["op"] as? String, ["send", "draft", "new", "done", "close", "pin_off", "ack"].contains(op) else { return }
             if let k = o["k"] as? String, let action = ["done": "Archive", "close": "Close", "pin_off": "Turn off"][op], !store.confirmClose(k, action: action) { return }
             SessionSwitchLog.because("the \(title.lowercased()): \(op)")
+            // Ask about it: the keys go to the terminal, not to this page.
+            if op == "draft" { store.pageHasYou = false }
             store.send(o)
         case "link":
             // A Doc opens in the pane, so the tool page makes room for it.

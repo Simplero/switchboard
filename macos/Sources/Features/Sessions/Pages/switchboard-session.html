@@ -29,6 +29,11 @@ details.links summary::-webkit-details-marker{display:none}
 .timeline{display:flex;flex-direction:column;gap:8px}
 .status{font-size:12.5px;color:var(--ink2);line-height:1.4}
 .topic--done .card__tab .nm,.topic--done .status{color:var(--muted)}
+/* Ask: types "About “…”: " into the session's prompt, and you finish the question there. */
+.ask{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border:1px solid var(--line2);border-radius:6px;background:transparent;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer}
+.ask:hover{color:var(--ink);border-color:var(--accent)}
+.ask svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.check .head{display:flex;align-items:flex-start;gap:8px}
 </style></head>
 <body><div class="sess" id="app"></div>
 <script>
@@ -38,6 +43,7 @@ const bridge = (type, d = {}) => { try { window.webkit.messageHandlers.sessions.
 const I = {
   doc: '<svg viewBox="0 0 24 24"><path d="M14 3H6v18h12V7zM14 3v4h4"/></svg>',
   pr: '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4"/></svg>',
+  ask: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>',
   web: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg>',
 };
 const NEEDS = new Set(['permission', 'question', 'review', 'heads_up']);
@@ -65,6 +71,8 @@ function linkLabel(r, u){
   if (/doc\.simplero\.me|\/admin\/docs/.test(u)) return ['doc', 'Doc'];
   try { const x = new URL(u); return ['web', (x.host.split('.')[0] + x.pathname).replace(/\/$/, '').slice(0, 40)]; } catch (e) { return ['web', u.slice(0, 40)]; }
 }
+// Only while the session runs: the words go into its terminal.
+const ask = (r, what) => r.o ? `<button class="ask" data-ask="${esc('About “' + what + '”: ')}" title="Types “About ${esc(what)}:” into the session. You add your question.">${I.ask}Ask</button>` : '';
 const chip = (r, u, quiet) => { const [k, t] = linkLabel(r, u); return `<span class="chip ${quiet ? 'chip--quiet' : ''}" data-link="${esc(u)}" title="${esc(u)}">${I[k]}${esc(t)}</span>`; };
 
 // The steps of a topic's pull request: PR › CI › your check › merged. (Simplero's deploys are
@@ -96,7 +104,7 @@ function topic(r, t, current){
   const stc = done ? 'done' : t.s === 'you' ? 'needs' : t.s === 'later' ? 'wait' : 'work';
   const links = (t.l || []).map(u => chip(r, u, done)).join('');
   return `<article class="topic ${t.s === 'you' && !done ? 'topic--needs' : ''} ${done ? 'topic--done' : ''}">
-    <div class="card__tab"><span class="nm">${esc(t.t)}</span><span class="state state--${stc}">${word}</span></div>
+    <div class="card__tab"><span class="nm">${esc(t.t)}</span><span class="state state--${stc}">${word}</span>${ask(r, t.t)}</div>
     ${t.x ? `<div class="status">${esc(t.x)}</div>` : ''}
     ${done ? '' : steps(r, pr, t.s === 'you')}
     ${links ? `<div class="card__links">${links}</div>` : ''}
@@ -113,7 +121,7 @@ function render(){
   if (r.bn) h += `<div class="now"><b>Now:</b> ${esc(r.bn)}</div>`;
   else if (r.gl) h += `<div class="now"><b>Works on:</b> ${esc(r.gl)}</div>`;
   if (r.bp) h += `<div class="reading">Reading the conversation again…</div>`;
-  if (r.bc && r.bc[0]) h += `<div class="check"><div class="t">Check: ${esc(r.bc[0])}</div>${r.bc[1] ? `<div class="card__links">${chip(r, r.bc[1])}</div>` : ''}</div>`;
+  if (r.bc && r.bc[0]) h += `<div class="check"><div class="head"><div class="t">Check: ${esc(r.bc[0])}</div>${ask(r, 'Check: ' + r.bc[0])}</div>${r.bc[1] ? `<div class="card__links">${chip(r, r.bc[1])}</div>` : ''}</div>`;
   if (!topics.length){
     h += `<p class="empty">${r.bp ? 'Switchboard reads this conversation now.' : 'Switchboard reads a conversation once its agent stops, and again when it has grown. Nothing read yet.'}</p>`;
   } else {
@@ -121,7 +129,7 @@ function render(){
     const lastOpen = topics.map(t => t.s !== 'done').lastIndexOf(true);
     h += `<div class="sess__label">Worked on in this session</div><div class="timeline">${topics.map((t, i) => topic(r, t, i === lastOpen)).join('')}</div>`;
   }
-  if ((r.bl || []).length) h += `<div class="sess__label">Put off for later</div><div class="timeline">${r.bl.map(x => `<article class="topic"><div class="card__tab"><span class="nm">${esc(x)}</span><span class="state state--wait">◷ Later</span></div></article>`).join('')}</div>`;
+  if ((r.bl || []).length) h += `<div class="sess__label">Put off for later</div><div class="timeline">${r.bl.map(x => `<article class="topic"><div class="card__tab"><span class="nm">${esc(x)}</span><span class="state state--wait">◷ Later</span>${ask(r, x)}</div></article>`).join('')}</div>`;
   if (r.bd){
     const last = topics[topics.length - 1];
     h += `<div class="drift"><span><b>✦ New topic:</b> ${esc(last ? last.t : 'the latest messages')}. It is not what this session started on.</span>
@@ -143,6 +151,8 @@ function render(){
 
 document.addEventListener('click', e => {
   const ln = e.target.closest('[data-link]'); if (ln){ e.preventDefault(); bridge('link', {url: ln.dataset.link}); return; }
+  const a = e.target.closest('[data-ask]');
+  if (a){ const r = rows.find(x => x.k === pinnedK); if (r) bridge('op', {o: {op: 'draft', k: r.k, text: a.dataset.ask}}); return; }
   const d = e.target.closest('[data-drift]');
   if (d){
     const r = rows.find(x => x.k === pinnedK); if (!r) return;

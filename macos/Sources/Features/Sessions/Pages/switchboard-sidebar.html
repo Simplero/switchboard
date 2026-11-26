@@ -33,6 +33,7 @@ button{font:inherit;color:inherit;cursor:default}
 .row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .cap{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .newbtn{border:0;background:var(--sunk);border-radius:7px;padding:4px 8px;font-weight:600;font-size:12px;display:inline-flex;gap:4px;align-items:center}
+.newbtn:disabled{opacity:.55;cursor:default}
 .newbtn:hover{background:var(--line2)}
 .newbtn .plus{color:var(--done);font-weight:800}
 .newbtn[aria-pressed=true]{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent)}
@@ -918,8 +919,12 @@ function idHitHTML(){
   const logins = [['~/.claude','simplero.com'],['~/.claude-ccl','corre.li'],['~/.claude-ccm','correli.me']];
   const btns = idHit.open
     ? `<button class="newbtn" data-resume="${esc(idHit.id)}" data-login="">Go to it</button>`
-    : `<span class="lbl">Resume with</span>` + logins.map(([d, n]) =>
-        `<button class="newbtn" data-resume="${esc(idHit.id)}" data-login="${d}">${n}${d === idHit.login ? ' · last used' : ''}</button>`).join('');
+    : `<span class="lbl">Resume with</span>` + logins.map(([d, n]) => {
+        // A login that is almost out cannot take it: Switchboard would move it at once.
+        const full = (data?.lfull || []).includes(d), room = !full && (data?.lfull || []).includes(idHit.login) && data?.lroom === d;
+        const tags = [d === idHit.login ? 'last used' : '', full ? 'almost out' : '', room ? 'has room' : ''].filter(Boolean).join(', ');
+        return `<button class="newbtn" data-resume="${esc(idHit.id)}" data-login="${d}"${full ? ' disabled title="This login is almost out. Pick a login with room."' : ''}>${n}${tags ? ' · ' + tags : ''}</button>`;
+      }).join('');
   return `<div class="idhit">
     <div class="t">${esc(idHit.title || 'Conversation ' + short + '…')}</div>
     <div class="m">${ic('folder',11,2.2)} ${esc((idHit.cwd || '').replace(/^\/Users\/[^/]+/, '~'))} · id ${esc(short)}…${idHit.open ? ' · open now' : ''}</div>

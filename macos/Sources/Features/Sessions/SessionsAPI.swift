@@ -581,6 +581,11 @@ final class SessionsAPI {
             let sel = w?.tabGroup?.selectedWindow ?? w
             let surf = (sel?.windowController as? BaseTerminalController)?.surfaceTree.root?.leaves().map { String($0.id.uuidString.prefix(8)) } ?? []
             return (200, ["trace": SessionsAPI.keyTrace, "now": SessionsAPI.responderName(sel?.firstResponder), "tab_terminals": surf])
+        case ("GET", "/sb/limits"), ("POST", "/sb/limits"):
+            // For checks: the logins almost out and the login with room. POST {"use": {login:
+            // {"wk": {"p", "r"}, "h5": {"p"}}}} sets plan usage until the next fetch (3 minutes).
+            if req.method == "POST", let u = req.json["use"] as? [String: Any] { Switchboard.shared.setUsageForCheck(u) }
+            return (200, ["full": Switchboard.shared.fullLogins, "room": (Switchboard.shared.loginWithRoom as Any?) ?? NSNull()])
         case ("GET", "/sb/switchlog"):
             // For checks: the end of the log of session switches, and the sidebar's away state.
             let text = (try? String(contentsOfFile: SessionSwitchLog.path, encoding: .utf8)) ?? ""

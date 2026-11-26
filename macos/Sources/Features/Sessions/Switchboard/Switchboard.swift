@@ -304,6 +304,7 @@ final class Switchboard {
         merge(t0: t0, agents: agents)
         closeAwaySessions()
         moveWhenFree()
+        switchOffFullLogins()
         if t0 - remoteAt >= 30, !remoteLooking, !SBMachines.all.isEmpty { remoteAt = t0; lookAtMachines() }
         if t0 - worktreeAt >= 10, !worktreeLooking { worktreeAt = t0; lookAtWorktrees() }
         if let outside { mergeElsewhere(outside) }
@@ -906,6 +907,13 @@ final class Switchboard {
         publish()
     }
 
+    /// For checks (/sb/limits): plan usage per login until the next fetch.
+    func setUsageForCheck(_ u: [String: Any]) {
+        for (d, x) in u { usage[d] = x }
+        usageAt = now
+        publish()
+    }
+
     // MARK: Feeding the pages
 
     private func compact(_ e: SBEntry) -> [String: Any] {
@@ -1031,6 +1039,7 @@ final class Switchboard {
                 return ["n": m.name, "ok": st.map { $0.ok as Any } ?? NSNull(), "msg": st?.message ?? ""]
             },
             "s": rows.map(compact), "ot": [], "grp": [], "use": usage,
+            "lfull": fullLogins, "lroom": loginWithRoom ?? NSNull(),
         ]
         let vanished = sess.filter { !$0.isOpen && $0.parked != true && $0.closed_reason == "vanished" }
         if let newest = vanished.compactMap(\.closed_at).max() {
@@ -1298,7 +1307,7 @@ final class Switchboard {
     /// Show a session, or resume it in a new terminal. Returns the new terminal's id.
     @discardableResult
     func openEntry(_ k: String, focus: Bool = true, split: Bool = false, tabOf: String? = nil) -> (ok: Bool, message: String, surface: String?) {
-        guard let e = reg.sessions[k] else { return (false, "Unknown session.", nil) }
+        guard var e = reg.sessions[k] else { return (false, "Unknown session.", nil) }
         if e.isOpen, let sf = e.surface_id, let view = SessionsAPI.surface(id: sf) {
             if focus { SessionsAPI.focus(view) }
             startPinCommandIfIdle(k)
@@ -1321,6 +1330,13 @@ final class Switchboard {
         // The same conversation must never run in two places.
         if runningElsewhere(k) != nil {
             return (false, "“\(e.name ?? "This session")” still runs outside Switchboard (\(elsewhereName(e))). Click its row in the sidebar to move it here.", nil)
+        }
+        // Its login is almost out: it starts with the login that has room (see switchOffFullLogins).
+        if e.agent == "claude", e.backend != "claude-app", !switching.contains(k),
+           fullLogins.contains(SBLogins.norm(e.login_dir)), let to = loginWithRoom {
+            SessionSwitchLog.did("“\(e.name ?? k)” starts on \(SBLogins.short(to)): \(SBLogins.short(e.login_dir)) is almost out")
+            update(k) { $0.login_dir = to }
+            e.login_dir = to
         }
         guard let cmd = resumeCommand(e) else {
             if let m = e.machine, SBMachines.named(m) == nil { return (false, "“\(e.name ?? "This session")” ran on \(m), which is no longer in \(SBPaths.tilde(SBMachines.path)).", nil) }
@@ -1449,7 +1465,8 @@ final class Switchboard {
     }
 
     /// Close Claude and resume the same conversation with another login.
-    func switchLogin(_ k: String, _ loginDir: String, focus: Bool = true) async -> (Bool, String) {
+    /// `typeAfter`: a message to send once Claude is back (for one cut off by its limit: continue).
+    func switchLogin(_ k: String, _ loginDir: String, focus: Bool = true, typeAfter: String? = nil) async -> (Bool, String) {
         guard let e = reg.sessions[k] else { return (false, "Unknown session.") }
         guard e.agent == "claude", e.session_id != nil else { return (false, "Only Claude sessions with a session id can switch login.") }
         guard SBLogins.dirs.contains(loginDir) else { return (false, "Unknown login \(loginDir).") }
@@ -1480,6 +1497,7 @@ final class Switchboard {
         switchOpening = true
         let r = openEntry(k, focus: focus, tabOf: mate)
         switchOpening = false
+        if r.ok, let t = typeAfter, let sf = r.surface { typeWhenReady(sf, t, since: now, seenAt: nil, quiet: true) }
         return (r.ok, r.ok ? "Now on \(SBLogins.short(loginDir))." : r.message)
     }
 
@@ -1736,6 +1754,68 @@ final class Switchboard {
 
     /// For checks: why the session cannot move yet if it waited to move, or "free".
     func moveCheck(_ k: String) -> String { moveBlocker(k, asked: false) ?? "free" }
+
+    // MARK: Plan limits: sessions leave a login that is almost out
+
+    /// Weekly or 5-hour use (%) at which a login is almost out.
+    static let loginFullAt = 98
+    private var limitFreeSince: [String: Double] = [:]
+    private var limitNoRoomNoted = false
+
+    private func usePct(_ d: String, _ window: String) -> Int? {
+        ((usage[d] as? [String: Any])?[window] as? [String: Any])?["p"] as? Int
+    }
+
+    private func weekResets(_ d: String) -> Date? {
+        guard let r = ((usage[d] as? [String: Any])?["wk"] as? [String: Any])?["r"] as? String else { return nil }
+        return ISO8601DateFormatter().date(from: r.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression))
+    }
+
+    /// The logins at 98% or more of their week or of their 5 hours.
+    var fullLogins: [String] {
+        SBLogins.dirs.filter { (usePct($0, "wk") ?? 0) >= Self.loginFullAt || (usePct($0, "h5") ?? 0) >= Self.loginFullAt }
+    }
+
+    /// Where sessions go from a login that is almost out: of the logins with room (under 95% of
+    /// the week, under 90% of the 5 hours), the one whose week resets first. What it has left
+    /// is lost at that reset, so it is used first.
+    var loginWithRoom: String? {
+        SBLogins.dirs
+            .filter { d in
+                guard let wk = usePct(d, "wk") else { return false }   // usage not known: not signed in
+                return wk < 95 && (usePct(d, "h5") ?? 0) < 90
+            }
+            .min { a, b in (weekResets(a) ?? .distantFuture, usePct(a, "wk") ?? 100) < (weekResets(b) ?? .distantFuture, usePct(b, "wk") ?? 100) }
+    }
+
+    /// Each scan: every running Claude session on a login that is almost out switches to the
+    /// login with room once its turn is over (not working, no permission question, nothing typed
+    /// in its prompt; the session in front after 15 s of that, the others after 3 s). One that
+    /// its limit stopped mid-turn gets "continue". Sessions that do not run switch when they open.
+    private func switchOffFullLogins() {
+        let full = Set(fullLogins)
+        guard !full.isEmpty else { limitFreeSince = [:]; limitNoRoomNoted = false; return }
+        guard let to = loginWithRoom else {
+            if !limitNoRoomNoted { limitNoRoomNoted = true; SessionSwitchLog.did("logins almost out (\(full.map { SBLogins.short($0) }.sorted().joined(separator: ", "))), and no login has room") }
+            return
+        }
+        limitNoRoomNoted = false
+        for (k, e) in reg.sessions where e.isOpen && e.agent == "claude" && e.backend != "claude-app" && e.session_id != nil
+            && full.contains(SBLogins.norm(e.login_dir)) && e.move_to == nil && !switching.contains(k) && !moving.contains(k) {
+            let front = e.surface_id != nil && e.surface_id == SessionsStore.shared.focusedSurfaceID
+            guard moveBlocker(k, asked: true) == nil else { limitFreeSince[k] = nil; continue }
+            guard let since = limitFreeSince[k] else { limitFreeSince[k] = now; continue }
+            guard now - since >= (front ? 15 : 3) else { continue }
+            limitFreeSince[k] = nil
+            let stopped = e.surface_id.flatMap { SessionsAPI.surface(id: $0) }.flatMap { SessionsAPI.activeText(of: $0) }.map(SBScreen.hitLimit) ?? false
+            let name = e.name ?? "This session", from = SBLogins.short(e.login_dir)
+            Task { @MainActor in
+                let (ok, message) = await self.switchLogin(k, to, focus: front, typeAfter: stopped ? "continue" : nil)
+                SessionSwitchLog.did("“\(name)” \(from) → \(SBLogins.short(to)) (\(from) almost out)\(ok ? "" : ": " + message)")
+                self.publish()
+            }
+        }
+    }
 
     /// Each scan: the sessions that wait to move and are free now (on two looks 3 s apart) move.
     private func moveWhenFree() {

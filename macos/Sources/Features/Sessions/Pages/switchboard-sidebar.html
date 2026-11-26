@@ -1046,9 +1046,13 @@ function subHTML(d){
   }
   graph += '</svg>';
   const rs = u.rs || [], full = rs.filter(r => (r[3] || 'week') === 'week').length;
+  // Almost out (98%): Switchboard moves its sessions to the login with room (lroom).
+  const out = (data.lfull || []).includes(d), room = LOGINS.includes(data.lroom) ? data.lroom : null;
   const tip = [used == null ? `${name}: usage not known yet.` : `${name}: ${used}% of this week used${reset ? ', resets in ' + inT(reset) : ''}.`,
     ...(u.h5 && u.h5.p != null ? [`${u.h5.p}% of the 5-hour window used.`] : []),
     ...resetLines(rs),
+    ...(out && room ? [`Almost out: its Claude sessions move to ${loginName(room)} when their turn is over.`] : out ? ['Almost out, and no other login has room.'] : []),
+    ...(!out && (data.lfull || []).length && room === d ? ['Claude sessions of a login that is almost out move here: its week resets first.'] : []),
     on ? 'Click to show the sessions of every login.' : `Click to show only the ${name} sessions.`].join('\n');
   return `<button class="subbtn${used != null && used >= 90 ? ' hi' : ''}" data-sub="${d}" aria-pressed="${on}" title="${esc(tip)}">`
     + `<span class="ln"><span class="nm">${on ? ic('check', 9, 3) : ''}${esc(name)}</span>`
@@ -1126,7 +1130,11 @@ const nfWarm = () => bridge('newWarm', nf.agent === 'claude' ? {login: nf.login,
 // Where Claude runs: this Mac (empty), or another machine. Remembered, like the login.
 const machineList = () => (data && data.machines) || [];
 const lastMachine = () => { const m = store.get('newMachine', ''); return machineList().some(x => x.n === m) ? m : ''; };
-const lastLogin = () => { const l = store.get('newLogin', '~/.claude'); return LOGINS.includes(l) ? l : '~/.claude'; };
+// The login you used last, unless it is almost out: then the one Switchboard moves sessions to.
+const lastLogin = () => {
+  const l0 = store.get('newLogin', '~/.claude'), l = LOGINS.includes(l0) ? l0 : '~/.claude';
+  return (data?.lfull || []).includes(l) && LOGINS.includes(data?.lroom) ? data.lroom : l;
+};
 const nfMsg = $('#nfmsg'), nfName = $('#nfname');
 const LOGIN_NAMES = {'~/.claude':'simplero.com','~/.claude-ccl':'corre.li','~/.claude-ccm':'correli.me'};
 const loginName = d => data?.spares?.[d]?.lg || LOGIN_NAMES[d] || d;
@@ -1174,7 +1182,7 @@ function addFiles(paths){
 function nfGrow(){ nfMsg.style.height = 'auto'; nfMsg.style.height = Math.min(nfMsg.scrollHeight + 2, 240) + 'px'; }
 function openNew(login){
   const was = nf.open;
-  nf.open = true; nf.login = login || nf.login || lastLogin();
+  nf.open = true; nf.login = login || (was ? nf.login : '') || lastLogin();
   if (!was){ nf.machine = lastMachine(); nf.agent = login ? 'claude' : lastAgent(); }
   login = nf.login;
   const r = $('#newbtns').getBoundingClientRect();

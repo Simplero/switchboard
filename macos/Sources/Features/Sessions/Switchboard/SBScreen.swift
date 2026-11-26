@@ -102,6 +102,13 @@ enum SBScreen {
         return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
+    /// Claude stopped at its plan limit ("You've hit your limit", "usage limit reached") in the
+    /// last lines of the screen.
+    static func hitLimit(_ screen: String) -> Bool {
+        let last = lines(screen).filter { !strip($0).isEmpty }.suffix(15).joined(separator: "\n").lowercased()
+        return last.contains("hit your limit") || last.contains("usage limit reached") || last.contains("limit reached ∙") || last.contains("limit reached ·")
+    }
+
     /// "permission", "working" or "idle".
     static func state(_ screen: String) -> String {
         let last = Array(lines(screen).filter { !strip($0).isEmpty }.suffix(25))

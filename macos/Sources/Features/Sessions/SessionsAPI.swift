@@ -178,6 +178,16 @@ final class SessionsAPI {
                         self.respond(conn, status: 200, body: ["tool": SessionsDocPanes.shared.tool ?? ""])
                         return
                     }
+                    if req.method == "POST", req.path == "/sb/tooljs", req.headers["x-token"] == self.token {
+                        // For checks: run JS in a tool page ({"page": "board", "js": "..."}), as clicks there would.
+                        let kind = (req.json["page"] as? String).flatMap(SBToolPage.Kind.init(rawValue:)) ?? .board
+                        SessionsDocPanes.shared.toolPage(kind).webView.evaluateJavaScript(req.json["js"] as? String ?? "") { out, err in
+                            Task { @MainActor in
+                                self.respond(conn, status: err == nil ? 200 : 500, body: ["out": out.map { "\($0)" } ?? "", "error": err.map { "\($0)" } ?? ""])
+                            }
+                        }
+                        return
+                    }
                     if req.method == "GET", req.path == "/sb/snap", req.headers["x-token"] == self.token {
                         // For checks: a picture of the sidebar or the panel page (window pictures leave web views blank).
                         // ?page=board / session: that tool page.

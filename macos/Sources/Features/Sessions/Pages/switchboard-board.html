@@ -11,10 +11,15 @@ body{overflow:hidden}
 .col > *{flex-shrink:0}
 .col__head{position:sticky;top:0;z-index:3;cursor:grab;background:var(--sunk)}
 .col__head .name{outline:none;border-radius:4px;padding:0 3px}
-.col__head .name[contenteditable="true"]{background:var(--surface);cursor:text;text-transform:none;letter-spacing:0}
+.col__head .name[contenteditable="true"]{background:var(--surface);cursor:text}
+.col__head .name[data-rename]{cursor:text}
+.col__head .name[data-rename]:hover{background:var(--line2)}
 .col__more{opacity:0;border:0;background:none;color:var(--muted);font:700 14px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;cursor:pointer;padding:0 4px;border-radius:5px}
-.col:hover .col__more,.col__more:focus{opacity:1}
-.col__more:hover{color:var(--ink);background:var(--line2)}
+.col__fold{opacity:0;border:0;background:none;color:var(--muted);cursor:pointer;padding:2px 3px;border-radius:5px;display:inline-flex;margin-left:auto}
+.col__fold svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.col__fold + .col__more{margin-left:0}
+.col:hover .col__more,.col__more:focus,.col:hover .col__fold,.col__fold:focus{opacity:1}
+.col__more:hover,.col__fold:hover{color:var(--ink);background:var(--line2)}
 .col.drop-target{outline:2px dashed var(--col);outline-offset:-2px}
 .col.collapsed{cursor:pointer}
 .col__empty{font-size:13.5px;color:var(--muted);text-align:center;padding:14px 6px;border:1.5px dashed color-mix(in srgb,var(--col) 35%,transparent);border-radius:8px}
@@ -32,6 +37,7 @@ body.is-dragging,body.is-dragging *{cursor:grabbing!important;user-select:none;-
 textarea.note-edit,input.line-edit{font:13px/1.35 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:var(--ink);background:var(--surface);border:1.5px solid var(--needs);border-radius:6px;padding:6px 8px;resize:vertical;width:100%;box-sizing:border-box}
 input.line-edit{border-color:var(--accent)}
 .edit-hint{font-size:11px;color:var(--muted)}
+.pop:focus{outline:none}
 .pop{position:fixed;z-index:50;min-width:200px;max-width:320px;max-height:70vh;overflow:auto;background:var(--surface);color:var(--ink);border-radius:10px;box-shadow:0 0 0 1px var(--line2),0 12px 32px oklch(0% 0 0/40%);padding:5px;font:13px -apple-system,BlinkMacSystemFont,system-ui,sans-serif}
 .pop button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:none;color:inherit;font:inherit;padding:6px 9px;border-radius:6px;cursor:pointer}
 .pop button:hover,.pop button:focus{background:color-mix(in srgb,var(--accent) 22%,transparent);outline:none}
@@ -296,7 +302,7 @@ function render(){
     const nameEdit = editing && editing.col === col.id;
     const empty = pin ? 'Pin a session in the sidebar and it shows here.' : filtering() ? 'No match here.' : 'Drag a session here.';
     return `<section class="col col--${esc(col.color)}" data-col="${esc(col.id)}">
-      <div class="col__head" data-colhead="${esc(col.id)}" title="${pin ? 'Your pinned sessions, in the sidebar’s order. Drag to move the column.' : 'Drag to move the column. Double-click the name to rename it.'}">${pin ? `<svg class="col__pin" viewBox="0 0 24 24" aria-hidden="true">${ICON.pin}</svg>` : ''}${col.prio ? `<svg class="prio" viewBox="0 0 24 24" aria-label="Priority column"><title>Priority column: its sessions come first in every list of the sidebar.</title>${ICON.star}</svg>` : ''}<span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
+      <div class="col__head" data-colhead="${esc(col.id)}" title="${pin ? 'Your pinned sessions, in the sidebar’s order. Drag to move the column.' : 'Drag to move the column.'}">${pin ? `<svg class="col__pin" viewBox="0 0 24 24" aria-hidden="true">${ICON.pin}</svg>` : ''}${col.prio ? `<svg class="prio" viewBox="0 0 24 24" aria-label="Priority column"><title>Priority column: its sessions come first in every list of the sidebar.</title>${ICON.star}</svg>` : ''}<span class="name" ${nameEdit ? 'contenteditable="true"' : pin ? '' : 'data-rename title="Click to rename it."'}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__fold" data-fold="${esc(col.id)}" title="Fold the column" aria-label="Fold ${esc(col.name)}"><svg viewBox="0 0 24 24"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg></button><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
       ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">${empty}</div>`}
     </section>`;
   }).join('');
@@ -360,8 +366,14 @@ function openPop(x, y, html, onClick){
   pop.style.left = Math.max(6, Math.min(x, innerWidth - r.width - 6)) + 'px';
   pop.style.top = Math.max(6, Math.min(y, innerHeight - r.height - 6)) + 'px';
   pop.addEventListener('click', e => { const b = e.target.closest('button[data-a]'); if (b){ e.stopPropagation(); const a = b.dataset; closePop(); onClick(a); } });
-  pop.querySelector('button')?.focus();
+  // One highlight: it follows the pointer. Opened from the keyboard, the first item has it.
+  pop.addEventListener('mouseover', e => { const b = e.target.closest('button'); if (b && document.activeElement !== b) b.focus({preventScroll: true}); });
+  if (byKey) pop.querySelector('button')?.focus();
+  else { pop.tabIndex = -1; pop.focus({preventScroll: true}); }
 }
+let byKey = false;
+document.addEventListener('keydown', () => { byKey = true; }, true);
+document.addEventListener('mousedown', () => { byKey = false; }, true);
 function cardMenu(k, x, y){
   const r = rowOf(k), c = board.cards[k] || {};
   const others = rows.filter(o => o.k !== k && !o.ar && !o.k.startsWith('conv:') && (o.o || board.cards[o.k]) && o.pn == null).slice(0, 30);
@@ -388,15 +400,12 @@ function colMenu(id, x, y){
   const col = board.cols.find(c => c.id === id);
   const pin = id === PIN, others = board.cols.filter(c => c.id !== id && c.id !== PIN);
   openPop(x, y, `
-    ${pin ? '<div class="cap" style="text-transform:none;font-weight:500">Your pinned sessions. Pin and unpin in the sidebar.</div>' : `<button data-a="rename">Rename</button><button data-a="prio" title="Its sessions come first in every list of the sidebar."><span class="check">${col.prio ? '✓' : ''}</span>Priority column</button>`}
+    ${pin ? '<div class="cap" style="text-transform:none;font-weight:500">Your pinned sessions. Pin and unpin in the sidebar.</div>' : `<button data-a="prio" title="Its sessions come first in every list of the sidebar."><span class="check">${col.prio ? '✓' : ''}</span>Priority column</button>`}
     <div class="sw">${COLORS.map(cl => `<button data-a="color" data-c="${cl}" style="--c:var(--c-${cl})" title="${cl}" aria-label="Color ${cl}">${col.color === cl ? '✓' : ''}</button>`).join('')}</div>
-    <button data-a="fold">Fold it</button>
     ${!pin && others.length ? `<hr><button data-a="remove">Remove the column (its cards go to ${esc(others[0].name)})</button>` : ''}`,
     a => {
-      if (a.a === 'rename'){ editing = {col: id}; render(); return; }
       if (a.a === 'color') col.color = a.c;
       if (a.a === 'prio'){ if (col.prio) delete col.prio; else col.prio = true; }
-      if (a.a === 'fold') board.collapsed = [...new Set([...(board.collapsed || []), id])];
       if (a.a === 'remove'){
         const to = others[0].id;
         for (const k in board.cards) if (board.cards[k].col === id) board.cards[k].col = to;
@@ -543,6 +552,8 @@ document.addEventListener('click', e => {
   }
   const cm = t.closest('[data-colmenu]'); if (cm){ e.stopPropagation(); const r = cm.getBoundingClientRect(); colMenu(cm.dataset.colmenu, r.left, r.bottom + 4); return; }
   const km = t.closest('[data-cardmenu]'); if (km){ e.stopPropagation(); const r = km.getBoundingClientRect(); cardMenu(km.dataset.cardmenu, r.left - 160, r.bottom + 4); return; }
+  const fd = t.closest('[data-fold]'); if (fd){ board.collapsed = [...new Set([...(board.collapsed || []), fd.dataset.fold])]; save(); render(); return; }
+  const rn = t.closest('.col__head .name[data-rename]'); if (rn && !editing){ editing = {col: rn.closest('[data-colhead]').dataset.colhead}; render(); return; }
   const coll = t.closest('.col.collapsed[data-col]'); if (coll){ board.collapsed = (board.collapsed || []).filter(c => c !== coll.dataset.col); save(); render(); return; }
   const ln = t.closest('[data-link]'); if (ln){ bridge('link', {url: ln.dataset.link}); return; }
   const op = t.closest('[data-open]'); if (op){ bridge('open', {k: op.dataset.open}); return; }

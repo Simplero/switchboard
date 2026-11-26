@@ -318,6 +318,21 @@ final class SessionsAPI {
             guard let k = req.json["k"] as? String else { return (400, ["error": "k"]) }
             SBBoard.shared.move(k, to: req.json["col"] as? String)
             return (200, ["board": SBBoard.shared.summary])
+        case ("POST", "/sb/boardprio"):
+            // For checks: mark a session ({"k", "on"}) or a column ({"col", "on"}) as a priority.
+            let on = req.json["on"] as? Bool ?? true
+            if let k = req.json["k"] as? String {
+                SBBoard.shared.setPriority(k, on)
+            } else if let col = req.json["col"] as? String {
+                var state = SBBoard.shared.json
+                state["cols"] = ((state["cols"] as? [[String: Any]]) ?? []).map { c in
+                    var c = c
+                    if c["id"] as? String == col { if on { c["prio"] = true } else { c.removeValue(forKey: "prio") } }
+                    return c
+                }
+                SBBoard.shared.save(state)
+            } else { return (400, ["error": "k or col"]) }
+            return (200, ["board": SBBoard.shared.json])
         case ("POST", "/sb/restart"):
             // For checks: what "Restart to update" does, without the question.
             Task { @MainActor in SessionsVersion.shared.restart(confirm: false) }

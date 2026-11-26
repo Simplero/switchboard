@@ -211,6 +211,9 @@ body.dragging-rows,body.dragging-rows *{cursor:grabbing!important}
 .item .ico{width:16px;flex-shrink:0;display:flex;justify-content:center;padding-top:2px}
 .item .body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
 .item .top{display:flex;gap:8px;align-items:baseline}
+.item .pri{flex:none;align-self:center;display:inline-flex;color:var(--needs);margin-right:-3px}
+.item .pri svg{fill:currentColor}
+.item.sel .pri{color:inherit}
 .item .name{font-weight:650;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item .age{margin-left:auto;font-size:11px;color:var(--muted2);white-space:nowrap}
 /* Every running row has the same height: the status line always takes two lines and the
@@ -718,11 +721,13 @@ function cmp(c){
   // session that needs you again goes to the end). Then busy ones, then the rest, newest first.
   const rank = s => heldNeeds(s) ? 0 : stateOf(s) === 'working' ? 1 : 2;
   const since = s => needsMemo[s.k]?.since || s.nsn || s.fa || s.la || 0;
-  if (c.sort === 'visited') return (a,b) => (visits[b.k]||0) - (visits[a.k]||0) || (b.la||0) - (a.la||0);
-  if (c.sort === 'active') return (a,b) => (b.la||0) - (a.la||0);
-  if (c.sort === 'name') return (a,b) => a.n.localeCompare(b.n);
-  if (c.sort === 'manual') return (a,b) => manualIndex(a) - manualIndex(b);
-  return (a,b) => rank(a) - rank(b) || (rank(a) === 0 ? since(a) - since(b) : (b.la||0) - (a.la||0));
+  // Priority sessions (marked, or in a priority column of the Board) come first in every sort.
+  const first = f => (a,b) => (b.pri ? 1 : 0) - (a.pri ? 1 : 0) || f(a,b);
+  if (c.sort === 'visited') return first((a,b) => (visits[b.k]||0) - (visits[a.k]||0) || (b.la||0) - (a.la||0));
+  if (c.sort === 'active') return first((a,b) => (b.la||0) - (a.la||0));
+  if (c.sort === 'name') return first((a,b) => a.n.localeCompare(b.n));
+  if (c.sort === 'manual') return first((a,b) => manualIndex(a) - manualIndex(b));
+  return first((a,b) => rank(a) - rank(b) || (rank(a) === 0 ? since(a) - since(b) : (b.la||0) - (a.la||0)));
 }
 
 function rowsFor(ci){
@@ -820,7 +825,7 @@ function itemHTML(s, ci){
   return `<div class="item${sel ? ' sel' : ''}${ring ? ' sel-ring' : ''}" data-k="${esc(s.k)}">
     <span class="ico" title="${esc(tip)}" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
     <span class="body">
-      <span class="top"><span class="name">${esc(s.n)}</span>
+      <span class="top">${s.pri ? `<span class="pri" title="Priority: first in every list. Right-click to change it.">${ic('star', 11, 2.4)}</span>` : ''}<span class="name">${esc(s.n)}</span>
         <span class="age">${ago(s.la)}</span>
       </span>
       <span class="line"><span class="word" title="${esc(tip)}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>

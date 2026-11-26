@@ -986,6 +986,7 @@ final class Switchboard {
             "fa": Int(e.isOpen ? (answeredAt[e.key] ?? 0) : 0),
             "vs": Int(macSeen[e.key] ?? 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
+            "pri": SBBoard.shared.isPriority(e.key, onBoard: e.isOpen && e.agent != "shell"),
             "mv": e.move_to.map { ($0 == "#slot" ? "a slot" : $0.hasPrefix("@") ? (e.move_stage == "slotting" ? (e.machine == nil ? "a slot, then " : "a work tree, then ") : "") + ($0 == "@" ? "this Mac" : String($0.dropFirst())) : SBPaths.tilde($0)) as Any } ?? NSNull(),
             "mvm": e.move_to?.hasPrefix("@") == true,
             "mvr": e.move_to.map { $0 as Any } ?? NSNull(),

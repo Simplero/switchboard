@@ -584,6 +584,16 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             }
         }
         menu.addItem(item(s.st == "handled" ? "Needs me again" : "Mark as handled") { store.send(["op": "ack", "k": s.k]) })
+        // Priority: first in every list. Its Board column can make it one too.
+        if s.a != "shell" {
+            let marked = SBBoard.shared.markedPriority(s.k)
+            menu.addItem(item("Priority (first in every list)", checked: marked) { SBBoard.shared.setPriority(s.k, !marked) })
+            if !marked, let col = SBBoard.shared.priorityColumn(s.k, onBoard: s.isOpen) {
+                let i = NSMenuItem(title: "Priority: it is in “\(col)” on the Board", action: nil, keyEquivalent: "")
+                i.isEnabled = false
+                menu.addItem(i)
+            }
+        }
         menu.addItem(.separator())
         menu.addItem(submenu("Class", (store.payload?.classes ?? []).map { c in
             item(c, checked: s.c == c) { store.send(["op": "cls", "k": s.k, "cls": c]) }

@@ -77,6 +77,7 @@ input.line-edit{border-color:var(--accent)}
 .card.kb::before,.col__head.kb::after{content:"";position:absolute;left:-8px;top:50%;translate:0 -50%;border:6px solid transparent;border-left-color:var(--accent)}
 .col__head.kb::after{left:-10px}
 .col.collapsed.kb{position:relative}
+.prio{width:12px;height:12px;flex:none;fill:var(--needs);stroke:var(--needs);stroke-width:2;stroke-linejoin:round;vertical-align:-1px;margin-right:4px}
 .col__pin{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2.3;stroke-linecap:round;stroke-linejoin:round;margin-left:-2px}
 .board__hint kbd{font:600 11px ui-monospace,SFMono-Regular,monospace;border:1px solid var(--line2);border-radius:4px;padding:0 4px;color:var(--ink2)}
 </style></head>
@@ -115,6 +116,7 @@ const ICON = {
   pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>',
   term: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
+  star: '<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"/>',
   pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
 };
 const ic = (n, cls = '') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
@@ -257,7 +259,7 @@ function cardHTML({r, c, pinned}, col){
   return `<article class="card ${st === 'off' ? 'card--off' : ''} ${st === 'needs' ? 'needs' : ''}" data-k="${esc(r.k)}" ${pinned ? 'data-pinned' : ''} title="${pinned ? `Click to go to “${esc(r.n)}”. Pinned: it stays in Pinned while it is pinned in the sidebar.` : `Click to go to “${esc(r.n)}”. Drag it to another column.`}">
     <span class="card__ico" style="color:var(${color})">${ic(icon, spins ? 'spin' : '')}</span>
     <div class="card__body">
-      <div class="card__tab"><span class="nm">${esc(r.n)}</span>${bubble}</div>
+      <div class="card__tab">${r.pri ? `<svg class="prio" viewBox="0 0 24 24" aria-label="Priority"><title>${c.prio ? 'Priority' : 'Priority: its column is a priority column'}</title>${ICON.star}</svg>` : ''}<span class="nm">${esc(r.n)}</span>${bubble}</div>
       <div class="card__line"><span class="word" style="color:var(${color})">${esc(word)}</span>${next ? ' · ' + next : ''}</div>
       ${title && title !== r.n ? `<h3 class="card__title">${esc(title)}</h3>` : ''}
       ${note}${lin}
@@ -294,7 +296,7 @@ function render(){
     const nameEdit = editing && editing.col === col.id;
     const empty = pin ? 'Pin a session in the sidebar and it shows here.' : filtering() ? 'No match here.' : 'Drag a session here.';
     return `<section class="col col--${esc(col.color)}" data-col="${esc(col.id)}">
-      <div class="col__head" data-colhead="${esc(col.id)}" title="${pin ? 'Your pinned sessions, in the sidebar’s order. Drag to move the column.' : 'Drag to move the column. Double-click the name to rename it.'}">${pin ? `<svg class="col__pin" viewBox="0 0 24 24" aria-hidden="true">${ICON.pin}</svg>` : ''}<span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
+      <div class="col__head" data-colhead="${esc(col.id)}" title="${pin ? 'Your pinned sessions, in the sidebar’s order. Drag to move the column.' : 'Drag to move the column. Double-click the name to rename it.'}">${pin ? `<svg class="col__pin" viewBox="0 0 24 24" aria-hidden="true">${ICON.pin}</svg>` : ''}${col.prio ? `<svg class="prio" viewBox="0 0 24 24" aria-label="Priority column"><title>Priority column: its sessions come first in every list of the sidebar.</title>${ICON.star}</svg>` : ''}<span class="name" ${nameEdit ? 'contenteditable="true"' : ''}>${esc(col.name)}</span><span class="col__count">${list.length}</span><button class="col__more" data-colmenu="${esc(col.id)}" aria-label="Column ${esc(col.name)}">⋯</button></div>
       ${list.length ? list.map(x => cardHTML(x, col)).join('') : `<div class="col__empty">${empty}</div>`}
     </section>`;
   }).join('');
@@ -366,6 +368,7 @@ function cardMenu(k, x, y){
   const waits = new Set(c.waits || []);
   openPop(x, y, `
     <button data-a="note">✎ ${c.note ? 'Edit the note' : 'Add a note'}</button>
+    <button data-a="prio"><span class="check">${c.prio ? '✓' : ''}</span>Priority (first in every list)</button>
     <button data-a="linear">${I.lin.replace('<svg', '<svg width="13" height="13" style="stroke:currentColor;fill:none;stroke-width:2"')} ${c.linear ? 'Change the Linear link' : 'Link to Linear'}</button>
     <div class="cap">Waits for</div>
     ${others.length ? others.map(o => `<button data-a="wait" data-k="${esc(o.k)}"><span class="check">${waits.has(o.k) ? '✓' : ''}</span>${esc(o.n)}</button>`).join('') : '<div class="cap" style="text-transform:none;font-weight:500">No other sessions.</div>'}
@@ -374,6 +377,7 @@ function cardMenu(k, x, y){
     <hr><button data-a="hide">Remove from the board</button>`}`,
     a => {
       if (a.a === 'note' || a.a === 'linear'){ editing = {k, what: a.a}; render(); return; }
+      if (a.a === 'prio') setCard(k, c => { if (c.prio) delete c.prio; else c.prio = true; });
       if (a.a === 'wait') setCard(k, c => { const s = new Set(c.waits || []); s.has(a.k) ? s.delete(a.k) : s.add(a.k); c.waits = [...s]; });
       if (a.a === 'move') moveCard(k, a.col, null);
       if (a.a === 'hide') setCard(k, c => { c.hidden = true; });
@@ -384,13 +388,14 @@ function colMenu(id, x, y){
   const col = board.cols.find(c => c.id === id);
   const pin = id === PIN, others = board.cols.filter(c => c.id !== id && c.id !== PIN);
   openPop(x, y, `
-    ${pin ? '<div class="cap" style="text-transform:none;font-weight:500">Your pinned sessions. Pin and unpin in the sidebar.</div>' : '<button data-a="rename">Rename</button>'}
+    ${pin ? '<div class="cap" style="text-transform:none;font-weight:500">Your pinned sessions. Pin and unpin in the sidebar.</div>' : `<button data-a="rename">Rename</button><button data-a="prio"><span class="check">${col.prio ? '✓' : ''}</span>Priority column (its sessions first in every list)</button>`}
     <div class="sw">${COLORS.map(cl => `<button data-a="color" data-c="${cl}" style="--c:var(--c-${cl})" title="${cl}" aria-label="Color ${cl}">${col.color === cl ? '✓' : ''}</button>`).join('')}</div>
     <button data-a="fold">Fold it</button>
     ${!pin && others.length ? `<hr><button data-a="remove">Remove the column (its cards go to ${esc(others[0].name)})</button>` : ''}`,
     a => {
       if (a.a === 'rename'){ editing = {col: id}; render(); return; }
       if (a.a === 'color') col.color = a.c;
+      if (a.a === 'prio'){ if (col.prio) delete col.prio; else col.prio = true; }
       if (a.a === 'fold') board.collapsed = [...new Set([...(board.collapsed || []), id])];
       if (a.a === 'remove'){
         const to = others[0].id;

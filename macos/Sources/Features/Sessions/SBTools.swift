@@ -131,8 +131,10 @@ final class SBBoard {
         guard let cols = state["cols"] as? [[String: Any]], !cols.isEmpty else { return }
         let clean: [[String: Any]] = cols.prefix(12).compactMap { c in
             guard let id = c["id"] as? String, !id.isEmpty else { return nil }
-            return ["id": String(id.prefix(40)), "name": String((c["name"] as? String ?? "Column").prefix(40)),
-                    "color": String((c["color"] as? String ?? "blue").prefix(20))]
+            var col: [String: Any] = ["id": String(id.prefix(40)), "name": String((c["name"] as? String ?? "Column").prefix(40)),
+                                      "color": String((c["color"] as? String ?? "blue").prefix(20))]
+            if c["prio"] as? Bool == true { col["prio"] = true }
+            return col
         }
         let ids = Set(clean.compactMap { $0["id"] as? String })
         var cards: [String: Any] = [:]
@@ -150,6 +152,48 @@ final class SBBoard {
         }
         // The panel above the terminal shows the column of its session.
         SessionsWeb.banner.pushBannerContext()
+        // Priority sessions go first in the sidebar.
+        Switchboard.shared.publish()
+    }
+
+    // MARK: Priority
+    // A session is a priority when you mark it, or when its column is a priority column.
+    // Priority sessions come first in every list of the sidebar, in any sort order.
+
+    private var cards: [String: [String: Any]] { (json["cards"] as? [String: [String: Any]]) ?? [:] }
+    private var rawCols: [[String: Any]] { (json["cols"] as? [[String: Any]]) ?? [] }
+
+    /// You marked the session itself.
+    func markedPriority(_ k: String) -> Bool { cards[k]?["prio"] as? Bool == true }
+
+    /// The priority column the session is in, if any. `onBoard`: a session without a card
+    /// is in the first column (a running session that is not a shell, as the Board shows it).
+    func priorityColumn(_ k: String, onBoard: Bool) -> String? {
+        let col: String?
+        if let c = cards[k] {
+            if c["hidden"] as? Bool == true { return nil }
+            col = c["col"] as? String
+        } else {
+            col = onBoard ? columns.first?["id"] : nil
+        }
+        guard let col, let c = rawCols.first(where: { $0["id"] as? String == col }), c["prio"] as? Bool == true else { return nil }
+        return c["name"] as? String ?? "Column"
+    }
+
+    func isPriority(_ k: String, onBoard: Bool) -> Bool {
+        markedPriority(k) || priorityColumn(k, onBoard: onBoard) != nil
+    }
+
+    /// Mark or unmark the session itself. A session without a card gets one in the first column.
+    func setPriority(_ k: String, _ on: Bool) {
+        var state = json
+        var all = (state["cards"] as? [String: Any]) ?? [:]
+        var c = (all[k] as? [String: Any]) ?? ["col": columns.first?["id"] ?? "", "at": Int(Date().timeIntervalSince1970)]
+        if on { c["prio"] = true } else { c.removeValue(forKey: "prio") }
+        all[k] = c
+        state["cards"] = all
+        save(state)
+        SessionsDocPanes.shared.pushTools()
     }
 
     /// The Pinned column is the page's own (it shows the pins); a card cannot go there.

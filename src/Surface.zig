@@ -1684,10 +1684,7 @@ fn mouseRefreshLinks(
         const link = (try self.linkAtPos(pos)) orelse break :link .{ null, false };
         switch (link.action) {
             .open => {
-                const str = try self.io.terminal.screens.active.selectionString(alloc, .{
-                    .sel = link.selection,
-                    .trim = false,
-                });
+                const str = try self.linkText(alloc, link.selection, false);
                 break :link .{
                     .{ .url = str },
                     self.config.link_previews == .true,
@@ -4494,9 +4491,24 @@ fn linkAtPin(
     mouse_pin: terminal.Pin,
     mouse_mods: ?input.Mods,
 ) !?Link {
-    if (self.config.links.len == 0) return null;
+    return try linkAtPinIn(
+        self.alloc,
+        self.renderer_state.terminal.screens.active,
+        self.config.links,
+        mouse_pin,
+        mouse_mods,
+    );
+}
 
-    const screen: *terminal.Screen = self.renderer_state.terminal.screens.active;
+fn linkAtPinIn(
+    alloc: Allocator,
+    screen: *terminal.Screen,
+    links: []const DerivedConfig.Link,
+    mouse_pin: terminal.Pin,
+    mouse_mods: ?input.Mods,
+) !?Link {
+    if (links.len == 0) return null;
+
     const line = screen.selectLine(.{
         .pin = mouse_pin,
         .whitespace = null,
@@ -4505,13 +4517,13 @@ fn linkAtPin(
         .semantic_prompt_boundary = true,
     }) orelse return null;
 
-    const strmap = try screen.selectionStringMap(self.alloc, .{
+    const strmap = try screen.selectionStringMap(alloc, .{
         .sel = line,
         .trim = false,
     });
-    defer strmap.deinit(self.alloc);
+    defer strmap.deinit(alloc);
 
-    for (self.config.links) |link| {
+    for (links) |link| {
         // Skip highlight/mods check when mouse_mods is null (double-click mode)
         if (mouse_mods) |mods| switch (link.highlight) {
             .always, .hover => {},
@@ -4526,12 +4538,170 @@ fn linkAtPin(
             if (!sel.contains(screen, mouse_pin)) continue;
             return .{
                 .action = link.action,
-                .selection = sel,
+                // A URL that a program broke into lines itself goes on below.
+                .selection = extendHardWrappedLink(screen, sel),
             };
         }
     }
 
+    // A row in the middle or at the end of a URL that a program broke into lines.
+    return try hardWrappedLinkAbove(alloc, screen, links, mouse_pin, mouse_mods);
+}
+
+// Programs like Claude Code break a long URL into lines themselves: each line
+// ends at the right edge, and the next line goes on after a short indent. The
+// terminal sees separate lines (no soft wrap), so the link regex finds only the
+// first part. These functions put the parts together again.
+const hard_wrap_max_indent = 8;
+const hard_wrap_max_rows = 60;
+
+fn hardWrapCellBlank(c: anytype) bool {
+    return !c.hasText() or c.codepoint() == ' ';
+}
+
+fn hardWrapLastText(cells: anytype) ?usize {
+    var x: usize = cells.len;
+    while (x > 0) {
+        x -= 1;
+        if (!hardWrapCellBlank(cells[x])) return x;
+    }
     return null;
+}
+
+fn hardWrapFirstText(cells: anytype) ?usize {
+    for (cells, 0..) |c, x| if (!hardWrapCellBlank(c)) return x;
+    return null;
+}
+
+/// The row's text ends at the right edge (or one cell before it).
+fn hardWrapAtEdge(cells: anytype, x: usize) bool {
+    const last = hardWrapLastText(cells) orelse return false;
+    return last == x and x + 2 >= cells.len;
+}
+
+/// Characters a URL can have (RFC 3986).
+fn hardWrapUrlChar(cp: u21) bool {
+    if (cp > 127) return false;
+    const ch: u8 = @intCast(cp);
+    if (std.ascii.isAlphanumeric(ch)) return true;
+    return std.mem.indexOfScalar(u8, "-._~:/?#[]@!$&'()*+,;=%", ch) != null;
+}
+
+/// The text a URL goes on with at the start of a row after it: the first word
+/// after a short indent. Null when the row does not go on with a URL.
+fn hardWrapContinuation(row: terminal.Pin) ?struct { first: usize, last: usize } {
+    const cells = row.cells(.all);
+    const first = hardWrapFirstText(cells) orelse return null;
+    if (first > hard_wrap_max_indent) return null;
+    var last = first;
+    while (last + 1 < cells.len and !hardWrapCellBlank(cells[last + 1])) last += 1;
+    var only_digits = true;
+    for (cells[first .. last + 1], 0..) |c, i| {
+        const cp = c.codepoint();
+        if (!hardWrapUrlChar(cp)) return null;
+        if (i < last - first and (cp < '0' or cp > '9')) only_digits = false;
+    }
+    // A list item ("2." or "-") starts a new line, it does not go on with the URL.
+    const end_cp = cells[last].codepoint();
+    if (last - first <= 3 and only_digits and (end_cp == '.' or end_cp == ')')) return null;
+    if (last == first and (end_cp == '-' or end_cp == '*' or end_cp == '+')) return null;
+    return .{ .first = first, .last = last };
+}
+
+/// Goes on from a link that ends at the right edge through the rows that
+/// continue it.
+fn extendHardWrappedLink(screen: *terminal.Screen, sel: terminal.Selection) terminal.Selection {
+    const start = sel.topLeft(screen);
+    var end = sel.bottomRight(screen);
+    var n: usize = 0;
+    while (n < hard_wrap_max_rows) : (n += 1) {
+        if (end.rowAndCell().row.wrap) break;
+        if (!hardWrapAtEdge(end.cells(.all), end.x)) break;
+        var next = end.down(1) orelse break;
+        const cont = hardWrapContinuation(next) orelse break;
+        next.x = @intCast(cont.last);
+        end = next;
+    }
+    return terminal.Selection.init(start, end, false);
+}
+
+/// The link that a click on a later row of a broken URL belongs to: go up
+/// while each row continues the one above, to the row where the URL starts.
+fn hardWrappedLinkAbove(
+    alloc: Allocator,
+    screen: *terminal.Screen,
+    links: []const DerivedConfig.Link,
+    mouse_pin: terminal.Pin,
+    mouse_mods: ?input.Mods,
+) !?Link {
+    var row = mouse_pin;
+    var n: usize = 0;
+    while (n < hard_wrap_max_rows) : (n += 1) {
+        const cont = hardWrapContinuation(row) orelse return null;
+        // The click is on this row's part of the URL (or a row below it).
+        if (n == 0 and (mouse_pin.x < cont.first or mouse_pin.x > cont.last)) return null;
+        var prev = row.up(1) orelse return null;
+        if (prev.rowAndCell().row.wrap) return null;
+        const last = hardWrapLastText(prev.cells(.all)) orelse return null;
+        if (!hardWrapAtEdge(prev.cells(.all), last)) return null;
+        prev.x = @intCast(last);
+
+        // A link on that row that ends at the edge: the URL starts there.
+        const line = screen.selectLine(.{
+            .pin = prev,
+            .whitespace = null,
+            .semantic_prompt_boundary = true,
+        }) orelse return null;
+        const strmap = try screen.selectionStringMap(alloc, .{ .sel = line, .trim = false });
+        defer strmap.deinit(alloc);
+        for (links) |link| {
+            if (mouse_mods) |mods| switch (link.highlight) {
+                .always, .hover => {},
+                .always_mods, .hover_mods => |v| if (!v.equal(mods)) continue,
+            };
+            var it = strmap.searchIterator(link.regex);
+            while (true) {
+                var match = (try it.next()) orelse break;
+                defer match.deinit();
+                const sel = match.selection();
+                if (!sel.bottomRight(screen).eql(prev)) continue;
+                const full = extendHardWrappedLink(screen, sel);
+                if (!full.contains(screen, mouse_pin)) return null;
+                return .{ .action = link.action, .selection = full };
+            }
+        }
+
+        // No link ends on that row: it may itself continue the row above it.
+        prev.x = 0;
+        row = prev;
+    }
+    return null;
+}
+
+/// The text of a link. A URL broken into lines (see extendHardWrappedLink)
+/// comes back as one line again: no line breaks and no indent.
+fn linkText(self: *Surface, alloc: Allocator, sel: terminal.Selection, trim: bool) ![:0]const u8 {
+    return try linkTextIn(alloc, self.io.terminal.screens.active, sel, trim);
+}
+
+fn linkTextIn(alloc: Allocator, screen: *terminal.Screen, sel: terminal.Selection, trim: bool) ![:0]const u8 {
+    const str = try screen.selectionString(alloc, .{ .sel = sel, .trim = trim });
+    if (std.mem.indexOfScalar(u8, str, '\n') == null) return str;
+    defer alloc.free(str);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var i: usize = 0;
+    while (i < str.len) {
+        if (str[i] == '\n') {
+            while (out.items.len > 0 and out.items[out.items.len - 1] == ' ') _ = out.pop();
+            i += 1;
+            while (i < str.len and (str[i] == ' ' or str[i] == '\r')) i += 1;
+            continue;
+        }
+        try out.append(alloc, str[i]);
+        i += 1;
+    }
+    return try alloc.dupeSentinel(u8, out.items, 0);
 }
 
 /// This returns the mouse mods to consider for link highlighting or
@@ -4561,10 +4731,7 @@ fn processLinks(self: *Surface, pos: apprt.CursorPos) !bool {
     const link = try self.linkAtPos(pos) orelse return false;
     switch (link.action) {
         .open => {
-            const str = try self.io.terminal.screens.active.selectionString(self.alloc, .{
-                .sel = link.selection,
-                .trim = false,
-            });
+            const str = try self.linkText(self.alloc, link.selection, false);
             defer self.alloc.free(str);
 
             const resolved_path = try self.resolvePathForOpening(str);
@@ -5207,10 +5374,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 const url_text = switch (link_info.action) {
                     .open => url_text: {
                         // For regex links, get the text from selection
-                        break :url_text (self.io.terminal.screens.active.selectionString(self.alloc, .{
-                            .sel = link_info.selection,
-                            .trim = self.config.clipboard_trim_trailing_spaces,
-                        })) catch |err| {
+                        break :url_text self.linkText(self.alloc, link_info.selection, self.config.clipboard_trim_trailing_spaces) catch |err| {
                             log.err("error reading url string err={}", .{err});
                             return false;
                         };
@@ -6752,5 +6916,45 @@ test "promptClickRelativeRow" {
             pages.pointFromPin(.viewport, prompt) == null,
         );
         try testing.expectEqual(case.expected, promptClickRelativeRow(&pages, prompt, click));
+    }
+}
+
+test "link that a program broke into lines" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    try oni.testing.ensureInit();
+    var re = try oni.Regex.init(configpkg.url.regex, .{}, oni.Encoding.utf8, oni.Syntax.default, null);
+    defer re.deinit();
+    var links = [_]DerivedConfig.Link{.{ .regex = re, .action = .{ .open = {} }, .highlight = .{ .hover = {} } }};
+
+    // 30 columns. Each URL row ends at the edge; the next one goes on after two spaces.
+    var s = try terminal.Screen.init(testing.io, alloc, .{ .cols = 30, .rows = 10, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+    try s.testWriteString("1. Open this URL:\n" ++
+        "  https://example.com/a?b=1&c=\n" ++
+        "  2&d=3%2Fx&e=abcdefghijklmnop\n" ++
+        "  qrst&f=end\n" ++
+        "  2. Paste the code here.\n" ++
+        "  https://example.com/full/lin\n" ++
+        "  2. Next item\n");
+    const want = "https://example.com/a?b=1&c=2&d=3%2Fx&e=abcdefghijklmnopqrst&f=end";
+    // A click on each row of the URL finds the whole URL.
+    for ([_]struct { x: u16, y: u32 }{ .{ .x = 5, .y = 1 }, .{ .x = 10, .y = 2 }, .{ .x = 4, .y = 3 } }) |c| {
+        const pin = s.pages.pin(.{ .active = .{ .x = c.x, .y = c.y } }).?;
+        const link = (try linkAtPinIn(alloc, &s, &links, pin, null)) orelse return error.NoLink;
+        const str = try linkTextIn(alloc, &s, link.selection, false);
+        defer alloc.free(str);
+        try testing.expectEqualStrings(want, str);
+    }
+    // Text after the URL on its last row, and the indent, are not part of it.
+    try testing.expect(try linkAtPinIn(alloc, &s, &links, s.pages.pin(.{ .active = .{ .x = 0, .y = 3 } }).?, null) == null);
+    // A list item after a URL that ends at the edge starts a new line.
+    {
+        const pin = s.pages.pin(.{ .active = .{ .x = 5, .y = 5 } }).?;
+        const link = (try linkAtPinIn(alloc, &s, &links, pin, null)) orelse return error.NoLink;
+        const str = try linkTextIn(alloc, &s, link.selection, false);
+        defer alloc.free(str);
+        try testing.expectEqualStrings("https://example.com/full/lin", str);
+        try testing.expect(try linkAtPinIn(alloc, &s, &links, s.pages.pin(.{ .active = .{ .x = 3, .y = 6 } }).?, null) == null);
     }
 }

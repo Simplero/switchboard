@@ -181,7 +181,23 @@ final class SessionsAPI {
                     if req.method == "POST", req.path == "/sb/tooljs", req.headers["x-token"] == self.token {
                         // For checks: run JS in a tool page ({"page": "board", "js": "..."}), as clicks there would.
                         let kind = (req.json["page"] as? String).flatMap(SBToolPage.Kind.init(rawValue:)) ?? .board
-                        SessionsDocPanes.shared.toolPage(kind).webView.evaluateJavaScript(req.json["js"] as? String ?? "") { out, err in
+                        let web = SessionsDocPanes.shared.toolPage(kind).webView
+                        // {"click": [x, y]}: first a real mouse click at that point of the page.
+                        if let xy = req.json["click"] as? [Double], xy.count == 2, let w = web.window {
+                            let p = web.convert(NSPoint(x: xy[0], y: web.isFlipped ? xy[1] : web.bounds.height - xy[1]), to: nil)
+                            for type in [NSEvent.EventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
+                                if let ev = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                               windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) {
+                                    switch type {
+                                    case .mouseMoved: web.mouseMoved(with: ev)
+                                    case .leftMouseDown: web.mouseDown(with: ev)
+                                    default: web.mouseUp(with: ev)
+                                    }
+                                }
+                                RunLoop.current.run(until: Date().addingTimeInterval(0.12))
+                            }
+                        }
+                        web.evaluateJavaScript(req.json["js"] as? String ?? "") { out, err in
                             Task { @MainActor in
                                 self.respond(conn, status: err == nil ? 200 : 500, body: ["out": out.map { "\($0)" } ?? "", "error": err.map { "\($0)" } ?? ""])
                             }

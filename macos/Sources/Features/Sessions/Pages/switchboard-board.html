@@ -141,8 +141,11 @@ let cur = null;       // the keyboard's place: {k, col} on a card, {col} on a co
 window.SB = {
   setData(p, extra){
     rows = (p && p.s) || [];
-    if (extra && extra.board && !editing && !dragK && !dragCol){
+    // A board sent before your last change got there is older than what you see: it waits.
+    const fresh = !extra || extra.boardRev == null || extra.boardRev >= needRev;
+    if (extra && extra.board && fresh && !editing && !dragK && !dragCol){
       board = structuredClone(extra.board);
+      if (extra.boardRev != null) boardRev = extra.boardRev;
       for (const c of board.cols) if (!COLORS.includes(c.color)) c.color = c.color === 'purple' ? 'violet' : 'gray';
       if (!board.cols.some(c => c.id === PIN)){ board.cols.unshift({id: PIN, name: 'Pinned', color: 'gray'}); save(); }
     }
@@ -164,7 +167,8 @@ function rekey(){
   }
   if (changed) save();
 }
-const save = () => bridge('board', {board});
+let boardRev = 0, needRev = 0;
+const save = () => { needRev = Math.max(needRev, boardRev) + 1; bridge('board', {board}); };
 const rowOf = k => rows.find(r => r.k === k);
 
 // [filter group, the state's badge]. The badge is the sidebar's: its icon (the spinner while

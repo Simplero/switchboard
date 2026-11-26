@@ -38,7 +38,7 @@ final class SBToolPage: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     /// The sessions, the board and the session in front, for the page.
     func push() {
         guard loaded, let json = Switchboard.shared.currentJSON() else { return }
-        var extra: [String: Any] = ["board": SBBoard.shared.json, "front": SessionsStore.shared.focusedSurfaceID ?? ""]
+        var extra: [String: Any] = ["board": SBBoard.shared.json, "boardRev": SBBoard.shared.rev, "front": SessionsStore.shared.focusedSurfaceID ?? ""]
         extra["now"] = Int(Date().timeIntervalSince1970)
         guard let e = try? JSONSerialization.data(withJSONObject: extra) else { return }
         webView.evaluateJavaScript("window.SB && SB.setData(\(json), \(String(decoding: e, as: UTF8.self)))")
@@ -106,6 +106,8 @@ final class SBBoard {
     static let shared = SBBoard()
     static var path: String { SBPaths.data + "/board.json" }
     private(set) var json: [String: Any]
+    /// Goes up with each save. A page drops a board older than its own last change.
+    private(set) var rev = 0
 
     static let start: [String: Any] = [
         "cols": [
@@ -128,6 +130,7 @@ final class SBBoard {
 
     /// Only what a board has: columns (id, name, color), cards by session key, folded columns.
     func save(_ state: [String: Any]) {
+        rev += 1
         guard let cols = state["cols"] as? [[String: Any]], !cols.isEmpty else { return }
         let clean: [[String: Any]] = cols.prefix(12).compactMap { c in
             guard let id = c["id"] as? String, !id.isEmpty else { return nil }
@@ -146,7 +149,18 @@ final class SBBoard {
             c["pos"] = (c["pos"] as? NSNumber)?.doubleValue ?? 0
             cards[String(k.prefix(120))] = c
         }
+        let prioBefore = rawCols.filter { $0["prio"] as? Bool == true }.compactMap { $0["name"] as? String }
         json = ["cols": clean, "cards": cards, "collapsed": ((state["collapsed"] as? [String]) ?? []).filter { ids.contains($0) }]
+        // board.log: when the priority columns change, so a mark that did not stay can be traced.
+        let prioAfter = clean.filter { $0["prio"] as? Bool == true }.compactMap { $0["name"] as? String }
+        if prioBefore != prioAfter {
+            let line = "\(ISO8601DateFormatter().string(from: Date())) priority columns: \(prioBefore) → \(prioAfter)\n"
+            SBFiles.queue.async {
+                let path = SBPaths.data + "/board.log"
+                if let h = FileHandle(forWritingAtPath: path) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+                else { FileManager.default.createFile(atPath: path, contents: Data(line.utf8)) }
+            }
+        }
         if let d = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]) {
             SBFiles.queue.async { _ = SBFiles.writeAtomic(d, Self.path) }
         }

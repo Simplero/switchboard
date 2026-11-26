@@ -19,6 +19,10 @@
       <key>CFBundleURLSchemes</key><array><string>http</string><string>https</string></array>
       <key>LSHandlerRank</key><string>Default</string>
     </dict>
+    <dict>
+      <key>CFBundleURLName</key><string>Link in the background</string>
+      <key>CFBundleURLSchemes</key><array><string>x-link-router</string></array>
+    </dict>
   </array>
   <key>CFBundleDocumentTypes</key>
   <array>

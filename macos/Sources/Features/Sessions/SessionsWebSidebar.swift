@@ -882,8 +882,18 @@ enum SessionsLinkOpener {
     /// A test copy (SWITCHBOARD_QUIET) only notes the links it would open.
     static var lastOpened: [String] = []
 
-    static func open(_ url: URL, nextToSession: Bool = true) {
-        if SBPaths.quiet { lastOpened.append(url.absoluteString); return }
+    /// A page on a test server (*.test, *.internal, localhost), as Link Router sends to Chrome.
+    static func isTestServer(_ url: URL) -> Bool {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return false }
+        let host = (url.host ?? "").lowercased()
+        return host.hasSuffix(".test") || host.hasSuffix(".internal")
+            || ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"].contains(host)
+    }
+
+    /// `background`: the browser opens the page but does not come to the front (a test-server
+    /// link ⌘-clicked in the terminal): you stay in Switchboard.
+    static func open(_ url: URL, nextToSession: Bool = true, background: Bool = false) {
+        if SBPaths.quiet { lastOpened.append((background ? "background " : "") + url.absoluteString); return }
         if nextToSession, SessionsDocPanes.isDoc(url), Thread.isMainThread {
             let shown: Bool = MainActor.assumeIsolated {
                 guard let ws = SessionsDocPanes.frontSession else { return false }
@@ -893,6 +903,27 @@ enum SessionsLinkOpener {
             if shown { return }
         }
         let web = ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+        if web, background {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = false
+            var c = URLComponents()
+            c.scheme = "x-link-router"
+            c.path = "background"
+            c.queryItems = [URLQueryItem(name: "url", value: url.absoluteString)]
+            if let router = NSWorkspace.shared.urlForApplication(withBundleIdentifier: routerID),
+               routerOpensInBackground(router), let bg = c.url {
+                NSWorkspace.shared.open([bg], withApplicationAt: router, configuration: config) { _, error in
+                    if error != nil { DispatchQueue.main.async { open(url, nextToSession: false) } }
+                }
+                return
+            }
+            if let browser = NSWorkspace.shared.urlForApplication(toOpen: url) {
+                NSWorkspace.shared.open([url], withApplicationAt: browser, configuration: config) { _, error in
+                    if error != nil { DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
+                }
+                return
+            }
+        }
         if web, let router = NSWorkspace.shared.urlForApplication(withBundleIdentifier: routerID) {
             NSWorkspace.shared.open([url], withApplicationAt: router, configuration: NSWorkspace.OpenConfiguration()) { _, error in
                 if error != nil { DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
@@ -900,5 +931,11 @@ enum SessionsLinkOpener {
             return
         }
         NSWorkspace.shared.open(url)
+    }
+
+    /// An older Link Router does not know x-link-router: links: it would drop the link.
+    private static func routerOpensInBackground(_ router: URL) -> Bool {
+        let types = Bundle(url: router)?.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? []
+        return types.contains { ($0["CFBundleURLSchemes"] as? [String] ?? []).contains("x-link-router") }
     }
 }

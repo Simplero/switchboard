@@ -30,6 +30,8 @@ final class SessionsDocPanes: ObservableObject {
     }
 
     func open(_ url: URL, session ws: String) {
+        // In this session (⌘I) is over the Doc: close it, so the Doc you clicked is in front.
+        if tool == SBToolPage.Kind.session.rawValue { tool = nil }
         let page = pages[ws] ?? DocPage()
         pages[ws] = page
         page.load(url)

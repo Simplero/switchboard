@@ -860,7 +860,8 @@ extension Ghostty {
             switch target.decision {
             case .allow(let url):
                 // Switchboard: web links go where Link Router sends them (dev pages to Chrome…).
-                SessionsLinkOpener.open(url)
+                // A test-server page opens behind Switchboard: you stay in the session.
+                SessionsLinkOpener.open(url, background: SessionsLinkOpener.isTestServer(url))
 
             case .confirm(let url):
                 UntrustedURLAlert.presentConfirmation(

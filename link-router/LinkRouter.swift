@@ -10,6 +10,9 @@
 //   Space: "docs" in arc-spaces.json, else the Space of ~/.claude.
 // - Every other link opens in Arc.
 //
+// x-link-router:background?url=<link> (Switchboard: a test-server link ⌘-clicked in the
+// terminal) opens the link the same way, but the browser does not come to the front.
+//
 // It has no window and no Dock icon, and quits a minute after the last link.
 //   Link Router --make-default    ask macOS to make it the default browser
 //   Link Router --default-arc     make Arc the default browser again
@@ -104,17 +107,44 @@ func isRunning(_ id: String) -> Bool { !NSRunningApplication.runningApplications
 
 /// Open in a browser by id; if it is not installed, in Safari. Never through the default
 /// browser: that is this app, and the link would come straight back.
-func openWith(_ id: String, _ url: URL) {
+func openWith(_ id: String, _ url: URL, background: Bool = false) {
     guard let app = appURL(id) ?? appURL("com.apple.Safari") else { NSLog("Link Router: no browser for %@", url.absoluteString); return }
-    NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+    let config = NSWorkspace.OpenConfiguration()
+    config.activates = !background
+    NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config) { _, error in
         if let error { NSLog("Link Router: %@", error.localizedDescription) }
     }
 }
 
 /// Chrome: bring the tab that already shows this page to the front, else open a new tab.
-func openInChrome(_ url: URL) {
+/// `background`: the same, but Chrome stays behind the app you are in.
+func openInChrome(_ url: URL, background: Bool = false) {
     let u = url.absoluteString
-    if isRunning(chromeID), !u.contains("\""), !u.contains("\\") {
+    if background, isRunning(chromeID), !u.contains("\""), !u.contains("\\") {
+        let targets = "{" + variants(url).map(asLiteral).joined(separator: ", ") + "}"
+        let script = """
+        tell application id "\(chromeID)"
+          set targets to \(targets)
+          considering case
+            repeat with wi from 1 to count of windows
+              set w to window wi
+              set wl to URL of every tab of w
+              repeat with ti from 1 to count of wl
+                if targets contains (item ti of wl) then
+                  set active tab index of w to ti
+                  return "focused"
+                end if
+              end repeat
+            end repeat
+          end considering
+          if (count of windows) = 0 then make new window
+          tell window 1 to make new tab with properties {URL:\(asLiteral(u))}
+          return "opened"
+        end tell
+        """
+        if runScript(script) != nil { return }
+    }
+    if !background, isRunning(chromeID), !u.contains("\""), !u.contains("\\") {
         let targets = "{" + variants(url).map(asLiteral).joined(separator: ", ") + "}"
         let script = """
         tell application id "\(chromeID)"
@@ -138,7 +168,7 @@ func openInChrome(_ url: URL) {
         """
         if runScript(script) == "focused" { return }
     }
-    openWith(chromeID, url)
+    openWith(chromeID, url, background: background)
 }
 
 /// Arc: in the given Space (its profile is signed in to the right claude.ai account).
@@ -191,6 +221,16 @@ func openInArc(_ url: URL, space: String?) {
 }
 
 func open(_ url: URL) {
+    if url.scheme?.lowercased() == "x-link-router" {
+        // x-link-router:background?url=<link>
+        guard let s = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
+              let link = URL(string: s), let scheme = link.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return }
+        switch route(link) {
+        case .chrome: openInChrome(link, background: true)
+        case .arc: openWith(arcID, link, background: true)
+        }
+        return
+    }
     guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
         // A local HTML file or another scheme: Arc shows it.
         openWith(arcID, url)

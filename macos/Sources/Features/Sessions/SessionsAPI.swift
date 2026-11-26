@@ -547,7 +547,7 @@ final class SessionsAPI {
                 page.find(backwards: req.json["back"] as? Bool == true)
             } else if req.json["endfind"] as? Bool == true { SessionsDocPanes.shared.pages[controller.sessionsWorkspace]?.closeFind() }
             else { SessionsDocPanes.shared.open(url, session: controller.sessionsWorkspace) }
-            return (200, ["session": controller.sessionsWorkspace])
+            return (200, ["session": controller.sessionsWorkspace, "tool": SessionsDocPanes.shared.tool ?? ""])
         case ("POST", "/sb/dragcheck"):
             // For checks: drag the page pane's divider by dx points with real mouse events.
             guard let view = surface(req.json["id"] as? String),

@@ -10,6 +10,7 @@
   --ink:#17171A; --ink2:#3A3A42; --muted:#5A5A62; --muted2:#7A7A82; --faint:#A0A0A7;
   --accent:#2D5BE3; --accent-soft:#E7EDFD; --sel:#3B5BDB; --sel-ink:#FFFFFF;
   --needs:#C25A12; --needs-soft:#FCEFE4; --work:#2D5BE3; --done:#1E7A4C; --label:#2D5BE3;
+  --c-blue:#2D5BE3; --c-yellow:#B7791F; --c-violet:#6E4BD8; --c-pink:#C2357A; --c-aqua:#1B8A9C; --c-lime:#5E8A12; --c-gray:#7A7A82;
 }
 @media (prefers-color-scheme: dark){
   :root{
@@ -17,6 +18,7 @@
     --ink:#EDEDF0; --ink2:#C9C9CF; --muted:#A3A3AA; --muted2:#85858D; --faint:#606068;
     --accent:#7FA2FF; --accent-soft:#232B45; --sel:#3B5BDB; --sel-ink:#FFFFFF;
     --needs:#F2A15C; --needs-soft:#3A2618; --work:#7FA2FF; --done:#5BC98E; --label:#7FA2FF;
+    --c-blue:#7FA2FF; --c-yellow:#E5B85C; --c-violet:#B39BFF; --c-pink:#F28CB8; --c-aqua:#6FCFDC; --c-lime:#A9D267; --c-gray:#8A8A92;
   }
   #scrim{background:rgba(0,0,0,.35)}
   #newform{box-shadow:0 14px 36px rgba(0,0,0,.55),0 2px 6px rgba(0,0,0,.3)}
@@ -256,6 +258,12 @@ body.dragging-rows,body.dragging-rows *{cursor:grabbing!important}
 .hit:hover{background:var(--sunk)}
 .hit .r1{display:flex;gap:7px;align-items:baseline;min-width:0}
 .hit .nm{font-weight:600;font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* Its Board column: the column's name, with a dot in the column's color (the name says it, not the color). */
+.bk{flex:none;display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;color:var(--muted);background:var(--sunk);border-radius:4px;padding:0 5px;line-height:1.5;white-space:nowrap;max-width:9em;overflow:hidden;text-overflow:ellipsis}
+.bk i{flex:none;width:6px;height:6px;border-radius:3px;background:var(--col,var(--c-gray))}
+.item .top .bk{align-self:center}
+.item.sel .bk{background:rgba(255,255,255,.18);color:#fff}
+.item.sel .bk i{box-shadow:0 0 0 1px #fff}
 .hit .tag{flex:none;font-size:10px;font-weight:600;color:var(--muted2);border:1px dashed var(--line2);border-radius:4px;padding:0 4px}
 .hit .age{margin-left:auto;flex:none;font-size:10.5px;color:var(--muted2)}
 .hit .sn{font-size:12px;line-height:1.45;color:var(--ink2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
@@ -800,13 +808,19 @@ function parkedHTML(s){
     </span></div>`;
 }
 
+// The session's Board column (⌘B): a dot in the column's color and the column's name.
+function bkHTML(s){
+  const b = s.bk;
+  return b ? `<span class="bk" style="--col:var(--c-${esc(b.c)})" title="On the Board (⌘B) in ${esc(b.n)}. Right-click › Move to column to move it."><i></i>${esc(b.n)}</span>` : '';
+}
+
 function itemHTML(s, ci){
   if ((s.o && s.be !== 'ghostty') || s.el){
     // Running in another terminal (cmux) or the Claude app: one line. A click asks, then moves it here.
     const working = stateOf(s) === 'working', app = s.be === 'claude-app', there = s.m && !s.o;
     return `<div class="else" data-k="${esc(s.k)}" title="${there ? `Runs on ${esc(s.m)}, with no terminal here. Click to show it here.` : app ? 'Runs in the Claude app. Click to move it here.' : 'Running in another terminal (cmux or another app). Click to move it here.'}">
       <span class="dot">${working ? ic('spin',11,2.4,'spin') : '<i></i>'}</span>
-      <span class="nm">${esc(s.n)}</span><span class="tag">${there ? 'on ' + esc(s.m) : app ? 'Claude app' : 'elsewhere'}</span>
+      <span class="nm">${esc(s.n)}</span>${bkHTML(s)}<span class="tag">${there ? 'on ' + esc(s.m) : app ? 'Claude app' : 'elsewhere'}</span>
       <span class="age">${ago(s.la)}</span></div>`;
   }
   if (!s.o){
@@ -815,7 +829,7 @@ function itemHTML(s, ci){
     const app = s.be === 'claude-app';
     return `<div class="old" data-k="${esc(s.k)}" title="${s.ar ? 'In the Archive. Click to resume it here (it leaves the Archive).' : app ? 'From the Claude app, not running. Click to resume it here.' : s.pk ? 'Parked: its work is on a parked/… branch. Click to resume it here.' : 'Not running. It stays here until you archive it. Click to resume it here.'}">
       <span style="color:var(--faint)">${ic(L[0],11,2)}</span>
-      <span class="nm">${esc(s.n)}</span>${app ? '<span class="tag">Claude app</span>' : ''}<span class="tt">${esc(s.t || s.ns || (app ? s.lm : '') || '')}</span>
+      <span class="nm">${esc(s.n)}</span>${bkHTML(s)}${app ? '<span class="tag">Claude app</span>' : ''}<span class="tt">${esc(s.t || s.ns || (app ? s.lm : '') || '')}</span>
       <span class="age">${ago(s.ca || s.la)}</span></div>`;
   }
   const st = stateOf(s), fresh = isNewAnswer(s);
@@ -829,7 +843,7 @@ function itemHTML(s, ci){
   return `<div class="item${sel ? ' sel' : ''}${ring ? ' sel-ring' : ''}" data-k="${esc(s.k)}">
     <span class="ico" title="${esc(tip)}" style="color:${sel ? 'var(--sel-ink)' : `var(${L[3]})`}">${ic(L[0], 14, 2.2, st==='working'?'spin':'')}</span>
     <span class="body">
-      <span class="top">${s.pri ? `<span class="pri" title="Priority: first in every list. Right-click to change it.">${ic('star', 11, 2.4)}</span>` : ''}<span class="name">${esc(s.n)}</span>
+      <span class="top">${s.pri ? `<span class="pri" title="Priority: first in every list. Right-click to change it.">${ic('star', 11, 2.4)}</span>` : ''}<span class="name">${esc(s.n)}</span>${bkHTML(s)}
         <span class="age">${ago(s.la)}</span>
       </span>
       <span class="line"><span class="word" title="${esc(tip)}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>

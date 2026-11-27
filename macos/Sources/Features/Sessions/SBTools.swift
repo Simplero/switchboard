@@ -246,6 +246,13 @@ final class SBBoard {
         return onBoard ? columns.first?["id"] ?? "" : ""
     }
 
+    /// The column the session is in, for the sidebar: its name and color (nil = not on the Board).
+    func columnInfo(of k: String, onBoard: Bool) -> [String: String]? {
+        let id = column(of: k, onBoard: onBoard)
+        guard !id.isEmpty, let c = columns.first(where: { $0["id"] == id }) else { return nil }
+        return ["n": c["name"] ?? "Column", "c": c["color"] ?? "gray"]
+    }
+
     /// Put a session's card at the end of a column (nil: take it off the Board), as a drag on
     /// the Board does.
     func move(_ k: String, to col: String?) {

@@ -1002,6 +1002,9 @@ final class Switchboard {
             "vs": Int(macSeen[e.key] ?? 0),
             "pn": n(e.pinned), "pc": n(e.pin_cmd),
             "pri": SBBoard.shared.isPriority(e.key, onBoard: e.isOpen && e.agent != "shell"),
+            // Its Board column (the sidebar says it on the row). Pins are in Pinned; the Archive is not on the Board.
+            "bk": (e.pinned != nil || (e.archived == true && !e.isOpen)) ? NSNull() as Any
+                : SBBoard.shared.columnInfo(of: e.key, onBoard: e.isOpen && e.agent != "shell").map { $0 as Any } ?? NSNull(),
             "mv": e.move_to.map { ($0 == "#slot" ? "a slot" : $0.hasPrefix("@") ? (e.move_stage == "slotting" ? (e.machine == nil ? "a slot, then " : "a work tree, then ") : "") + ($0 == "@" ? "this Mac" : String($0.dropFirst())) : SBPaths.tilde($0)) as Any } ?? NSNull(),
             "mvm": e.move_to?.hasPrefix("@") == true,
             "mvr": e.move_to.map { $0 as Any } ?? NSNull(),

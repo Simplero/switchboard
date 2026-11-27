@@ -83,10 +83,18 @@ enum SBBackground {
         }
         let machines = SBMachines.all
         for (tty, r) in remote where best[tty] == nil {
+            let name = machines.first(where: { $0.host == r.a.host })?.name ?? r.a.host
+            if r.a.kind != "claude" {
+                // Codex, Grok or Antigravity there: its own id once the helper there found it
+                // (until then the terminal is the session). Its history syncs back, its screen is here.
+                out.append(Agent(pid: Int(r.pid), kind: r.a.kind, tty: tty, loginDir: SBLogins.norm(nil),
+                                 sid: SBMachines.alias(host: r.a.host, r.a.sid), cwd: r.a.folder, branch: nil,
+                                 transcriptTitle: nil, transcriptMtime: nil, machine: name))
+                continue
+            }
             // Its conversation comes back here through the synced projects folder.
             let t = transcript(r.a.sid)
             let more = transcriptDetails(r.a.sid)
-            let name = machines.first(where: { $0.host == r.a.host })?.name ?? r.a.host
             out.append(Agent(pid: Int(r.pid), kind: "claude", tty: tty, loginDir: SBLogins.norm(r.a.login), sid: r.a.sid,
                              cwd: r.a.folder, branch: nil, transcriptTitle: t.title, transcriptMtime: t.mtime, machine: name,
                              model: more.model, lastCwd: more.cwd))

@@ -719,6 +719,11 @@ final class Switchboard {
                 }
             }
             if st == "working" { e.summary = nil }
+            // Codex, Grok or Antigravity on another machine: no conversation file here to date it,
+            // so its screen does (a new answer, or when it started).
+            if a.transcriptMtime == nil, a.machine != nil, e.last_activity == nil || (e.summary_key != skey && st != "working") {
+                e.last_activity = now
+            }
             e.summary_key = skey
             e.split = t.surfacesInTab > 1
             let wasState = e.state
@@ -1215,7 +1220,11 @@ final class Switchboard {
     private func resumeCommand(_ e: SBEntry) -> String? {
         if let name = e.machine {
             // On another machine: attach to it there (it may still run), else resume it there.
-            guard e.agent == "claude", let sid = e.session_id, let m = SBMachines.named(name) else { return nil }
+            guard let sid = e.session_id, let m = SBMachines.named(name) else { return nil }
+            if e.agent != "claude" {
+                guard Self.otherAgents[e.agent ?? ""] != nil else { return nil }
+                return SBMachines.attachCommand(m, sid: sid, login: "-", folder: e.cwd ?? "~", mode: "resume", agent: e.agent ?? "")
+            }
             return SBMachines.attachCommand(m, sid: sid, login: e.login_dir ?? "~/.claude", folder: e.cwd ?? "~", mode: "resume")
         }
         if let sid = e.session_id, !sid.isEmpty {
@@ -1279,7 +1288,10 @@ final class Switchboard {
             // From the sidebar's new-session form: a first message, files and a name, all optional.
             if let kind = msg["agent"] as? String, kind != "claude" {
                 if let m = msg["machine"] as? String, !m.isEmpty {
-                    return (false, "\(Self.otherAgents[kind]?.name ?? kind) runs on this Mac only. Pick This Mac, or Claude for \(m).")
+                    let r = await newRemoteAgent(kind, on: m, focus: msg["select"] as? Bool ?? true, cwd: msg["cwd"] as? String,
+                                                 prompt: msg["prompt"] as? String, name: msg["name"] as? String,
+                                                 files: msg["files"] as? [String] ?? [])
+                    return (r.ok, r.message)
                 }
                 let r = newOtherAgent(kind, focus: msg["select"] as? Bool ?? true, cwd: msg["cwd"] as? String,
                                       prompt: msg["prompt"] as? String, name: msg["name"] as? String, files: msg["files"] as? [String] ?? [])
@@ -2404,6 +2416,29 @@ final class Switchboard {
     /// Mac shows it in a terminal over ssh. The first message and the files you added go there first.
     func newRemoteClaude(_ machine: String, login loginDir: String, focus: Bool = true, cwd: String? = nil, prompt: String? = nil,
                          name: String? = nil, files: [String] = []) async -> (ok: Bool, message: String, surface: String?) {
+        await newRemote("claude", on: machine, login: loginDir, focus: focus, cwd: cwd, prompt: prompt, name: name, files: files)
+    }
+
+    /// A new Codex, Grok or Antigravity session on another machine, the same way as Claude. They
+    /// cannot start on an id we give them: the helper there renames it (/rename) to the name you
+    /// gave, finds its own id, then sends the first message.
+    func newRemoteAgent(_ kind: String, on machine: String, focus: Bool = true, cwd: String? = nil, prompt: String? = nil,
+                        name: String? = nil, files: [String] = []) async -> (ok: Bool, message: String, surface: String?) {
+        guard Self.otherAgents[kind] != nil else { return (false, "Switchboard cannot start “\(kind)”.", nil) }
+        return await newRemote(kind, on: machine, login: "-", focus: focus, cwd: cwd, prompt: prompt, name: name, files: files)
+    }
+
+    /// The name a new Codex, Grok or Antigravity session gets there (its /rename): the name you
+    /// gave, else its folder. Codex and Grok find a conversation by its name, so it must be its
+    /// own: with no name, or a name another session has, the start of its id goes after it.
+    func remoteAgentName(_ label: String?, folder: String, sid: String) -> String {
+        let base = label ?? ((folder as NSString).lastPathComponent.isEmpty || folder == "~" ? "session" : (folder as NSString).lastPathComponent)
+        let taken = reg.sessions.values.contains { ($0.name ?? "").caseInsensitiveCompare(base) == .orderedSame }
+        return label == nil || taken ? "\(base) · \(sid.prefix(4))" : base
+    }
+
+    private func newRemote(_ kind: String, on machine: String, login loginDir: String, focus: Bool, cwd: String?, prompt: String?,
+                           name: String?, files: [String]) async -> (ok: Bool, message: String, surface: String?) {
         guard let m = SBMachines.named(machine) else { return (false, "Switchboard does not know the machine \(machine).", nil) }
         let st = await SBMachines.prepare(m)
         guard st.ok, let home = st.home else { return (false, st.message.isEmpty ? "\(m.name) does not answer." : st.message, nil) }
@@ -2426,15 +2461,32 @@ final class Switchboard {
             }
             first = p
         }
-        let folder = (cwd ?? Self.defaultFolder).trimmingCharacters(in: .whitespacesAndNewlines)
+        var folder = (cwd ?? Self.defaultFolder).trimmingCharacters(in: .whitespacesAndNewlines)
+        if folder.isEmpty { folder = Self.defaultFolder }
         let label = Self.sessionLabel(name)
-        let command = SBMachines.attachCommand(m, sid: sid, login: loginDir, folder: folder.isEmpty ? Self.defaultFolder : folder, mode: "new", first: first, name: label)
+        let renameTo = kind == "claude" ? label : remoteAgentName(label, folder: folder, sid: sid)
+        let command = SBMachines.attachCommand(m, sid: sid, login: loginDir, folder: folder, mode: "new", first: first, name: renameTo, agent: kind)
         guard let sf = openAgentTerminal(cwd: "~", command: command, loginDir: nil, focus: focus) else {
             return (false, "Switchboard could not open a terminal.", nil)
         }
         if let label { pendingNames[sf] = (label, now) }
         if focus { SessionsAPI.focusTerminal(sf) }
-        return (true, "Started on \(m.name).", sf)
+        if kind != "claude" { learnAlias(m, sid) }
+        let what = kind == "claude" ? "" : (Self.otherAgents[kind]?.name ?? kind) + " "
+        return (true, "Started \(what)on \(m.name).", sf)
+    }
+
+    /// A new Codex, Grok or Antigravity session there: ask a few times for its own id (the
+    /// helper there finds it once the agent runs), so its row has it soon, not at the next look.
+    private func learnAlias(_ m: SBMachines.Machine, _ sid: String) {
+        Task { @MainActor in
+            for _ in 0..<20 {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                let running = await SBMachines.running(m)
+                if let running { remoteRunning[m.name] = running }
+                if SBMachines.alias(host: m.host, sid) != nil { publish(); return }
+            }
+        }
     }
 
     /// The name you typed for a new session: one line, at most 80 characters.

@@ -13,9 +13,11 @@ import Foundation
 /// links and search work too.
 ///
 /// Switchboard installs a small helper there (~/.local/bin/switchboard-remote) that starts,
-/// attaches to and stops those tmux sessions. Optional keys for checks: "ssh" (the host, if
-/// not the name), "claude" (a stand-in program), "tmux" (the tmux server's name), "projects"
-/// (Claude's projects folder there, instead of ~/.claude/projects).
+/// attaches to and stops those tmux sessions. Codex, Grok and Antigravity run there the same way.
+/// Optional keys for checks: "ssh" (the host, if not the name), "claude" (a stand-in program),
+/// "tmux" (the tmux server's name), "projects" (Claude's projects folder there, instead of
+/// ~/.claude/projects), "agents" (a folder of stand-ins for codex, grok and agy) and
+/// "agent_home" (the folder that has their .codex, .grok and .gemini, instead of the home folder).
 enum SBMachines {
     struct Machine: Codable, Equatable {
         let name: String
@@ -24,6 +26,8 @@ enum SBMachines {
         var tmux: String? = nil
         /// Claude's projects folder there, from its home (checks use their own).
         var projects: String? = nil
+        var agents: String? = nil
+        var agent_home: String? = nil
         /// false: no server for the phone there (SBServe). Its port, when not 4480.
         var serve: Bool? = nil
         var serve_port: Int? = nil
@@ -153,13 +157,35 @@ enum SBMachines {
     }
 
     /// The conversations that run there now (also with no terminal of Switchboard on them).
+    /// It also learns the aliases there (see `alias`).
     static func running(_ m: Machine) async -> Set<String>? {
         let r = await run(m, envPrefix(m) + ".local/bin/switchboard-remote list", timeout: 12)
         guard r.status == 0 else { return nil }
-        return Set(r.out.split(separator: "\n").compactMap { l in
-            let id = l.split(separator: " ").first.map(String.init) ?? ""
+        var found: [String: String] = [:]
+        let ids = Set(r.out.split(separator: "\n").compactMap { l -> String? in
+            let w = l.split(separator: " ").map(String.init)
+            if w.count == 3, w[0] == "alias", SBBackground.isUUID(w[1]), SBBackground.isUUID(w[2]) { found[w[1]] = w[2]; return nil }
+            let id = w.first ?? ""
             return SBBackground.isUUID(id) ? id : nil
         })
+        aliasLock.lock()
+        aliases[m.host] = found
+        aliasLock.unlock()
+        return ids
+    }
+
+    /// Codex, Grok and Antigravity cannot start on an id Switchboard gives them: their tmux
+    /// session starts on one Switchboard makes, and the helper there finds the agent's own
+    /// conversation id once it runs (after /rename). That id names the tmux session from then on.
+    /// By host: Switchboard's id → the agent's. Read off the main thread (the process scan).
+    nonisolated(unsafe) private static var aliases: [String: [String: String]] = [:]
+    private static let aliasLock = NSLock()
+
+    /// The agent's own conversation id for the id Switchboard started it with, once known.
+    static func alias(host: String, _ id: String) -> String? {
+        aliasLock.lock()
+        defer { aliasLock.unlock() }
+        return aliases[host]?[id]
     }
 
     /// The work trees of these folders there (see SBWorktree.script), by folder as given.
@@ -302,6 +328,8 @@ echo "WT=$wt"; echo "BRANCH=$b"
         var s = ""
         if let c = m.claude { s += "SWITCHBOARD_CLAUDE_BIN=\(shq(c)) " }
         if let t = m.tmux { s += "SWITCHBOARD_TMUX=\(shq(t)) " }
+        if let a = m.agents { s += "SWITCHBOARD_AGENT_BIN=\(shq(a)) " }
+        if let h = m.agent_home { s += "SWITCHBOARD_AGENT_HOME=\(shq(h)) " }
         return s
     }
 
@@ -311,10 +339,13 @@ echo "WT=$wt"; echo "BRANCH=$b"
     /// What a terminal here runs to show the session: ssh to the machine, attach to the session
     /// (or start it: `new` with this id, `resume` an existing conversation). When the connection
     /// drops it connects again; when Claude ends, it ends.
-    static func attachCommand(_ m: Machine, sid: String, login: String, folder: String, mode: String, first: String? = nil, name: String? = nil) -> String {
-        // SB_NAME: the name you gave a new session, for Claude's --name there.
+    static func attachCommand(_ m: Machine, sid: String, login: String, folder: String, mode: String, first: String? = nil, name: String? = nil,
+                              agent: String = "claude") -> String {
+        // SB_NAME: the name you gave a new session, for Claude's --name there (/rename for the others).
+        // SB_AGENT: Codex, Grok or Antigravity instead of Claude.
         let named = name.map { "SB_NAME=\(shq($0)) " } ?? ""
-        var remote = envPrefix(m) + named + ".local/bin/switchboard-remote attach \(sid) \(shq(login)) \(shq(folder)) \(mode)"
+        let kind = agent == "claude" ? "" : "SB_AGENT=\(shq(agent)) "
+        var remote = envPrefix(m) + named + kind + ".local/bin/switchboard-remote attach \(sid) \(shq(login)) \(shq(folder)) \(mode)"
         if let first { remote += " " + shq(first) }
         // /usr/bin/ssh, not "ssh": Ghostty's shell integration wraps that name (terminfo setup),
         // which hid the session. The helper there picks a terminal type it knows.
@@ -325,14 +356,15 @@ echo "WT=$wt"; echo "BRANCH=$b"
     }
 
     /// An ssh process that shows a session of a machine: its host and what it attaches to.
-    struct Attached { let host: String; let sid: String; let login: String; let folder: String }
+    struct Attached { let host: String; let sid: String; let login: String; let folder: String; var kind = "claude" }
 
     static func parseAttach(_ args: [String]) -> Attached? {
         guard let first = args.first, (first as NSString).lastPathComponent == "ssh",
               let ri = args.lastIndex(where: { $0.contains("switchboard-remote attach ") }), ri >= 2, args[ri - 1] == "--" else { return nil }
         let words = shellWords(args[ri])
         guard let ai = words.firstIndex(of: "attach"), words.count >= ai + 5, SBBackground.isUUID(words[ai + 1]) else { return nil }
-        return Attached(host: args[ri - 2], sid: words[ai + 1], login: words[ai + 2], folder: words[ai + 3])
+        let kind = words[..<ai].last(where: { $0.hasPrefix("SB_AGENT=") }).map { String($0.dropFirst(9)) } ?? "claude"
+        return Attached(host: args[ri - 2], sid: words[ai + 1], login: words[ai + 2], folder: words[ai + 3], kind: kind)
     }
 
     /// Split a command line the way a shell does ('…', "…", \x), without expanding anything.
@@ -359,7 +391,7 @@ echo "WT=$wt"; echo "BRANCH=$b"
 
     // MARK: The helper on the machine
 
-    static let helperVersion = 13
+    static let helperVersion = 15
 
     static let helper = #"""
 #!/usr/bin/env bash
@@ -371,12 +403,21 @@ echo "WT=$wt"; echo "BRANCH=$b"
 #   switchboard-remote attach <id> <login dir> <folder> new|resume [first-message file]
 #   switchboard-remote stop <id>      end that Claude (its conversation stays)
 #   switchboard-remote list           the sessions that run: <id> <last activity>
+#                                     and "alias <id> <agent's id>" (see below)
+# SB_AGENT=codex|grok|agy runs that agent instead of Claude. They cannot start on an id we
+# give them, so a new one starts on an id Switchboard makes; once it shows its prompt, this
+# helper types /rename <SB_NAME>, finds the agent's own conversation id, names the tmux
+# session after it (alias-<our id> remembers which), then pastes the first message.
 set -u
 VERSION=__VERSION__
 SOCK="${SWITCHBOARD_TMUX:-switchboard}"
 STATE="$HOME/.cache/switchboard"
 CONF="$STATE/tmux.conf"
 CLAUDE_BIN="${SWITCHBOARD_CLAUDE_BIN:-claude}"
+AGENT="${SB_AGENT:-claude}"
+# Stand-ins for checks: a folder with codex, grok and agy, and the folder with their state.
+AGENT_BIN="${SWITCHBOARD_AGENT_BIN:+$SWITCHBOARD_AGENT_BIN/}"
+AHOME="${SWITCHBOARD_AGENT_HOME:-$HOME}"
 mkdir -p "$STATE"
 conf_new="$CONF.new"
 cat > "$conf_new" <<'CONF'
@@ -417,12 +458,115 @@ else
 fi
 expand() { case "$1" in "~") echo "$HOME" ;; "~/"*) echo "$HOME/${1#\~/}" ;; *) echo "$1" ;; esac; }
 alive() { t has-session -t "=sb-$1" 2>/dev/null; }
-gone() { for _ in $(seq 1 40); do pgrep -f -- "(--resume|--session-id) $1" >/dev/null || return 0; sleep 0.25; done; }
+gone() { for _ in $(seq 1 40); do pgrep -f -- "(--resume|--session-id|--conversation|resume) $1" >/dev/null || return 0; sleep 0.25; done; }
+# The agent's own id for an id Switchboard made, once known; else the id itself.
+rid() { if [ -f "$STATE/alias-$1" ]; then cat "$STATE/alias-$1"; else echo "$1"; fi; }
+# The agent's conversation id, for the agent in the tmux pane whose process is $1:
+# Grok lists its sessions by process, Antigravity keeps presence/<id>.lock open, and Codex
+# names the conversation in session_index.jsonl after /rename ($2).
+find_id() {
+  SB_KIND="$AGENT" SB_PANE="$1" SB_NAMEQ="$2" SB_AHOME="$AHOME" python3 - 2>/dev/null <<'FINDID'
+import json, os, re
+kind = os.environ["SB_KIND"]; root = int(os.environ["SB_PANE"]); home = os.environ["SB_AHOME"]; name = os.environ["SB_NAMEQ"]
+kids = {}
+for p in os.listdir("/proc"):
+    if p.isdigit():
+        try:
+            ppid = int(open("/proc/%s/stat" % p).read().rsplit(")", 1)[1].split()[1])
+            kids.setdefault(ppid, []).append(int(p))
+        except Exception:
+            pass
+procs = [root]; i = 0
+while i < len(procs):
+    procs += kids.get(procs[i], []); i += 1
+if kind == "grok":
+    try:
+        mine = set(procs)
+        for s in json.load(open(home + "/.grok/active_sessions.json")):
+            if s.get("pid") in mine:
+                print(s["session_id"]); break
+    except Exception:
+        pass
+elif kind == "codex":
+    found = ""
+    try:
+        for line in open((os.environ.get("CODEX_HOME") or home + "/.codex") + "/session_index.jsonl"):
+            try:
+                j = json.loads(line)
+            except Exception:
+                continue
+            if j.get("thread_name") == name:
+                found = j.get("id", "")
+    except Exception:
+        pass
+    if found:
+        print(found)
+elif kind == "agy":
+    for p in procs:
+        try:
+            for fd in os.listdir("/proc/%d/fd" % p):
+                m = re.search(r"/antigravity-cli/presence/([^/]+)\.lock$", os.readlink("/proc/%d/fd/%s" % (p, fd)))
+                if m:
+                    print(m.group(1)); raise SystemExit
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+FINDID
+}
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
 version) echo "$VERSION" ;;
-list) t list-sessions -F '#{session_name} #{session_activity}' 2>/dev/null | sed -n 's/^sb-//p' ;;
+list)
+  t list-sessions -F '#{session_name} #{session_activity}' 2>/dev/null | sed -n 's/^sb-//p'
+  find "$STATE" -maxdepth 1 -name 'alias-*' -mtime +60 -delete 2>/dev/null
+  for f in "$STATE"/alias-*; do [ -f "$f" ] && echo "alias ${f##*/alias-} $(cat "$f")"; done ;;
+after)
+  # A new Codex, Grok or Antigravity session (see the top): once it is at its prompt, /rename
+  # it, learn its id, then paste the first message. Runs on its own, not in a terminal.
+  tmp="$1"; first="${2:-}"; name="${SB_NAME:-}"
+  ready=""; prev=""; same=0
+  for i in $(seq 1 1800); do
+    if ! alive "$tmp"; then [ "$i" -gt 60 ] && exit 0; sleep 0.5; continue; fi
+    s="$(t capture-pane -p -t "=sb-$tmp:" 2>/dev/null)"
+    # At its prompt: a line that starts with ❯, › or > (not a numbered menu), the screen still
+    # for a second, and no sign-in or trust question on it (you answer that first, up to 15 min).
+    if [ -n "$s" ] && [ "$s" = "$prev" ] \
+       && ! printf '%s\n' "$s" | grep -qiE 'not signed in|login method|sign in with|do you trust|trust (this|the) (folder|directory|files)' \
+       && printf '%s\n' "$s" | grep -E '^[[:space:]]*(│[[:space:]]*)?(❯|›|>)( |$)' | grep -vqE '(❯|›|>)[[:space:]]*[0-9]+\.'; then
+      same=$((same + 1)); [ "$same" -ge 2 ] && { ready=1; break; }
+    else
+      same=0
+    fi
+    prev="$s"; sleep 0.5
+  done
+  [ -n "$ready" ] || exit 0
+  # Codex finds a conversation by its name: the name must be its own.
+  if [ "$AGENT" = codex ] && [ -n "$name" ] && SB_N="$name" python3 -c 'import json,os,sys; n=os.environ["SB_N"]; sys.exit(0 if any(json.loads(l).get("thread_name")==n for l in open(sys.argv[1]) if l.strip()) else 1)' "${CODEX_HOME:-$AHOME/.codex}/session_index.jsonl" 2>/dev/null; then
+    name="$name · ${tmp:0:4}"
+  fi
+  # A pane's target: "=name:" (the exact session, its window).
+  target="=sb-$tmp:"
+  if [ -n "$name" ]; then
+    t send-keys -t "$target" -l "/rename $name"; sleep 0.4; t send-keys -t "$target" Enter
+  fi
+  pane="$(t display -p -t "$target" '#{pane_pid}' 2>/dev/null)"
+  real=""
+  for _ in $(seq 1 40); do
+    [ -n "$pane" ] && real="$(find_id "$pane" "$name")"
+    [ -n "$real" ] && break
+    sleep 0.5
+  done
+  if [ -n "$real" ] && [ "$real" != "$tmp" ] && alive "$tmp"; then
+    t rename-session -t "=sb-$tmp" "sb-$real" && { echo "$real" > "$STATE/alias-$tmp"; target="=sb-$real:"; }
+  fi
+  if [ -n "$first" ] && [ -f "$first" ]; then
+    sleep 1
+    t load-buffer -b "sbf-$tmp" "$first" && t paste-buffer -p -d -b "sbf-$tmp" -t "$target"
+    sleep 0.6; t send-keys -t "$target" Enter
+    rm -f "$first"
+  fi ;;
 receive)
   # A session moves here from another machine (see moveReceive).
   (
@@ -439,13 +583,15 @@ gitinfo)
 __GITINFO__
   ); done ;;
 stop)
-  id="$1"
+  id="$(rid "$1")"
   alive "$id" && t kill-session -t "=sb-$id"
   gone "$id"
   rm -f "$STATE/run-$id.sh" ;;
 attach|start)
   # start: the same, with no terminal (the phone starts a session here while the Mac is away).
-  id="$1"; login="$2"; dir="$3"; mode="$4"; first="${5:-}"
+  id="$(rid "$1")"; login="$2"; dir="$3"; mode="$4"; first="${5:-}"
+  # An agent whose own id is known now, and that does not run: resume it by that id.
+  [ "$id" != "$1" ] && [ "$mode" = new ] && ! alive "$id" && mode=resume
   name="sb-$id"
   if [ "$cmd" = start ] && alive "$id"; then echo "It runs already."; exit 0; fi
   if alive "$id"; then
@@ -467,6 +613,22 @@ attach|start)
   {
     echo '#!/usr/bin/env bash'
     printf 'cd %q || exit 1\n' "$folder"
+    if [ "$AGENT" != claude ]; then
+      echo 'unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT'
+      # The same flags as on the Mac (cdx, gg): no approval prompts.
+      case "$AGENT" in
+        codex) prog=codex; args="--dangerously-bypass-approvals-and-sandbox"; res="resume" ;;
+        grok) prog=grok; args="--yolo"; res="--resume" ;;
+        agy) prog=agy; args="--dangerously-skip-permissions"; res="--conversation" ;;
+        *) echo "Switchboard cannot start $AGENT on $(hostname)."; exit 2 ;;
+      esac
+      printf 'command -v %q >/dev/null || { echo "There is no %s on $(hostname)."; sleep 20; exit 1; }\n' "$AGENT_BIN$prog" "$prog"
+      if [ "$mode" = resume ]; then
+        printf 'exec %q %s %s %q\n' "$AGENT_BIN$prog" "$args" "$res" "$id"
+      else
+        printf 'exec %q %s\n' "$AGENT_BIN$prog" "$args"
+      fi
+    else
     if [ "$login" = "~/.claude" ]; then echo 'unset CLAUDE_CONFIG_DIR'; else printf 'export CLAUDE_CONFIG_DIR=%q\n' "$(expand "$login")"; fi
     echo 'unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT'
     # Inside tmux (TERM_PROGRAM=tmux) Claude writes no links (OSC 8), and it breaks a long
@@ -481,8 +643,18 @@ attach|start)
     else
       printf 'exec %q %s %s %s --dangerously-skip-permissions\n' "$CLAUDE_BIN" "$flag" "$id" "$named"
     fi
+    fi
   } > "$run"
   chmod +x "$run"
+  # A new Codex, Grok or Antigravity session: /rename it and send its first message once it
+  # runs (on its own, so it outlives this connection).
+  if [ "$AGENT" != claude ] && [ "$mode" = new ]; then
+    if command -v setsid >/dev/null; then
+      setsid "$0" after "$id" "$first" </dev/null >"$STATE/after-$id.log" 2>&1 &
+    else
+      nohup "$0" after "$id" "$first" </dev/null >"$STATE/after-$id.log" 2>&1 &
+    fi
+  fi
   if [ "$cmd" = start ]; then
     t new-session -d -x 120 -y 40 -s "$name" -e "SB_LOGIN=$login" "bash -l $(printf %q "$run")"
     sleep 1; alive "$id" || { echo "Claude did not start on $(hostname)."; exit 4; }
@@ -491,7 +663,7 @@ attach|start)
   tmux -u -L "$SOCK" -f "$CONF" new-session -s "$name" -e "SB_LOGIN=$login" "bash -l $(printf %q "$run")"
   alive "$id" && exit 75
   exit 0 ;;
-*) echo "usage: switchboard-remote attach|start|stop|list|receive|pack|gitinfo|version"; exit 2 ;;
+*) echo "usage: switchboard-remote attach|start|stop|list|after|receive|pack|gitinfo|version"; exit 2 ;;
 esac
 """#
 }

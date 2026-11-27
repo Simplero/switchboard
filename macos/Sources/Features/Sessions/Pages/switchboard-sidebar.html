@@ -1176,10 +1176,11 @@ const nf = {open: false, agent: 'claude', login: null, machine: '', files: [], s
 const NEW_AGENTS = [['claude','Claude'],['codex','Codex'],['grok','Grok'],['agy','Antigravity']];
 const agentName = a => (NEW_AGENTS.find(x => x[0] === a) || NEW_AGENTS[0])[1];
 const lastAgent = () => { const a = store.get('newAgent', 'claude'); return NEW_AGENTS.some(x => x[0] === a) ? a : 'claude'; };
-// Other machines run Claude only.
-const nfMachine = () => nf.agent === 'claude' ? nf.machine : '';
+// Where the new session runs: this Mac (empty), or another machine, for every agent.
+const nfMachine = () => nf.machine;
 // Claude starts now (a spare), while you write. The other agents start when you press Enter.
-const nfWarm = () => bridge('newWarm', nf.agent === 'claude' ? {login: nf.login, machine: nf.machine} : {login: null, open: true});
+// On another machine: look whether it answers.
+const nfWarm = () => bridge('newWarm', nf.agent === 'claude' ? {login: nf.login, machine: nf.machine} : {login: null, open: true, machine: nf.machine});
 // Where Claude runs: this Mac (empty), or another machine. Remembered, like the login.
 const machineList = () => (data && data.machines) || [];
 const lastMachine = () => { const m = store.get('newMachine', ''); return machineList().some(x => x.n === m) ? m : ''; };
@@ -1198,24 +1199,25 @@ function nfStatus(){
   const other = nf.agent !== 'claude';
   $('#nfhead').innerHTML = `${ic('plus', 13, 2.4)} New ${esc(agentName(nf.agent))} session`;
   $('#nfagents').innerHTML = NEW_AGENTS.map(([a, n]) =>
-    `<button class="newbtn" data-nf="agent" data-agent="${a}" aria-pressed="${nf.agent === a}" title="${a === 'claude' ? 'Claude Code' : `${n}, with no approval prompts (like your shell alias). On this Mac.`}">${esc(n)}${nf.agent === a ? ' ' + ic('check', 10, 2.8) : ''}</button>`).join('');
+    `<button class="newbtn" data-nf="agent" data-agent="${a}" aria-pressed="${nf.agent === a}" title="${a === 'claude' ? 'Claude Code' : `${n}, with no approval prompts (like your shell alias).`}">${esc(n)}${nf.agent === a ? ' ' + ic('check', 10, 2.8) : ''}</button>`).join('');
   $('#nfloginrow').hidden = other;
   $('#dirbtn').innerHTML = `${ic('folder',12,2.2)}<span class="mono">${esc(newCwd)}</span>${ic('chev',9,2.6)}`;
   $('#nflogins').innerHTML = LOGINS.map(d => { const n = loginName(d);
     return `<button class="newbtn" data-nf="login" data-login="${d}" aria-pressed="${nf.login === d}" title="Start it with the ${esc(n)} login">${ic(LOGIN_ICON[n] || 'person', 11, 2.2)}${esc(n)}${nf.login === d ? ' ' + ic('check', 10, 2.8) : ''}</button>`; }).join('');
   const ms = machineList();
   if (nf.machine && !ms.some(x => x.n === nf.machine)) nf.machine = '';
-  $('#nfmachrow').hidden = !ms.length || other;
+  $('#nfmachrow').hidden = !ms.length;
+  const who = agentName(nf.agent);
   $('#nfmachines').innerHTML = [['', 'This Mac', 'laptop'], ...ms.map(x => [x.n, x.n, 'server'])].map(([v, n, icon]) =>
-    `<button class="newbtn" data-nf="machine" data-machine="${esc(v)}" aria-pressed="${nf.machine === v}" title="${v ? `Claude runs on ${esc(n)}, next to its files. You see and type in it here.` : 'Claude runs on this Mac.'}">${ic(icon, 11, 2.2)}${esc(n)}${nf.machine === v ? ' ' + ic('check', 10, 2.8) : ''}</button>`).join('');
+    `<button class="newbtn" data-nf="machine" data-machine="${esc(v)}" aria-pressed="${nf.machine === v}" title="${v ? `${esc(who)} runs on ${esc(n)}, next to its files. You see and type in it here.` : `${esc(who)} runs on this Mac.`}">${ic(icon, 11, 2.2)}${esc(n)}${nf.machine === v ? ' ' + ic('check', 10, 2.8) : ''}</button>`).join('');
   let rd;
-  if (other){
-    rd = `<span class="rd">${ic('term', 11, 2.4)} ${esc(agentName(nf.agent))} starts when you press Enter</span>`;
-  } else if (nf.machine){
+  if (nf.machine){
     const m = ms.find(x => x.n === nf.machine) || {};
-    rd = m.ok === true ? `<span class="rd on">${ic('server', 11, 2.4)} Runs on ${esc(nf.machine)}</span><span>· Claude starts there when you press Enter</span>`
+    rd = m.ok === true ? `<span class="rd on">${ic('server', 11, 2.4)} Runs on ${esc(nf.machine)}</span><span>· ${esc(who)} starts there when you press Enter</span>`
       : m.ok === false ? `<span class="rd bad">${ic('warn', 11, 2.4)} ${esc(m.msg || nf.machine + ' does not answer.')}</span>`
       : `<span class="rd">${ic('dots', 11, 2.4)} Looking for ${esc(nf.machine)}…</span>`;
+  } else if (other){
+    rd = `<span class="rd">${ic('term', 11, 2.4)} ${esc(who)} starts when you press Enter</span>`;
   } else {
     const sp = data?.spares?.[nf.login];
     rd = sp?.ready ? `<span class="rd on">${ic('bolt', 11, 2.4)} Claude is ready</span>`

@@ -847,7 +847,7 @@ function itemHTML(s, ci){
         <span class="age">${ago(s.la)}</span>
       </span>
       <span class="line"><span class="word" title="${esc(tip)}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
-      <span class="meta">${s.a === 'shell' ? `<span class="dir">${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>${s.m ? `<span class="mach" title="Runs on ${esc(s.m)}. You see and type in it here.">· ${ic('server',10,2.2)} ${esc(s.m)}</span>` : ''}${s.cwd ? `<span class="dir${s.mv ? ' shrink' : ''}" title="${esc(s.cwd)}">· ${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : ''}${s.mv ? `<span class="mv" title="Moves to ${esc(s.mv)} when its turn is over and you are not looking at it. Right-click › Move to folder to move it now or keep it here.">→ ${esc(s.mv)}</span>` : ''}`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span class="br" title="' + esc(s.br) + '">· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
+      <span class="meta">${s.a === 'shell' ? `<span class="dir">${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>${s.m ? `<span class="mach" title="Runs on ${esc(s.m)}. You see and type in it here.">· ${ic('server',10,2.2)} ${esc(s.m)}</span>` : ''}${s.cwd ? `<span class="dir${s.mv ? ' shrink' : ''}" title="${esc(s.cwd)}">· ${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : ''}${s.mv ? `<span class="mv" title="Moves to ${esc(s.mv)} when its turn is over and you are not looking at it. Right-click › Move to folder to move it now or keep it here.">→ ${esc(s.mv)}</span>` : ''}${s.ml ? `<span class="mv" title="Moves to the ${esc(s.ml)} login when its turn is over (Move all to, on its login card). Right-click its login card to keep it here.">→ ${esc(s.ml)}</span>` : ''}`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span class="br" title="' + esc(s.br) + '">· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
     </span></div>`;
 }
 
@@ -1099,7 +1099,9 @@ function subHTML(d){
     ...resetLines(rs),
     ...(out && room ? [`Almost out: its Claude sessions move to ${loginName(room)} when their turn is over.`] : out ? ['Almost out, and no other login has room.'] : []),
     ...(!out && (data.lfull || []).length && room === d ? ['Claude sessions of a login that is almost out move here: its week resets first.'] : []),
-    on ? 'Click to show the sessions of every login.' : `Click to show only the ${name} sessions.`].join('\n');
+    ...((data.lmw || {})[d] ? [`${data.lmw[d]} of its sessions move to another login when their turn is over.`] : []),
+    on ? 'Click to show the sessions of every login.' : `Click to show only the ${name} sessions.`,
+    'Right-click to move all its sessions to another login.'].join('\n');
   return `<button class="subbtn${used != null && used >= 90 ? ' hi' : ''}" data-sub="${d}" aria-pressed="${on}" title="${esc(tip)}">`
     + `<span class="ln"><span class="nm">${on ? ic('check', 9, 3) : ''}${esc(name)}</span>`
     + (full ? `<span class="rs gr" aria-label="${full} full week ${full === 1 ? 'reset' : 'resets'} left">${ic('reset', 9, 2.4)}${full}</span>` : '')
@@ -1455,6 +1457,9 @@ document.addEventListener('click', e => {
   }
 });
 document.addEventListener('contextmenu', e => {
+  // A login card: Move all to (its sessions go to another login).
+  const sub = e.target.closest('.subbtn[data-sub]');
+  if (sub){ e.preventDefault(); bridge('subMenu', {d: sub.dataset.sub}); return; }
   const row = e.target.closest('[data-k]');
   if (row && (row.dataset.k.startsWith('conv:') || row.dataset.k === '__deep' || row.dataset.k === '__new')){ e.preventDefault(); return; }
   if (row){ e.preventDefault(); bridge('menu', {k: row.dataset.k}); }

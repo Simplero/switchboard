@@ -317,6 +317,7 @@ final class Switchboard {
         closeAwaySessions()
         moveWhenFree()
         switchOffFullLogins()
+        moveLoginsWhenFree()
         if t0 - remoteAt >= 30, !remoteLooking, !SBMachines.all.isEmpty { remoteAt = t0; lookAtMachines() }
         if t0 - worktreeAt >= 10, !worktreeLooking { worktreeAt = t0; lookAtWorktrees() }
         if let outside { mergeElsewhere(outside) }
@@ -1007,6 +1008,7 @@ final class Switchboard {
                 : SBBoard.shared.columnInfo(of: e.key, onBoard: e.isOpen && e.agent != "shell").map { $0 as Any } ?? NSNull(),
             "mv": e.move_to.map { ($0 == "#slot" ? "a slot" : $0.hasPrefix("@") ? (e.move_stage == "slotting" ? (e.machine == nil ? "a slot, then " : "a work tree, then ") : "") + ($0 == "@" ? "this Mac" : String($0.dropFirst())) : SBPaths.tilde($0)) as Any } ?? NSNull(),
             "mvm": e.move_to?.hasPrefix("@") == true,
+            "ml": loginMoves[e.key].map { SBLogins.short($0) as Any } ?? NSNull(),
             "mvr": e.move_to.map { $0 as Any } ?? NSNull(),
             "m": e.machine.map { $0 as Any } ?? NSNull(),
             "md": (e.isOpen ? SBBackground.modelName(details[e.key]?.model) : nil).map { $0 as Any } ?? NSNull(),
@@ -1059,6 +1061,8 @@ final class Switchboard {
             },
             "s": rows.map(compact), "ot": [], "grp": [], "use": usage,
             "lfull": fullLogins, "lroom": loginWithRoom ?? NSNull(),
+            // Move all to: per login, how many of its sessions wait to move to another login.
+            "lmw": Dictionary(uniqueKeysWithValues: SBLogins.dirs.map { ($0, loginMovesWaiting(from: $0)) }),
         ]
         let vanished = sess.filter { !$0.isOpen && $0.parked != true && $0.closed_reason == "vanished" }
         if let newest = vanished.compactMap(\.closed_at).max() {
@@ -1774,6 +1778,77 @@ final class Switchboard {
     /// For checks: why the session cannot move yet if it waited to move, or "free".
     func moveCheck(_ k: String) -> String { moveBlocker(k, asked: false) ?? "free" }
 
+    // MARK: Move all to: every session of a login goes to another login
+
+    /// Running sessions you asked to move to another login (right-click a login card › Move all
+    /// to): key → login. Each moves when its turn is over, as for a login that is almost out.
+    private(set) var loginMoves: [String: String] = [:]
+    private var loginMoveFreeSince: [String: Double] = [:]
+
+    /// The Claude sessions of a login that can change login (they have a conversation id).
+    func loginSessions(_ d: String) -> [(k: String, e: SBEntry)] {
+        reg.sessions.filter { $0.value.agent == "claude" && $0.value.backend != "claude-app" && $0.value.session_id != nil
+            && SBLogins.norm($0.value.login_dir) == d }.map { ($0.key, $0.value) }
+    }
+
+    /// How many sessions of a login wait to move.
+    func loginMovesWaiting(from d: String) -> Int {
+        loginMoves.keys.filter { k in reg.sessions[k].map { SBLogins.norm($0.login_dir) == d } ?? false }.count
+    }
+
+    /// Every Claude session of a login goes to another login. One that does not run changes now
+    /// (it resumes with the new login); a running one moves when its turn is over.
+    func moveAllSessions(from: String, to: String) {
+        guard from != to, SBLogins.dirs.contains(to) else { return }
+        var now0 = 0, later = 0
+        for (k, e) in loginSessions(from) where !switching.contains(k) && runningElsewhere(k) == nil {
+            if e.isOpen {
+                loginMoves[k] = to; later += 1
+            } else if now - (e.opening_at ?? 0) >= 25 {
+                update(k) { $0.login_dir = to }; now0 += 1
+            }
+        }
+        SessionSwitchLog.did("Move all to: \(SBLogins.short(from)) → \(SBLogins.short(to)): \(now0) now, \(later) when their turn is over")
+        publish()
+    }
+
+    /// Stop the waiting moves of a login's sessions.
+    func cancelLoginMoves(from d: String) {
+        for k in loginMoves.keys where reg.sessions[k].map({ SBLogins.norm($0.login_dir) == d }) ?? true {
+            loginMoves[k] = nil; loginMoveFreeSince[k] = nil
+        }
+        publish()
+    }
+
+    /// Each scan: the sessions that wait to change login and are free now (on two looks 3 s apart,
+    /// 15 s for the one in front) close and resume with the new login.
+    private func moveLoginsWhenFree() {
+        for (k, to) in loginMoves {
+            guard let e = reg.sessions[k], SBLogins.norm(e.login_dir) != to else { loginMoves[k] = nil; loginMoveFreeSince[k] = nil; continue }
+            if switching.contains(k) || moving.contains(k) || e.move_to != nil { continue }
+            if !e.isOpen {
+                // Closed meanwhile: nothing runs, so it changes now.
+                if now - (e.opening_at ?? 0) >= 25, runningElsewhere(k) == nil {
+                    update(k) { $0.login_dir = to }
+                    loginMoves[k] = nil; loginMoveFreeSince[k] = nil
+                }
+                continue
+            }
+            let front = e.surface_id != nil && e.surface_id == SessionsStore.shared.focusedSurfaceID
+            guard moveBlocker(k, asked: true) == nil else { loginMoveFreeSince[k] = nil; continue }
+            guard let since = loginMoveFreeSince[k] else { loginMoveFreeSince[k] = now; continue }
+            guard now - since >= (front ? 15 : 3) else { continue }
+            loginMoves[k] = nil; loginMoveFreeSince[k] = nil
+            let name = e.name ?? "This session", from = SBLogins.short(e.login_dir)
+            Task { @MainActor in
+                let (ok, message) = await self.switchLogin(k, to, focus: front)
+                SessionSwitchLog.did("“\(name)” \(from) → \(SBLogins.short(to)) (Move all to)\(ok ? "" : ": " + message)")
+                if !ok { SessionsStore.shared.showFailure("“\(name)” did not move to \(SBLogins.short(to)): \(message)") }
+                self.publish()
+            }
+        }
+    }
+
     // MARK: Plan limits: sessions leave a login that is almost out
 
     /// Weekly or 5-hour use (%) at which a login is almost out.
@@ -1781,7 +1856,7 @@ final class Switchboard {
     private var limitFreeSince: [String: Double] = [:]
     private var limitNoRoomNoted = false
 
-    private func usePct(_ d: String, _ window: String) -> Int? {
+    func usePct(_ d: String, _ window: String) -> Int? {
         ((usage[d] as? [String: Any])?[window] as? [String: Any])?["p"] as? Int
     }
 

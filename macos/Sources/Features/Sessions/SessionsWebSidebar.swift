@@ -315,6 +315,12 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         case "menu":
             guard let k = body["k"] as? String, let s = store.payload?.s.first(where: { $0.k == k }) else { return }
             showMenu(for: s)
+        case "subMenu":
+            // Right-click a login card at the top: Move all to.
+            guard let d = body["d"] as? String else { return }
+            let menu = loginCardMenu(for: d)
+            let point = webView.convert(webView.window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
+            menu.popUp(positioning: nil, at: point, in: webView)
         case "loginMenu":
             // A native menu, so it draws over the terminal instead of being cut off by the banner.
             guard let k = body["k"] as? String else { return }
@@ -535,6 +541,37 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             let v = field.stringValue.trimmingCharacters(in: .whitespaces)
             if !v.isEmpty { done(v) }
         }
+    }
+
+    /// A login card's right-click menu (also for checks: /sb/sessionmenu with "login"): Move all
+    /// to › the other logins. Sessions that do not run change at once; running ones when their
+    /// turn is over.
+    func loginCardMenu(for d: String) -> NSMenu {
+        let sb = Switchboard.shared
+        menuActions = []
+        let menu = NSMenu()
+        let name = { (x: String) in SessionsStore.shared.payload?.spares?[x]?.lg ?? SBLogins.short(x) }
+        let all = sb.loginSessions(d), running = all.filter { $0.e.isOpen }.count
+        if all.isEmpty {
+            let i = NSMenuItem(title: "No sessions on \(name(d))", action: nil, keyEquivalent: "")
+            i.isEnabled = false
+            menu.addItem(i)
+        } else {
+            let others: [NSMenuItem] = SBLogins.dirs.filter { $0 != d }.map { to in
+                let wk = sb.usePct(to, "wk")
+                return item(name(to) + (wk.map { "  ·  \($0)% of the week used" } ?? "")) { sb.moveAllSessions(from: d, to: to) }
+            }
+            let head = NSMenuItem(title: all.count == 1 ? "1 session" : "\(all.count) sessions"
+                + (running > 0 ? " (\(running) running: \(running == 1 ? "it moves" : "they move") when \(running == 1 ? "its" : "their") turn is over)" : ""),
+                action: nil, keyEquivalent: "")
+            head.isEnabled = false
+            menu.addItem(submenu("Move all to", [head, .separator()] + others))
+        }
+        let waiting = sb.loginMovesWaiting(from: d)
+        if waiting > 0 {
+            menu.addItem(item(waiting == 1 ? "Don’t move the 1 waiting session" : "Don’t move the \(waiting) waiting sessions") { sb.cancelLoginMoves(from: d) })
+        }
+        return menu
     }
 
     private func showMenu(for s: SessionItem) {

@@ -347,9 +347,15 @@ final class SessionsAPI {
         case ("POST", "/sb/sessionmenu"):
             // For checks: the sidebar's right-click menu of a session ({"k"}), as titles; with
             // "pick": ["Submenu", "Item"], it runs that item as a click would.
-            guard let k = req.json["k"] as? String,
-                  let s = SessionsStore.shared.payload?.s.first(where: { $0.k == k }) else { return (400, ["error": "k"]) }
-            let menu = SessionsWeb.shared.sessionMenu(for: s)
+            // {"login": "~/.claude-ccl"}: a login card's menu instead.
+            let menu: NSMenu
+            if let d = req.json["login"] as? String {
+                menu = SessionsWeb.shared.loginCardMenu(for: d)
+            } else {
+                guard let k = req.json["k"] as? String,
+                      let s = SessionsStore.shared.payload?.s.first(where: { $0.k == k }) else { return (400, ["error": "k"]) }
+                menu = SessionsWeb.shared.sessionMenu(for: s)
+            }
             func rows(_ m: NSMenu) -> [Any] {
                 m.items.filter { !$0.isSeparatorItem }.map { it in
                     let t = (it.state == .on ? "✓ " : "") + it.title + (it.action == nil && it.submenu == nil ? " (off)" : "")
@@ -362,7 +368,8 @@ final class SessionsAPI {
                     guard let i = m.items.firstIndex(where: { $0.title == title }) else { return (404, ["error": "no item \(title)"]) }
                     if n == pick.count - 1 { m.performActionForItem(at: i) } else if let sub = m.items[i].submenu { m = sub }
                 }
-                return (200, ["picked": pick, "board": SBBoard.shared.summary])
+                return (200, ["picked": pick, "board": SBBoard.shared.summary,
+                              "loginMoves": Switchboard.shared.loginMoves])
             }
             return (200, ["menu": rows(menu)])
         case ("POST", "/sb/boardprio"):

@@ -136,6 +136,10 @@ button{font:inherit;color:inherit;cursor:default}
 .pin .poff:hover{background:var(--line2);color:var(--ink)}
 .pin.sel .poff{color:#E3E8FF}
 .pin.sel .poff:hover{background:rgba(255,255,255,.18);color:#fff}
+/* The first click only asks: the button says "Turn off?" in words. A second click turns it off. */
+.pin .poff.arm{display:inline-flex;width:auto;gap:3px;padding:0 6px;font-size:11px;font-weight:650;white-space:nowrap;background:var(--needs-soft);color:var(--needs);box-shadow:inset 0 0 0 1px var(--needs)}
+.pin .poff.arm:hover{background:var(--needs-soft);color:var(--needs)}
+.pin.sel .poff.arm,.pin.sel .poff.arm:hover{background:#fff;color:var(--sel);box-shadow:none}
 .pin.sel{background:var(--sel);border-color:var(--sel);color:var(--sel-ink)}
 .pin.sel small,.pin.sel kbd{color:#E3E8FF}
 .pin.sel kbd{border-color:rgba(255,255,255,.45)}
@@ -968,8 +972,26 @@ function pinTile(s, i){
   const small = (word ? `<span class="w" style="color:${front ? 'inherit' : `var(${color === '--faint' ? '--muted' : color})`}">${word}</span>` : '') + (word && rest ? ' · ' : '') + esc(rest);
   return `<button class="pin${front ? ' sel' : ''}${s.o ? '' : ' off'}" data-k="${esc(s.k)}" title="${esc(title)}">
     <span class="pi" style="color:${front ? 'inherit' : `var(${color})`}">${ic(icon, 14, 2.2, st === 'working' && s.o ? 'spin' : '')}</span>
-    <span class="pt"><b>${esc(s.n)}</b><small>${small || '&nbsp;'}</small></span>${s.o ? `<span class="poff" data-pinoff="${esc(s.k)}" role="button" aria-label="Turn off ${esc(s.n)}" title="Turn off: it stops and frees its memory. The pin stays; click the pin to start it again.">${ic('power', 13, 2.2)}</span>` : ''}${key ? `<kbd>${key}</kbd>` : ''}</button>`;
+    <span class="pt"><b>${esc(s.n)}</b><small>${small || '&nbsp;'}</small></span>${s.o ? (offArm === s.k
+      ? `<span class="poff arm" data-pinoff="${esc(s.k)}" role="button" aria-label="Click again to turn off ${esc(s.n)}" title="Click again to turn it off. Move away or press Esc to keep it running.">${ic('power', 12, 2.2)}Turn off?</span>`
+      : `<span class="poff" data-pinoff="${esc(s.k)}" role="button" aria-label="Turn off ${esc(s.n)}" title="Turn off: it stops and frees its memory. The pin stays; click the pin to start it again. Asks first.">${ic('power', 13, 2.2)}</span>`) : ''}${key && offArm !== s.k ? `<kbd>${key}</kbd>` : ''}</button>`;
 }
+// Turn off asks first: the first click arms the button ("Turn off?"), the second click turns it off.
+// Leaving the pin, Esc or 4 seconds puts it back.
+let offArm = null, offArmTimer = 0;
+function setOffArm(k){
+  clearTimeout(offArmTimer);
+  if (offArm === k) return;
+  offArm = k;
+  if (k) offArmTimer = setTimeout(() => setOffArm(null), 4000);
+  renderPins();
+}
+document.addEventListener('mouseout', e => {
+  if (!offArm) return;
+  const pin = e.target.closest && e.target.closest('#pins .pin[data-k]');
+  if (pin && pin.isConnected && pin.dataset.k === offArm && !pin.contains(e.relatedTarget)) setOffArm(null);
+});
+document.addEventListener('keydown', e => { if (offArm && e.key === 'Escape') setOffArm(null); });
 function renderPins(){
   const el = $('#pins');
   const pins = data.s.filter(isPin).sort((a, b) => a.pn - b.pn);
@@ -1343,7 +1365,13 @@ window.addEventListener('blur', () => { if (pinDrag) endPinDrag(); if (drag) end
 // ---------- events ----------
 document.addEventListener('click', e => {
   const t = e.target;
-  const off = t.closest('[data-pinoff]'); if (off){ e.stopPropagation(); op({op:'pin_off', k: off.dataset.pinoff}); return; }
+  const off = t.closest('[data-pinoff]');
+  if (off){
+    e.stopPropagation();
+    const k = off.dataset.pinoff;
+    if (offArm === k){ setOffArm(null); op({op:'pin_off', k}); } else setOffArm(k);
+    return;
+  }
   const ack = t.closest('[data-ack]'); if (ack){ e.stopPropagation(); op({op:'ack', k: ack.dataset.ack}); return; }
   const send = t.closest('[data-send]'); if (send){ op({op:'send', k: send.dataset.k, text: send.dataset.send}); return; }
   if (t.closest('#navBack')){ bridge('histBack'); return; }

@@ -149,6 +149,13 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         webView.evaluateJavaScript("window.Sessions && Sessions.setColFolder(\(col), \(json)[0])")
     }
 
+    /// Move all to: a list that shows only the old login shows the new one.
+    func loginMoved(from: String, to: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [from, to]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.Sessions && Sessions.loginMoved && Sessions.loginMoved(...\(json))")
+    }
+
     func setFolder(_ path: String) {
         guard let data = try? JSONSerialization.data(withJSONObject: [path]),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -559,7 +566,10 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         } else {
             let others: [NSMenuItem] = SBLogins.dirs.filter { $0 != d }.map { to in
                 let wk = sb.usePct(to, "wk")
-                return item(name(to) + (wk.map { "  ·  \($0)% of the week used" } ?? "")) { sb.moveAllSessions(from: d, to: to) }
+                return item(name(to) + (wk.map { "  ·  \($0)% of the week used" } ?? "")) { [weak self] in
+                    sb.moveAllSessions(from: d, to: to)
+                    self?.loginMoved(from: d, to: to)
+                }
             }
             let head = NSMenuItem(title: all.count == 1 ? "1 session" : "\(all.count) sessions"
                 + (running > 0 ? " (\(running) running: \(running == 1 ? "it moves" : "they move") when \(running == 1 ? "its" : "their") turn is over)" : ""),

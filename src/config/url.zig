@@ -25,7 +25,7 @@ const oni = @import("oniguruma");
 /// There are many complicated cases where these heuristics break down, but
 /// handling them well requires a non-regex approach.
 const url_schemes =
-    \\https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|ipfs://|ipns://|gemini://|gopher://|news:
+    \\https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|ipfs://|ipns://|gemini://|gopher://|news:|zed://
 ;
 
 const ipv6_url_pattern =
@@ -252,6 +252,10 @@ test "url regex" {
         .{
             .input = "match gopher://example.com gopher links",
             .expect = "gopher://example.com",
+        },
+        .{
+            .input = "open zed://file/Users/me/app/config/funnel.yml:12 in Zed",
+            .expect = "zed://file/Users/me/app/config/funnel.yml:12",
         },
         .{
             .input = "match news:comp.infosystems.www.servers.unix news links",

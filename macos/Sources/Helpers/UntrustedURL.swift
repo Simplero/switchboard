@@ -91,6 +91,10 @@ struct UntrustedURL: Equatable {
         case "file":
             return fileDecision(for: url)
 
+        case "zed" where url.host?.lowercased() == "file":
+            // Switchboard: zed://file/<path>[:line[:column]] only opens a file in Zed.
+            return .allow(url)
+
         default:
             // A custom scheme can invoke any application registered with
             // Launch Services. The caller must show the target and handler

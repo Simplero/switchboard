@@ -32,6 +32,15 @@ struct UntrustedURLTests {
         #expect(url.absoluteString == value)
     }
 
+    @Test func opensZedFileLinksDirectly() {
+        let value = "zed://file/Users/me/app/config/funnel.yml:12"
+        #expect(UntrustedURL(value).decision == .allow(URL(string: value)!))
+        guard case .confirm = UntrustedURL("zed://ssh/example.com/tmp").decision else {
+            Issue.record("other zed links still ask first")
+            return
+        }
+    }
+
     @Test(arguments: ["\u{0085}", "\u{2028}", "\u{2029}", "\u{202E}", "\u{2066}"])
     func rejectsInvisibleAndLineBreakingCharacters(_ scalar: String) {
         let value = "https://example.com/before\(scalar)after"

@@ -237,6 +237,9 @@ body.dragging-rows,body.dragging-rows *{cursor:grabbing!important}
 .item .meta .dir:first-child{max-width:100%}
 /* Move to folder: where it goes when its turn is over. The folder before it gets shorter first. */
 .item .meta .mv{flex:0 0.01 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* Move all to: the login it goes to (short, so it keeps its whole name). */
+.item .meta .ml{flex:none;color:var(--ink2);font-weight:600}
+.item.sel .meta .ml{color:inherit}
 .item .meta .dir.shrink{flex:0 1 auto;min-width:3em}
 .item .meta .br{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 
@@ -847,7 +850,7 @@ function itemHTML(s, ci){
         <span class="age">${ago(s.la)}</span>
       </span>
       <span class="line"><span class="word" title="${esc(tip)}" style="color:${sel ? 'inherit' : `var(${L[3]})`}">${L[1]}</span>${line ? ' · ' + esc(line) : ''}</span>
-      <span class="meta">${s.a === 'shell' ? `<span class="dir">${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>${s.m ? `<span class="mach" title="Runs on ${esc(s.m)}. You see and type in it here.">· ${ic('server',10,2.2)} ${esc(s.m)}</span>` : ''}${s.cwd ? `<span class="dir${s.mv || s.ml ? ' shrink' : ''}" title="${esc(s.cwd)}">· ${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : ''}${s.mv ? `<span class="mv" title="Moves to ${esc(s.mv)} when its turn is over and you are not looking at it. Right-click › Move to folder to move it now or keep it here.">→ ${esc(s.mv)}</span>` : ''}${s.ml ? `<span class="mv" title="Moves to the ${esc(s.ml)} login when its turn is over (Move all to, on its login card). Right-click its login card to keep it here.">→ ${esc(s.ml)}</span>` : ''}`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span class="br" title="' + esc(s.br) + '">· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
+      <span class="meta">${s.a === 'shell' ? `<span class="dir">${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : `<span>${ic(LOGIN_ICON[s.lg]||'person',10,2.2)} ${esc(s.lg)}</span>${s.m ? `<span class="mach" title="Runs on ${esc(s.m)}. You see and type in it here.">· ${ic('server',10,2.2)} ${esc(s.m)}</span>` : ''}${s.cwd ? `<span class="dir${s.mv || s.ml ? ' shrink' : ''}" title="${esc(s.cwd)}">· ${ic('folder',10,2.2)} ${esc(s.cwd)}</span>` : ''}${s.mv ? `<span class="mv" title="Moves to ${esc(s.mv)} when its turn is over and you are not looking at it. Right-click › Move to folder to move it now or keep it here.">→ ${esc(s.mv)}</span>` : ''}${s.ml ? `<span class="ml" title="Moves to the ${esc(s.ml)} login when its turn is over (Move all to, on its login card). Right-click its login card to keep it here.">→ ${esc(s.ml)}</span>` : ''}`}${s.be !== 'ghostty' ? '<span>· cmux</span>' : ''}${labs ? '<span>· ' + labs + '</span>' : ''}${s.br && s.br !== 'master' ? '<span class="br" title="' + esc(s.br) + '">· ⎇ ' + esc(s.br) + '</span>' : ''}</span>
     </span></div>`;
 }
 

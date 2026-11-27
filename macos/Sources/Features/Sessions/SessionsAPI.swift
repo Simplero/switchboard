@@ -344,6 +344,27 @@ final class SessionsAPI {
             guard let k = req.json["k"] as? String else { return (400, ["error": "k"]) }
             SBBoard.shared.move(k, to: req.json["col"] as? String)
             return (200, ["board": SBBoard.shared.summary])
+        case ("POST", "/sb/sessionmenu"):
+            // For checks: the sidebar's right-click menu of a session ({"k"}), as titles; with
+            // "pick": ["Submenu", "Item"], it runs that item as a click would.
+            guard let k = req.json["k"] as? String,
+                  let s = SessionsStore.shared.payload?.s.first(where: { $0.k == k }) else { return (400, ["error": "k"]) }
+            let menu = SessionsWeb.shared.sessionMenu(for: s)
+            func rows(_ m: NSMenu) -> [Any] {
+                m.items.filter { !$0.isSeparatorItem }.map { it in
+                    let t = (it.state == .on ? "✓ " : "") + it.title + (it.action == nil && it.submenu == nil ? " (off)" : "")
+                    return it.submenu.map { [t: rows($0)] as Any } ?? t
+                }
+            }
+            if let pick = req.json["pick"] as? [String], !pick.isEmpty {
+                var m = menu
+                for (n, title) in pick.enumerated() {
+                    guard let i = m.items.firstIndex(where: { $0.title == title }) else { return (404, ["error": "no item \(title)"]) }
+                    if n == pick.count - 1 { m.performActionForItem(at: i) } else if let sub = m.items[i].submenu { m = sub }
+                }
+                return (200, ["picked": pick, "board": SBBoard.shared.summary])
+            }
+            return (200, ["menu": rows(menu)])
         case ("POST", "/sb/boardprio"):
             // For checks: mark a session ({"k", "on"}) or a column ({"col", "on"}) as a priority.
             let on = req.json["on"] as? Bool ?? true

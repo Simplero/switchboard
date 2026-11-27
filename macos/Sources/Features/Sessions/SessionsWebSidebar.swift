@@ -538,6 +538,13 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
     }
 
     private func showMenu(for s: SessionItem) {
+        let menu = sessionMenu(for: s)
+        let point = webView.convert(webView.window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
+        menu.popUp(positioning: nil, at: point, in: webView)
+    }
+
+    /// The session's right-click menu (also for checks: /sb/sessionmenu).
+    func sessionMenu(for s: SessionItem) -> NSMenu {
         let store = SessionsStore.shared
         menuActions = []
         let menu = NSMenu()
@@ -662,8 +669,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             menu.addItem(.separator())
             menu.addItem(item("Remove from list") { store.send(["op": "forget", "k": s.k]) })
         }
-        let point = webView.convert(webView.window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
-        menu.popUp(positioning: nil, at: point, in: webView)
+        return menu
     }
 }
 

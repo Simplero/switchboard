@@ -149,7 +149,7 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         webView.evaluateJavaScript("window.Sessions && Sessions.setColFolder(\(col), \(json)[0])")
     }
 
-    /// Move all to: a list that shows only the old login shows the new one.
+    /// Move all to: a list that shows only one login shows every login again.
     func loginMoved(from: String, to: String) {
         guard let data = try? JSONSerialization.data(withJSONObject: [from, to]),
               let json = String(data: data, encoding: .utf8) else { return }

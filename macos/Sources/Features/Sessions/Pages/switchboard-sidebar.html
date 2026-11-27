@@ -471,9 +471,8 @@ async function ask(type, d={}){
 window.Sessions = {
   // The app sends the sessions whenever something changes.
   setData(d){ data = d; noteNeeds(); render(); },
-  // Move all to: the list shows only one login and its sessions go to another one. The list
-  // follows them, so they do not look stopped.
-  loginMoved(from, to){ if (loginFilter === from){ loginFilter = to; store.set('loginFilter', loginFilter); render(); } },
+  // Move all to: the list stops showing only one login, so the moved sessions do not look stopped.
+  loginMoved(from, to){ if (loginFilter){ loginFilter = null; store.set('loginFilter', null); render(); } },
   setFocus(sf){
     noteNeeds();   // the session you leave keeps its place for another 30 s from now
     seenSaved = 0;

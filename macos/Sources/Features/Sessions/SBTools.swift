@@ -234,6 +234,18 @@ final class SBBoard {
         return ["cols": cols, "cards": cards]
     }
 
+    /// The column the session is in on the Board ("" = not on the Board). `onBoard`: a session
+    /// without a card is in the first column (a running session that is not a shell).
+    func column(of k: String, onBoard: Bool) -> String {
+        let ids = Set(columns.compactMap { $0["id"] })
+        if let c = cards[k] {
+            if c["hidden"] as? Bool == true { return "" }
+            if let col = c["col"] as? String, ids.contains(col) { return col }
+            return columns.first?["id"] ?? ""
+        }
+        return onBoard ? columns.first?["id"] ?? "" : ""
+    }
+
     /// Put a session's card at the end of a column (nil: take it off the Board), as a drag on
     /// the Board does.
     func move(_ k: String, to col: String?) {

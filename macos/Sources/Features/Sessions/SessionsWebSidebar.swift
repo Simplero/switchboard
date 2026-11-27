@@ -594,6 +594,18 @@ final class SessionsWeb: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
                 menu.addItem(i)
             }
         }
+        // Its column on the Board, as the Board's own card menu does. A pin stays in Pinned.
+        if !s.isPinned && !s.isArchived {
+            let now = SBBoard.shared.column(of: s.k, onBoard: s.isOpen && s.a != "shell")
+            var cols: [NSMenuItem] = SBBoard.shared.columns.compactMap { c in
+                guard let id = c["id"] else { return nil }
+                let i = item(c["name"] ?? "Column", checked: id == now) { SBBoard.shared.move(s.k, to: id) }
+                if id == now { i.action = nil }
+                return i
+            }
+            if !now.isEmpty { cols += [.separator(), item("Take it off the Board") { SBBoard.shared.move(s.k, to: nil) }] }
+            menu.addItem(submenu("Move to column", cols))
+        }
         menu.addItem(.separator())
         menu.addItem(submenu("Class", (store.payload?.classes ?? []).map { c in
             item(c, checked: s.c == c) { store.send(["op": "cls", "k": s.k, "cls": c]) }
